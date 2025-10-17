@@ -23,8 +23,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import fakes.FakeAnalyticsQueryService;
 import fixtures.core.model.ApiFixtures;
 import inmemory.ApiCrudServiceInMemory;
+import io.gravitee.apim.core.analytics.exception.UnsupportedAnalyticsEndpointException;
 import io.gravitee.apim.core.api.exception.ApiInvalidDefinitionVersionException;
-import io.gravitee.apim.core.api.exception.ApiInvalidTypeException;
 import io.gravitee.apim.core.api.exception.ApiNotFoundException;
 import io.gravitee.rest.api.model.v4.analytics.AverageMessagesPerRequest;
 import io.gravitee.rest.api.service.common.GraviteeContext;
@@ -93,7 +93,17 @@ class SearchAverageMessagesPerRequestAnalyticsUseCaseTest {
         apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aProxyApiV4()));
         assertThatThrownBy(() ->
             cut.execute(GraviteeContext.getExecutionContext(), new Input(MY_API, ENV_ID, Optional.of(FROM), Optional.of(TO)))
-        ).isInstanceOf(ApiInvalidTypeException.class);
+        ).isInstanceOf(UnsupportedAnalyticsEndpointException.class)
+            .hasMessage("The /analytics/average-messages-per-request endpoint is not supported for proxy API.");
+    }
+
+    @Test
+    void should_throw_if_api_is_native() {
+        apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aNativeApi()));
+        assertThatThrownBy(() ->
+            cut.execute(GraviteeContext.getExecutionContext(), new Input(MY_API, ENV_ID, Optional.of(FROM), Optional.of(TO)))
+        ).isInstanceOf(UnsupportedAnalyticsEndpointException.class)
+            .hasMessage("The /analytics/average-messages-per-request endpoint is not supported for native API.");
     }
 
     @Test

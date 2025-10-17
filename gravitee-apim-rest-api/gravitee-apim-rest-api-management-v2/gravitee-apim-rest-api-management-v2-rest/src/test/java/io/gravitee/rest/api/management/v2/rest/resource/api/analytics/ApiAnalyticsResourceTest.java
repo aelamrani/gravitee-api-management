@@ -201,6 +201,32 @@ class ApiAnalyticsResourceTest extends ApiResourceTest {
                     assertThat(r.getAveragesByEntrypoint()).containsAllEntriesOf(Map.of("http-get", 10.0, "sse", 100.0));
                 });
         }
+
+        @Test
+        void should_return_400_bad_request_for_native_api() {
+            apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aNativeApi().toBuilder().environmentId(ENVIRONMENT).build()));
+
+            final Response response = averageMessagesPerRequestTarget.request().get();
+
+            MAPIAssertions.assertThat(response)
+                .hasStatus(400)
+                .asError()
+                .hasHttpStatus(400)
+                .hasMessage("The /analytics/average-messages-per-request endpoint is not supported for native API.");
+        }
+
+        @Test
+        void should_return_400_bad_request_for_proxy_api() {
+            apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aProxyApiV4().toBuilder().environmentId(ENVIRONMENT).build()));
+
+            final Response response = averageMessagesPerRequestTarget.request().get();
+
+            MAPIAssertions.assertThat(response)
+                .hasStatus(400)
+                .asError()
+                .hasHttpStatus(400)
+                .hasMessage("The /analytics/average-messages-per-request endpoint is not supported for proxy API.");
+        }
     }
 
     @Nested
