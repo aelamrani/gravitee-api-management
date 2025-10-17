@@ -44,6 +44,7 @@ import io.gravitee.repository.management.model.ApiDebugStatus;
 import io.gravitee.secrets.api.discovery.DefinitionMetadata;
 import io.gravitee.secrets.api.event.SecretDiscoveryEvent;
 import io.gravitee.secrets.api.event.SecretDiscoveryEventType;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpClientOptions;
@@ -118,34 +119,36 @@ public class DebugReactorEventListener extends ReactorEventListener {
                     eventManager.publishEvent(SecretDiscoveryEventType.DISCOVER, secretDiscoveryEvent);
 
                     HttpRequest debugApiRequest = debugApi.getRequest();
-                    updateEvent(debugEvent, ApiDebugStatus.DEBUGGING);
+                    updateEventAsync(debugEvent, ApiDebugStatus.DEBUGGING)
+                        .andThen(Completable.defer(() -> {
+                            logger.info("Sending request to debug");
+                            HttpClient httpClient = vertx.createHttpClient(buildClientOptions());
 
-                    logger.info("Sending request to debug");
-                    HttpClient httpClient = vertx.createHttpClient(buildClientOptions());
-
-                    httpClient
-                        .rxRequest(
-                            new RequestOptions()
-                                .setMethod(HttpMethod.valueOf(debugApiRequest.getMethod()))
-                                .setHeaders(buildHeaders(debugApi, debugApiRequest))
-                                .setURI(debugApi.extractUri())
-                                .setTimeout(debugHttpClientConfiguration.getRequestTimeout())
-                        )
-                        .map(httpClientRequest ->
-                            // Always set chunked mode for gRPC transport
-                            httpClientRequest.setChunked(true)
-                        )
-                        .flatMap(httpClientRequest ->
-                            debugApiRequest.getBody() == null
-                                ? httpClientRequest.rxSend()
-                                : httpClientRequest.rxSend(debugApiRequest.getBody())
-                        )
-                        .doOnSuccess(httpClientResponse -> logger.debug("Response status: {}", httpClientResponse.statusCode()))
-                        .flatMap(io.vertx.rxjava3.core.http.HttpClientResponse::rxBody)
-                        .doFinally(httpClient::close)
+                            return httpClient
+                                .rxRequest(
+                                    new RequestOptions()
+                                        .setMethod(HttpMethod.valueOf(debugApiRequest.getMethod()))
+                                        .setHeaders(buildHeaders(debugApi, debugApiRequest))
+                                        .setURI(debugApi.extractUri())
+                                        .setTimeout(debugHttpClientConfiguration.getRequestTimeout())
+                                )
+                                .map(httpClientRequest ->
+                                    // Always set chunked mode for gRPC transport
+                                    httpClientRequest.setChunked(true)
+                                )
+                                .flatMap(httpClientRequest ->
+                                    debugApiRequest.getBody() == null
+                                        ? httpClientRequest.rxSend()
+                                        : httpClientRequest.rxSend(debugApiRequest.getBody())
+                                )
+                                .doOnSuccess(httpClientResponse -> logger.debug("Response status: {}", httpClientResponse.statusCode()))
+                                .flatMap(io.vertx.rxjava3.core.http.HttpClientResponse::rxBody)
+                                .doFinally(httpClient::close)
+                                .ignoreElement();
+                        }))
                         .subscribeOn(Schedulers.io())
                         .subscribe(
-                            body -> {
+                            () -> {
                                 logger.info("Debugging successful, removing the handler.");
                                 eventManager.publishEvent(SecretDiscoveryEventType.REVOKE, secretDiscoveryEvent);
                                 reactorHandlerRegistry.remove(debugApi);
@@ -154,13 +157,13 @@ public class DebugReactorEventListener extends ReactorEventListener {
                                 logger.error("Debugging API has failed, removing the handler.", throwable);
                                 eventManager.publishEvent(SecretDiscoveryEventType.REVOKE, secretDiscoveryEvent);
                                 reactorHandlerRegistry.remove(debugApi);
-                                failEvent(debugEvent);
+                                failEventAsync(debugEvent).subscribe();
                             }
                         );
                 } catch (TechnicalException e) {
                     logger.error("An error occurred when debugging api for event {}, removing the handler.", debugApi.getEventId(), e);
                     reactorHandlerRegistry.remove(debugApi);
-                    failEvent(debugEvent);
+                    failEventAsync(debugEvent).subscribe();
                 }
             }
         }
@@ -288,6 +291,25 @@ public class DebugReactorEventListener extends ReactorEventListener {
             headers.forEach(headersMultiMap::set);
         }
         return headersMultiMap;
+    }
+
+    protected Completable failEventAsync(io.gravitee.repository.management.model.Event debugEvent) {
+        return Completable.fromCallable(() -> {
+            if (debugEvent != null) {
+                updateEvent(debugEvent, ApiDebugStatus.ERROR);
+            }
+            return null;
+        })
+        .subscribeOn(Schedulers.io())
+        .doOnError(throwable -> logger.error("Error when updating event {} with ERROR status", debugEvent != null ? debugEvent.getId() : "null", throwable))
+        .onErrorComplete();
+    }
+
+    protected Completable updateEventAsync(io.gravitee.repository.management.model.Event debugEvent, ApiDebugStatus apiDebugStatus) {
+        return Completable.fromCallable(() -> {
+            updateEvent(debugEvent, apiDebugStatus);
+            return null;
+        }).subscribeOn(Schedulers.io());
     }
 
     private void failEvent(io.gravitee.repository.management.model.Event debugEvent) {
