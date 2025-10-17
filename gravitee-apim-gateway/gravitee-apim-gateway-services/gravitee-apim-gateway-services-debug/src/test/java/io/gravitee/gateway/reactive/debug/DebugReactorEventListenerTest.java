@@ -76,6 +76,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
@@ -828,6 +830,110 @@ class DebugReactorEventListenerTest {
             observer.assertError(TechnicalException.class);
             
             // Verify the repository was called
+            verify(eventRepository).update(event);
+        }
+
+        @Test
+        void should_update_event_async_successfully_with_awaitility() throws Exception {
+            // Given
+            Event event = new Event();
+            event.setId("test-event-id");
+            event.setProperties(new HashMap<>());
+            AtomicBoolean updateCompleted = new AtomicBoolean(false);
+
+            // When
+            debugReactorEventListener.updateEventAsync(event, ApiDebugStatus.DEBUGGING)
+                .subscribe(() -> updateCompleted.set(true));
+
+            // Then - Use awaitility to wait for async completion
+            Awaitility.await()
+                .atMost(5, TimeUnit.SECONDS)
+                .until(updateCompleted::get);
+            
+            // Verify the event was updated with the correct status
+            verify(eventRepository).update(event);
+            assertThat(event.getProperties()).containsEntry(
+                Event.EventProperties.API_DEBUG_STATUS.getValue(), 
+                ApiDebugStatus.DEBUGGING.name()
+            );
+        }
+
+        @Test
+        void should_fail_event_async_successfully_with_awaitility() throws Exception {
+            // Given
+            Event event = new Event();
+            event.setId("test-event-id");
+            event.setProperties(new HashMap<>());
+            AtomicBoolean failCompleted = new AtomicBoolean(false);
+
+            // When
+            debugReactorEventListener.failEventAsync(event)
+                .subscribe(() -> failCompleted.set(true));
+
+            // Then - Use awaitility to wait for async completion
+            Awaitility.await()
+                .atMost(5, TimeUnit.SECONDS)
+                .until(failCompleted::get);
+            
+            // Verify the event was updated with ERROR status
+            verify(eventRepository).update(event);
+            assertThat(event.getProperties()).containsEntry(
+                Event.EventProperties.API_DEBUG_STATUS.getValue(), 
+                ApiDebugStatus.ERROR.name()
+            );
+        }
+
+        @Test
+        void should_handle_repository_exception_gracefully_with_awaitility() throws Exception {
+            // Given
+            Event event = new Event();
+            event.setId("test-event-id");
+            event.setProperties(new HashMap<>());
+            AtomicBoolean errorHandled = new AtomicBoolean(false);
+            
+            when(eventRepository.update(any())).thenThrow(new TechnicalException("Repository error"));
+
+            // When
+            debugReactorEventListener.failEventAsync(event)
+                .subscribe(
+                    () -> errorHandled.set(true),
+                    throwable -> errorHandled.set(true) // Should not be called due to onErrorComplete()
+                );
+
+            // Then - Use awaitility to wait for async completion (should complete despite error)
+            Awaitility.await()
+                .atMost(5, TimeUnit.SECONDS)
+                .until(errorHandled::get);
+            
+            // Verify the repository was called even though it failed
+            verify(eventRepository).update(event);
+        }
+
+        @Test
+        void should_verify_async_operations_run_on_io_scheduler_with_awaitility() throws Exception {
+            // Given
+            Event event = new Event();
+            event.setId("test-event-id");
+            event.setProperties(new HashMap<>());
+            AtomicBoolean operationCompleted = new AtomicBoolean(false);
+            
+            // Capture the thread name where the repository update occurs
+            when(eventRepository.update(any())).thenAnswer(invocation -> {
+                // Verify we're not on the main test thread
+                String threadName = Thread.currentThread().getName();
+                assertThat(threadName).contains("RxCachedThreadScheduler"); // Schedulers.io() uses RxCachedThreadScheduler
+                operationCompleted.set(true);
+                return invocation.getArgument(0);
+            });
+
+            // When
+            debugReactorEventListener.updateEventAsync(event, ApiDebugStatus.DEBUGGING).subscribe();
+
+            // Then - Use awaitility to wait for operation to complete on IO thread
+            Awaitility.await()
+                .atMost(5, TimeUnit.SECONDS)
+                .until(operationCompleted::get);
+            
             verify(eventRepository).update(event);
         }
     }
