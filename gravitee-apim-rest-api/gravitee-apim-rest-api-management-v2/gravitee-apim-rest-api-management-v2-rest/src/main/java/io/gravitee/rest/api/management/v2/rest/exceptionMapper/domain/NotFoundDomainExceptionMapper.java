@@ -20,8 +20,10 @@ import io.gravitee.apim.core.exception.ValidationDomainException;
 import io.gravitee.rest.api.management.v2.rest.model.Error;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.ext.Provider;
 import java.util.Map;
 
+@Provider
 public class NotFoundDomainExceptionMapper extends AbstractDomainExceptionMapper<NotFoundDomainException> {
 
     @Override
