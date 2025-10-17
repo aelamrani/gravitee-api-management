@@ -293,7 +293,7 @@ public class DebugReactorEventListener extends ReactorEventListener {
         return headersMultiMap;
     }
 
-    private Completable failEventAsync(io.gravitee.repository.management.model.Event debugEvent) {
+    protected Completable failEventAsync(io.gravitee.repository.management.model.Event debugEvent) {
         return Completable.fromCallable(() -> {
             if (debugEvent != null) {
                 updateEvent(debugEvent, ApiDebugStatus.ERROR);
@@ -305,7 +305,7 @@ public class DebugReactorEventListener extends ReactorEventListener {
         .onErrorComplete();
     }
 
-    private Completable updateEventAsync(io.gravitee.repository.management.model.Event debugEvent, ApiDebugStatus apiDebugStatus) {
+    protected Completable updateEventAsync(io.gravitee.repository.management.model.Event debugEvent, ApiDebugStatus apiDebugStatus) {
         return Completable.fromCallable(() -> {
             updateEvent(debugEvent, apiDebugStatus);
             return null;
