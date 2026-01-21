@@ -1,0 +1,9 @@
+ @Test
+ public void testGatewayTagging() {
+     // Existing test cases
+
+    // New test case for trimmed gateway tag
+    System.setProperty("GATEWAY_TAG", "  test-tag  ");
+    String tag = GatewayTagging.getTag();
+    assertEquals("test-tag", tag);
+}
