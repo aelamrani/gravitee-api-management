@@ -1,0 +1,6 @@
+ # Gateway Tagging Configuration
+ 
+Ensure the environment variable `GATEWAY_TAG` is set correctly. It should not contain leading or trailing spaces.
+ 
+ Example:
+ 
