@@ -1,0 +1,10 @@
+// TODO: Implement fix
+--- a/path/to/gatewayManagementFile
++++ b/path/to/gatewayManagementFile
+@@ -45,6 +45,10 @@
+ // Existing code
++// Fix: Enable tagging for default organization gateway
++if (gateway.isDefaultOrganization()) {
++    gateway.enableTagging();
++}
+ // More existing code
