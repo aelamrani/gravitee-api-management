@@ -1,0 +1,11 @@
+ public void tagGateway(Gateway gateway) {
+     if (gateway.isDefaultOrganizationGateway()) {
+        // Ensure tagging functionality is applied to the default organization gateway
+        applyDefaultTag(gateway);
+    }
+    // Existing tagging logic
+ }
+ 
+private void applyDefaultTag(Gateway gateway) {
+    gateway.addTag("default-org");
+}
