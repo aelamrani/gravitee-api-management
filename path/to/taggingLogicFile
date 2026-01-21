@@ -1,0 +1,6 @@
+     // Existing tagging logic
+    if (isDefaultGateway() && environmentSupportsTagging()) {
+        applyEnvironmentSpecificTag();
+    } else if (isDefaultGateway()) {
+        applyDefaultTag();
+     }
