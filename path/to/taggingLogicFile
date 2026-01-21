@@ -1,0 +1,6 @@
+ if (organization.equals("DEFAULT")) {
+    // Correct logic to allow tagging
+    return true;
+ }
+// Additional logic to handle other cases
+return handleOtherOrganizations(organization);
