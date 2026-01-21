@@ -1,0 +1,19 @@
+import org.junit.Test;
+import static org.junit.Assert.*;
+
+public class TaggingLogicTest {
+
+    @Test
+    public void testDefaultOrganizationTagging() {
+        TaggingLogic taggingLogic = new TaggingLogic();
+        boolean result = taggingLogic.canTag("DEFAULT");
+        assertTrue("DEFAULT organization should be taggable", result);
+    }
+
+    @Test
+    public void testOtherOrganizationTagging() {
+        TaggingLogic taggingLogic = new TaggingLogic();
+        boolean result = taggingLogic.canTag("OTHER");
+        assertFalse("OTHER organization should not be taggable by default", result);
+    }
+}
