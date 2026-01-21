@@ -1,0 +1,10 @@
+// TODO: Implement fix
+--- a/path/to/gatewayManagementFile
++++ b/path/to/gatewayManagementFile
+@@ -45,6 +45,10 @@
+     // Existing code for gateway management
++    if (gateway.isDefaultOrganization()) {
++        tagGateway(gateway);
++    }
++
+     // Continue with other logic
