@@ -1,0 +1,7 @@
+ public void manageOrganization(String organization) {
+     // Existing management logic
+    // Ensure compatibility with updated tagging logic
+    updateTaggingForOrganization(organization);
+ }
+
+ private void updateTaggingForOrganization(String organization) {
