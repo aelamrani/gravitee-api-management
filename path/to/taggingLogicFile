@@ -1,0 +1,5 @@
+     // Retrieve environment variable for gateway tagging
+    String tag = System.getenv("GATEWAY_TAG").trim();
+     if (tag == null || tag.isEmpty()) {
+         throw new ConfigurationException("Gateway tag is not set");
+     }
