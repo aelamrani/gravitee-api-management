@@ -1,0 +1,4 @@
+ # Default organization gateway configuration
+ gateway.default=true
+gateway.tagging.enabled=true
+gateway.environment.tags=dev,prod
