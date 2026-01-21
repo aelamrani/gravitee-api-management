@@ -1,0 +1,5 @@
+     // Check for sharding tag
+    String shardingTag = System.getenv("SHARDING_TAG").trim();
+     if (shardingTag != null && !shardingTag.isEmpty()) {
+         applySharding(shardingTag);
+     }
