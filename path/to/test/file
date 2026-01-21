@@ -1,0 +1,10 @@
+ @Test
+ public void testEnvironmentVariableHandling() {
+     // Existing test cases
+
+    // New test case for default organization gateway tagging
+    Gateway defaultGateway = new Gateway();
+    defaultGateway.setDefaultOrganizationGateway(true);
+    tagGateway(defaultGateway);
+    assertTrue(defaultGateway.hasTag("default-org"));
+ }
