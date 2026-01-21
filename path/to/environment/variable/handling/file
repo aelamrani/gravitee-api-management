@@ -1,0 +1,8 @@
+ if (envVar != null) {
+    gatewayConfig.setFilter(parseEnvironmentVariable(envVar));
+ }
+ 
+ private String parseEnvironmentVariable(String envVar) {
+    // Add logic to correctly parse and validate the environment variable
+    return envVar.trim();
+ }
