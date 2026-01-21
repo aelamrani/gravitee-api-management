@@ -1,0 +1,11 @@
+     @Test
+     public void testDefaultGatewayTagging() {
+        // New test case for environment-specific tagging
+        setEnvironment('dev');
+        tagDefaultGateway();
+        assertTrue(isTagApplied('dev'));
+
+        setEnvironment('prod');
+        tagDefaultGateway();
+        assertTrue(isTagApplied('prod'));
+     }
