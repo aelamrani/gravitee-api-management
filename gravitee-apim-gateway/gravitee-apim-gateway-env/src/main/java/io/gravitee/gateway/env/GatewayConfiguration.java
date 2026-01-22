@@ -137,7 +137,12 @@ public class GatewayConfiguration implements InitializingBean {
         }
     }
 
-    public Optional<List<String>> organizations() {
+    public boolean hasMatchingTags(Set<String> tags) {
+        if (shardingTags().isEmpty()) {
+            return true;
+        }
+        return EnvironmentUtils.hasMatchingTags(shardingTags(), tags);
+    }
         return organizations;
     }
 
