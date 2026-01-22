@@ -42,6 +42,9 @@ import javax.net.ssl.SSLSession;
  */
 public abstract class AbstractRequest implements MutableRequest, HttpRequestInternal {
 
+    private static final String WEBSOCKET_UPGRADE = "websocket";
+    private static final String UPGRADE_HEADER = "Upgrade";
+
     protected BufferFlow bufferFlow;
     protected MessageFlow<Message> messageFlow;
     protected String id;
@@ -187,7 +190,17 @@ public abstract class AbstractRequest implements MutableRequest, HttpRequestInte
 
     @Override
     public boolean isWebSocket() {
-        return webSocket != null;
+        if (webSocket != null) {
+            return true;
+        }
+        // Also check for WebSocket upgrade request headers
+        if (headers != null) {
+            String upgradeHeader = headers.get(UPGRADE_HEADER);
+            if (upgradeHeader != null && WEBSOCKET_UPGRADE.equalsIgnoreCase(upgradeHeader)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
