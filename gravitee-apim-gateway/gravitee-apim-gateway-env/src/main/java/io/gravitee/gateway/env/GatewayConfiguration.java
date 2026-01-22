@@ -73,12 +73,12 @@ public class GatewayConfiguration implements InitializingBean {
 
     private void initShardingTags() {
         String systemPropertyTags = System.getProperty(SHARDING_TAGS_SYSTEM_PROPERTY);
-        String tags = systemPropertyTags == null ? configuration.getProperty(SHARDING_TAGS_SYSTEM_PROPERTY) : systemPropertyTags;
-        if (tags != null && !tags.isEmpty()) {
-            shardingTags = Optional.of(Arrays.asList(tags.split(SHARDING_TAGS_SEPARATOR)));
-        } else {
-            shardingTags = Optional.empty();
-        }
+        this.initShardingTags();
+        this.initZone();
+        this.initTenant();
+        this.initOrganizations();
+        this.initEnvironments();
+        this.initVertxWebsocket();
     }
 
     public Optional<List<String>> shardingTags() {
@@ -164,4 +164,8 @@ public class GatewayConfiguration implements InitializingBean {
     public boolean allowOverlappingApiContexts() {
         return configuration.getProperty(ALLOW_OVERLAPPING_API_CONTEXTS_PROPERTY, Boolean.class, false);
     }
+    public boolean hasMatchingTags(Set<String> tags) {
+        return EnvironmentUtils.hasMatchingTags(shardingTags(), tags);
+    }
+
 }
