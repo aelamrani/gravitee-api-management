@@ -130,4 +130,9 @@ public class DefaultManagedEndpointGroup implements ManagedEndpointGroup {
     public ApiType supportedApi() {
         return supportedApi;
     }
+    @Override
+    public Set<ConnectorMode> supportedModes() {
+        return supportedModes == null ? Collections.emptySet() : supportedModes;
+    }
+
 }

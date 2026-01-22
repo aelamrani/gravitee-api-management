@@ -164,4 +164,8 @@ public class GatewayConfiguration implements InitializingBean {
     public boolean allowOverlappingApiContexts() {
         return configuration.getProperty(ALLOW_OVERLAPPING_API_CONTEXTS_PROPERTY, Boolean.class, false);
     }
+    public boolean hasMatchingTags(Set<String> tags) {
+        return EnvironmentUtils.hasMatchingTags(shardingTags(), tags);
+    }
+
 }
