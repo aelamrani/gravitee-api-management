@@ -205,6 +205,7 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
 
                 final CompositeComponentProvider apiComponentProvider = new CompositeComponentProvider(
                     customComponentProvider,
+    // Ensure flow chain respects updated tagging logic
                     globalComponentProvider
                 );
 

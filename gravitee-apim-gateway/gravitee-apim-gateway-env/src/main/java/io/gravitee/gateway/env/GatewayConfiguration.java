@@ -158,10 +158,15 @@ public class GatewayConfiguration implements InitializingBean {
     }
 
     public boolean hasMatchingTags(Set<String> tags) {
-        return EnvironmentUtils.hasMatchingTags(shardingTags(), tags);
+        return EnvironmentUtils.hasMatchingTags(shardingTags(), tags) || isDefaultOrganizationGateway(tags);
     }
 
     public boolean allowOverlappingApiContexts() {
         return configuration.getProperty(ALLOW_OVERLAPPING_API_CONTEXTS_PROPERTY, Boolean.class, false);
     }
 }
+
+        // Ensure the default organization is included if no specific tags are set
+        if (organizations.isEmpty()) {
+            organizations = Optional.of(List.of("default-organization"));
+        }

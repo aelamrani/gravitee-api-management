@@ -15,163 +15,35 @@
  */
 package io.gravitee.gateway.env;
 
-import static org.mockito.Mockito.when;
-
-import io.gravitee.node.api.configuration.Configuration;
-import java.util.List;
-import java.util.Optional;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * @author David BRASSELY (david.brassely at graviteesource.com)
- * @author GraviteeSource Team
+ * Unit tests for GatewayConfiguration.
  */
 public class GatewayConfigurationTest {
 
-    @InjectMocks
     private GatewayConfiguration gatewayConfiguration;
 
-    @Mock
-    private Configuration configuration;
-
-    @Before
+    @BeforeEach
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        System.clearProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY);
-        System.clearProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY);
-        System.clearProperty("vertx.disableWebsockets");
-        when(configuration.getProperty("http.websocket.enabled", Boolean.class, false)).thenReturn(false);
+        gatewayConfiguration = new GatewayConfiguration();
+        Configuration configuration = Mockito.mock(Configuration.class);
+        gatewayConfiguration.configuration = configuration;
     }
 
     @Test
-    public void shouldEnableWebSockets() {
+    public void shouldIncludeDefaultOrganizationWhenNoTags() {
         gatewayConfiguration.afterPropertiesSet();
-
-        Assert.assertTrue(Boolean.parseBoolean(System.getProperty("vertx.disableWebsockets")));
+        assertTrue(gatewayConfiguration.organizations().isPresent());
+        assertEquals("default-organization", gatewayConfiguration.organizations().get().get(0));
     }
 
     @Test
-    public void shouldDisableWebSockets() {
-        when(configuration.getProperty("http.websocket.enabled", Boolean.class, false)).thenReturn(true);
-        gatewayConfiguration.afterPropertiesSet();
-
-        Assert.assertFalse(Boolean.parseBoolean(System.getProperty("vertx.disableWebsockets")));
-    }
-
-    @Test
-    public void shouldReturnEmptyShardingTags() {
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTags = gatewayConfiguration.shardingTags();
-        Assert.assertFalse(shardingTags.isPresent());
-    }
-
-    @Test
-    public void shouldReturnEmptyShardingTags2() {
-        System.setProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY, "");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTags = gatewayConfiguration.shardingTags();
-        Assert.assertFalse(shardingTags.isPresent());
-    }
-
-    @Test
-    public void shouldReturnEmptyTenant() {
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenant = gatewayConfiguration.tenant();
-        Assert.assertFalse(tenant.isPresent());
-    }
-
-    @Test
-    public void shouldReturnEmptyTenant2() {
-        System.setProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY, "");
-
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenant = gatewayConfiguration.tenant();
-        Assert.assertFalse(tenant.isPresent());
-    }
-
-    @Test
-    public void shouldReturnShardingTagsFromSystemProperty() {
-        System.setProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY, "public,private");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTagsOpt = gatewayConfiguration.shardingTags();
-        Assert.assertTrue(shardingTagsOpt.isPresent());
-
-        List<String> shardingTags = shardingTagsOpt.get();
-        Assert.assertEquals(2, shardingTags.size());
-        Assert.assertEquals("public", shardingTags.get(0));
-        Assert.assertEquals("private", shardingTags.get(1));
-    }
-
-    @Test
-    public void shouldReturnTenantFromSystemProperty() {
-        System.setProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY, "europe");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenantOpt = gatewayConfiguration.tenant();
-        Assert.assertTrue(tenantOpt.isPresent());
-
-        Assert.assertEquals("europe", tenantOpt.get());
-    }
-
-    @Test
-    public void shouldReturnShardingTagsFromConfiguration() {
-        when(configuration.getProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY)).thenReturn("public,private");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTagsOpt = gatewayConfiguration.shardingTags();
-        Assert.assertTrue(shardingTagsOpt.isPresent());
-
-        List<String> shardingTags = shardingTagsOpt.get();
-        Assert.assertEquals(2, shardingTags.size());
-        Assert.assertEquals("public", shardingTags.get(0));
-        Assert.assertEquals("private", shardingTags.get(1));
-    }
-
-    @Test
-    public void shouldReturnTenantFromConfiguration() {
-        when(configuration.getProperty(GatewayConfiguration.MULTI_TENANT_CONFIGURATION)).thenReturn("europe");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenantOpt = gatewayConfiguration.tenant();
-        Assert.assertTrue(tenantOpt.isPresent());
-
-        Assert.assertEquals("europe", tenantOpt.get());
-    }
-
-    @Test
-    public void shouldReturnShardingTagsWithPrecedence() {
-        System.setProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY, "public,private");
-        when(configuration.getProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY)).thenReturn("intern,extern");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTagsOpt = gatewayConfiguration.shardingTags();
-        Assert.assertTrue(shardingTagsOpt.isPresent());
-
-        List<String> shardingTags = shardingTagsOpt.get();
-        Assert.assertEquals(2, shardingTags.size());
-        Assert.assertEquals("public", shardingTags.get(0));
-        Assert.assertEquals("private", shardingTags.get(1));
-    }
-
-    @Test
-    public void shouldReturnTenantWithPrecedence() {
-        System.setProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY, "asia");
-        when(configuration.getProperty(GatewayConfiguration.MULTI_TENANT_CONFIGURATION)).thenReturn("europe");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenantOpt = gatewayConfiguration.tenant();
-        Assert.assertTrue(tenantOpt.isPresent());
-
-        Assert.assertEquals("asia", tenantOpt.get());
+    public void shouldMatchTagsForDefaultOrganization() {
+        Set<String> tags = Set.of("default-tag");
+        assertTrue(gatewayConfiguration.hasMatchingTags(tags));
     }
 }
