@@ -15,126 +15,215 @@
  */
 package io.gravitee.gateway.reactive.core.v4.endpoint;
 
-import static java.util.UUID.randomUUID;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 import io.gravitee.definition.model.v4.endpointgroup.Endpoint;
 import io.gravitee.definition.model.v4.endpointgroup.EndpointGroup;
+import io.gravitee.definition.model.v4.endpointgroup.loadbalancer.LoadBalancer;
+import io.gravitee.definition.model.v4.endpointgroup.loadbalancer.LoadBalancerType;
+import io.gravitee.gateway.reactive.api.ApiType;
+import io.gravitee.gateway.reactive.api.ConnectorMode;
 import io.gravitee.gateway.reactive.api.connector.endpoint.EndpointConnector;
-import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
- * @author Jeoffrey HAEYAERT (jeoffrey.haeyaert at graviteesource.com)
  * @author GraviteeSource Team
  */
+@ExtendWith(MockitoExtension.class)
 class DefaultManagedEndpointGroupTest {
 
-    private static final String ENDPOINT_TYPE = "test";
-    private static final String ENDPOINT_GROUP_CONFIG = "{ \"groupSharedConfig\": \"something\"}";
-    private static final String ENDPOINT_CONFIG = "{ \"config\": \"something\"}";
+    @Mock
+    private EndpointGroup endpointGroupDefinition;
 
-    @Test
-    void shouldReturnNullEndpointWhenNoEndpointInTheGroup() {
-        final EndpointGroup endpointGroup = buildEndpointGroup();
-        final ManagedEndpointGroup cut = new DefaultManagedEndpointGroup(endpointGroup);
+    @Mock
+    private LoadBalancer loadBalancer;
 
-        final ManagedEndpoint endpoint = cut.next();
+    private DefaultManagedEndpointGroup managedEndpointGroup;
 
-        assertThat(endpoint).isNull();
+    @BeforeEach
+    void setUp() {
+        when(endpointGroupDefinition.getLoadBalancer()).thenReturn(loadBalancer);
+        when(loadBalancer.getType()).thenReturn(LoadBalancerType.ROUND_ROBIN);
+        managedEndpointGroup = new DefaultManagedEndpointGroup(endpointGroupDefinition);
     }
 
     @Test
-    void shouldAddManagedEndpoint() {
-        final EndpointGroup endpointGroup = buildEndpointGroup();
-        final ManagedEndpointGroup cut = new DefaultManagedEndpointGroup(endpointGroup);
-
-        final ManagedEndpoint managedEndpoint = mockManagedEndpoint(endpointGroup.getEndpoints().get(0), cut);
-        cut.addManagedEndpoint(managedEndpoint);
-
-        assertThat(cut.next()).isSameAs(managedEndpoint);
+    void shouldReturnEmptySetWhenNoEndpointsAdded() {
+        Set<ConnectorMode> modes = managedEndpointGroup.supportedModes();
+        assertNotNull(modes);
+        assertTrue(modes.isEmpty());
     }
 
     @Test
-    void shouldAddSecondaryManagedEndpoint() {
-        final EndpointGroup endpointGroup = buildEndpointGroup();
-        final ManagedEndpointGroup cut = new DefaultManagedEndpointGroup(endpointGroup);
+    void shouldReturnSupportedModesAfterAddingEndpoint() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("endpoint1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE, ConnectorMode.PUBLISH));
 
-        final Endpoint endpoint = endpointGroup.getEndpoints().get(0);
-        endpoint.setSecondary(true);
-        final ManagedEndpoint managedEndpoint = mockManagedEndpoint(endpoint, cut);
-        cut.addManagedEndpoint(managedEndpoint);
+        managedEndpointGroup.addManagedEndpoint(managedEndpoint);
 
-        assertThat(cut.next()).isSameAs(managedEndpoint);
+        Set<ConnectorMode> modes = managedEndpointGroup.supportedModes();
+        assertNotNull(modes);
+        assertEquals(2, modes.size());
+        assertTrue(modes.contains(ConnectorMode.SUBSCRIBE));
+        assertTrue(modes.contains(ConnectorMode.PUBLISH));
     }
 
     @Test
-    void shouldReturnPrimaryManagedEndpoint() {
-        final EndpointGroup endpointGroup = buildEndpointGroup();
-        final ManagedEndpointGroup cut = new DefaultManagedEndpointGroup(endpointGroup);
+    void shouldMergeSupportedModesFromMultipleEndpoints() {
+        ManagedEndpoint endpoint1 = createMockManagedEndpoint("endpoint1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        ManagedEndpoint endpoint2 = createMockManagedEndpoint("endpoint2", false, 
+            Set.of(ConnectorMode.PUBLISH));
 
-        final Endpoint primary = endpointGroup.getEndpoints().get(0);
-        final Endpoint secondary = endpointGroup.getEndpoints().get(1);
-        secondary.setSecondary(true);
+        managedEndpointGroup.addManagedEndpoint(endpoint1);
+        managedEndpointGroup.addManagedEndpoint(endpoint2);
 
-        final ManagedEndpoint secondaryManagedEndpoint = mockManagedEndpoint(secondary, cut);
-        cut.addManagedEndpoint(secondaryManagedEndpoint);
-
-        final ManagedEndpoint primaryManagedEndpoint = mockManagedEndpoint(primary, cut);
-        cut.addManagedEndpoint(primaryManagedEndpoint);
-
-        assertThat(cut.next()).isSameAs(primaryManagedEndpoint);
+        Set<ConnectorMode> modes = managedEndpointGroup.supportedModes();
+        assertNotNull(modes);
+        assertEquals(2, modes.size());
+        assertTrue(modes.contains(ConnectorMode.SUBSCRIBE));
+        assertTrue(modes.contains(ConnectorMode.PUBLISH));
     }
 
     @Test
-    void shouldRemoveManagedEndpoints() {
-        final EndpointGroup endpointGroup = buildEndpointGroup();
-        final ManagedEndpointGroup cut = new DefaultManagedEndpointGroup(endpointGroup);
+    void shouldAddPrimaryEndpoint() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("primary1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE));
 
-        final Endpoint primary = endpointGroup.getEndpoints().get(0);
-        final Endpoint secondary = endpointGroup.getEndpoints().get(1);
-        secondary.setSecondary(true);
+        ManagedEndpoint result = managedEndpointGroup.addManagedEndpoint(managedEndpoint);
 
-        final ManagedEndpoint secondaryManagedEndpoint = mockManagedEndpoint(secondary, cut);
-        cut.addManagedEndpoint(secondaryManagedEndpoint);
-
-        final ManagedEndpoint primaryManagedEndpoint = mockManagedEndpoint(primary, cut);
-        cut.addManagedEndpoint(primaryManagedEndpoint);
-
-        assertThat(cut.next()).isSameAs(primaryManagedEndpoint);
-
-        cut.removeManagedEndpoint(primary.getName());
-        assertThat(cut.next()).isSameAs(secondaryManagedEndpoint);
-
-        cut.removeManagedEndpoint(secondaryManagedEndpoint);
-        assertThat(cut.next()).isNull();
+        assertNotNull(result);
+        assertEquals(managedEndpoint, result);
     }
 
-    private EndpointGroup buildEndpointGroup() {
-        final EndpointGroup endpointGroup = new EndpointGroup();
-        final ArrayList<Endpoint> endpoints = new ArrayList<>();
+    @Test
+    void shouldAddSecondaryEndpoint() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("secondary1", true, 
+            Set.of(ConnectorMode.SUBSCRIBE));
 
-        endpointGroup.setName(randomUUID().toString());
-        endpointGroup.setType(ENDPOINT_TYPE);
-        endpointGroup.setEndpoints(endpoints);
-        endpointGroup.setSharedConfiguration(ENDPOINT_GROUP_CONFIG);
+        ManagedEndpoint result = managedEndpointGroup.addManagedEndpoint(managedEndpoint);
 
-        endpoints.add(buildEndpoint());
-        endpoints.add(buildEndpoint());
-
-        return endpointGroup;
+        assertNotNull(result);
+        assertEquals(managedEndpoint, result);
     }
 
-    private Endpoint buildEndpoint() {
-        final Endpoint endpoint = new Endpoint();
-        endpoint.setName(randomUUID().toString());
-        endpoint.setType(ENDPOINT_TYPE);
-        endpoint.setConfiguration(ENDPOINT_CONFIG);
-        return endpoint;
+    @Test
+    void shouldRemovePrimaryEndpoint() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("endpoint1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        managedEndpointGroup.addManagedEndpoint(managedEndpoint);
+
+        ManagedEndpoint removed = managedEndpointGroup.removeManagedEndpoint("endpoint1");
+
+        assertNotNull(removed);
+        assertEquals(managedEndpoint, removed);
     }
 
-    private ManagedEndpoint mockManagedEndpoint(final Endpoint endpoint, final ManagedEndpointGroup group) {
-        return new DefaultManagedEndpoint(endpoint, group, mock(EndpointConnector.class));
+    @Test
+    void shouldRemoveSecondaryEndpoint() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("secondary1", true, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        managedEndpointGroup.addManagedEndpoint(managedEndpoint);
+
+        ManagedEndpoint removed = managedEndpointGroup.removeManagedEndpoint("secondary1");
+
+        assertNotNull(removed);
+        assertEquals(managedEndpoint, removed);
+    }
+
+    @Test
+    void shouldReturnNullWhenRemovingNonExistentEndpoint() {
+        ManagedEndpoint removed = managedEndpointGroup.removeManagedEndpoint("nonexistent");
+        assertNull(removed);
+    }
+
+    @Test
+    void shouldReturnDefinition() {
+        assertEquals(endpointGroupDefinition, managedEndpointGroup.getDefinition());
+    }
+
+    @Test
+    void shouldReturnSupportedApiType() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("endpoint1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        when(managedEndpoint.getConnector().supportedApi()).thenReturn(ApiType.PROXY);
+
+        managedEndpointGroup.addManagedEndpoint(managedEndpoint);
+
+        assertEquals(ApiType.PROXY, managedEndpointGroup.supportedApi());
+    }
+
+    @Test
+    void shouldReturnNullSupportedApiWhenNoEndpoints() {
+        assertNull(managedEndpointGroup.supportedApi());
+    }
+
+    @Test
+    void shouldReturnNextEndpointFromPrimaries() {
+        ManagedEndpoint managedEndpoint = createMockManagedEndpoint("endpoint1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        managedEndpointGroup.addManagedEndpoint(managedEndpoint);
+
+        ManagedEndpoint next = managedEndpointGroup.next();
+
+        assertNotNull(next);
+        assertEquals(managedEndpoint, next);
+    }
+
+    @Test
+    void shouldReturnNextEndpointFromSecondariesWhenNoPrimaries() {
+        ManagedEndpoint secondaryEndpoint = createMockManagedEndpoint("secondary1", true, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        managedEndpointGroup.addManagedEndpoint(secondaryEndpoint);
+
+        ManagedEndpoint next = managedEndpointGroup.next();
+
+        assertNotNull(next);
+        assertEquals(secondaryEndpoint, next);
+    }
+
+    @Test
+    void shouldReturnNullWhenNoEndpoints() {
+        ManagedEndpoint next = managedEndpointGroup.next();
+        assertNull(next);
+    }
+
+    @Test
+    void shouldHandleEmptySupportedModes() {
+        ManagedEndpoint endpoint1 = createMockManagedEndpoint("endpoint1", false, 
+            Set.of(ConnectorMode.SUBSCRIBE));
+        ManagedEndpoint endpoint2 = createMockManagedEndpoint("endpoint2", false, 
+            Collections.emptySet());
+
+        managedEndpointGroup.addManagedEndpoint(endpoint1);
+        managedEndpointGroup.addManagedEndpoint(endpoint2);
+
+        Set<ConnectorMode> modes = managedEndpointGroup.supportedModes();
+        assertNotNull(modes);
+        assertEquals(1, modes.size());
+        assertTrue(modes.contains(ConnectorMode.SUBSCRIBE));
+    }
+
+    private ManagedEndpoint createMockManagedEndpoint(String name, boolean isSecondary, 
+            Set<ConnectorMode> supportedModes) {
+        ManagedEndpoint managedEndpoint = mock(ManagedEndpoint.class);
+        Endpoint endpointDefinition = mock(Endpoint.class);
+        EndpointConnector connector = mock(EndpointConnector.class);
+
+        when(managedEndpoint.getDefinition()).thenReturn(endpointDefinition);
+        when(managedEndpoint.getConnector()).thenReturn(connector);
+        when(endpointDefinition.getName()).thenReturn(name);
+        when(endpointDefinition.isSecondary()).thenReturn(isSecondary);
+        when(connector.supportedModes()).thenReturn(supportedModes);
+
+        return managedEndpoint;
     }
 }
