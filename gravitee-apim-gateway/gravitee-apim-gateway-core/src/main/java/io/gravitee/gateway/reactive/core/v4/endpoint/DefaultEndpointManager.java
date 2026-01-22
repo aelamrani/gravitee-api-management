@@ -149,7 +149,7 @@ public class DefaultEndpointManager extends AbstractService<EndpointManager> imp
         for (EndpointGroup endpointGroup : api.getEndpointGroups()) {
             final ManagedEndpointGroup managedEndpointGroup = createAndStartGroup(endpointGroup);
 
-            if (defaultGroup == null) {
+            if (defaultGroup == null && gatewayConfiguration.hasMatchingTags(api.getTags())) {
                 defaultGroup = managedEndpointGroup;
             }
         }
