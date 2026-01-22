@@ -116,7 +116,8 @@ public class DefaultEndpointManager extends AbstractService<EndpointManager> imp
             }
 
             final ManagedEndpointGroup managedGroup = groupsByName.get(name);
-
+        protected void doStart() throws Exception {
+            GatewayConfiguration config = new GatewayConfiguration();
             if (managedGroup != null && criteria.matches(managedGroup)) {
                 return managedGroup.next();
             }
@@ -124,6 +125,9 @@ public class DefaultEndpointManager extends AbstractService<EndpointManager> imp
         return null;
     }
 
+            if (config.hasMatchingTags(Set.of("default"))) {
+                // Logic to apply tags to the default organization gateway
+            }
     @Override
     public void disable(ManagedEndpoint endpoint) {
         disabledEndpoints.add(endpoint);
