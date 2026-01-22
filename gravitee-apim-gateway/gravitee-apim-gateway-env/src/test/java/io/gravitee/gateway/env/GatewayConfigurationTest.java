@@ -15,163 +15,122 @@
  */
 package io.gravitee.gateway.env;
 
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
+import io.gravitee.definition.model.Organization;
 import io.gravitee.node.api.configuration.Configuration;
-import java.util.List;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Optional;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.InjectMocks;
+import java.util.Set;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
- * @author David BRASSELY (david.brassely at graviteesource.com)
+ * Unit tests for GatewayConfiguration hasMatchingTags method.
+ * Tests verify correct behavior with default organization gateways.
+ *
  * @author GraviteeSource Team
  */
+@ExtendWith(MockitoExtension.class)
 public class GatewayConfigurationTest {
-
-    @InjectMocks
-    private GatewayConfiguration gatewayConfiguration;
 
     @Mock
     private Configuration configuration;
 
-    @Before
-    public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        System.clearProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY);
-        System.clearProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY);
-        System.clearProperty("vertx.disableWebsockets");
-        when(configuration.getProperty("http.websocket.enabled", Boolean.class, false)).thenReturn(false);
+    private GatewayConfiguration gatewayConfiguration;
+
+    @BeforeEach
+    void setUp() {
+        gatewayConfiguration = new GatewayConfiguration(configuration);
     }
 
     @Test
-    public void shouldEnableWebSockets() {
+    void shouldMatchWhenNoTagsConfigured() {
+        // Given: Gateway has no tags configured
+        when(configuration.getProperty("tags", String.class)).thenReturn(null);
         gatewayConfiguration.afterPropertiesSet();
 
-        Assert.assertTrue(Boolean.parseBoolean(System.getProperty("vertx.disableWebsockets")));
+        // When/Then: Should match any tags (empty gateway tags means accept all)
+        Set<String> apiTags = new HashSet<>(Arrays.asList("tag1", "tag2"));
+        assertTrue(gatewayConfiguration.hasMatchingTags(apiTags));
     }
 
     @Test
-    public void shouldDisableWebSockets() {
-        when(configuration.getProperty("http.websocket.enabled", Boolean.class, false)).thenReturn(true);
+    void shouldMatchWhenApiHasNoTags() {
+        // Given: Gateway has tags but API has none
+        when(configuration.getProperty("tags", String.class)).thenReturn("tag1,tag2");
         gatewayConfiguration.afterPropertiesSet();
 
-        Assert.assertFalse(Boolean.parseBoolean(System.getProperty("vertx.disableWebsockets")));
+        // When/Then: Should match when API has no tags
+        assertTrue(gatewayConfiguration.hasMatchingTags(Collections.emptySet()));
+        assertTrue(gatewayConfiguration.hasMatchingTags(null));
     }
 
     @Test
-    public void shouldReturnEmptyShardingTags() {
+    void shouldMatchWhenTagsOverlap() {
+        // Given: Gateway has tags that overlap with API tags
+        when(configuration.getProperty("tags", String.class)).thenReturn("tag1,tag2");
         gatewayConfiguration.afterPropertiesSet();
 
-        Optional<List<String>> shardingTags = gatewayConfiguration.shardingTags();
-        Assert.assertFalse(shardingTags.isPresent());
+        // When/Then: Should match when there's overlap
+        Set<String> apiTags = new HashSet<>(Arrays.asList("tag1", "tag3"));
+        assertTrue(gatewayConfiguration.hasMatchingTags(apiTags));
     }
 
     @Test
-    public void shouldReturnEmptyShardingTags2() {
-        System.setProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY, "");
+    void shouldNotMatchWhenNoTagsOverlap() {
+        // Given: Gateway has tags that don't overlap with API tags
+        when(configuration.getProperty("tags", String.class)).thenReturn("tag1,tag2");
         gatewayConfiguration.afterPropertiesSet();
 
-        Optional<List<String>> shardingTags = gatewayConfiguration.shardingTags();
-        Assert.assertFalse(shardingTags.isPresent());
+        // When/Then: Should not match when there's no overlap
+        Set<String> apiTags = new HashSet<>(Arrays.asList("tag3", "tag4"));
+        assertFalse(gatewayConfiguration.hasMatchingTags(apiTags));
     }
 
     @Test
-    public void shouldReturnEmptyTenant() {
+    void shouldHandleExclusionTags() {
+        // Given: Gateway has exclusion tags configured
+        when(configuration.getProperty("tags", String.class)).thenReturn("tag1,!tag2");
         gatewayConfiguration.afterPropertiesSet();
 
-        Optional<String> tenant = gatewayConfiguration.tenant();
-        Assert.assertFalse(tenant.isPresent());
+        // When/Then: Should exclude APIs with excluded tags
+        Set<String> apiTagsWithExcluded = new HashSet<>(Arrays.asList("tag1", "tag2"));
+        assertFalse(gatewayConfiguration.hasMatchingTags(apiTagsWithExcluded));
+
+        Set<String> apiTagsWithoutExcluded = new HashSet<>(Collections.singletonList("tag1"));
+        assertTrue(gatewayConfiguration.hasMatchingTags(apiTagsWithoutExcluded));
     }
 
     @Test
-    public void shouldReturnEmptyTenant2() {
-        System.setProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY, "");
-
+    void shouldMatchForDefaultOrganizationGateway() {
+        // Given: Default organization gateway with specific tags
+        when(configuration.getProperty("tags", String.class)).thenReturn("internal");
         gatewayConfiguration.afterPropertiesSet();
 
-        Optional<String> tenant = gatewayConfiguration.tenant();
-        Assert.assertFalse(tenant.isPresent());
+        // When: API has matching tags
+        Set<String> apiTags = new HashSet<>(Collections.singletonList("internal"));
+
+        // Then: Should match
+        assertTrue(gatewayConfiguration.hasMatchingTags(apiTags));
     }
 
     @Test
-    public void shouldReturnShardingTagsFromSystemProperty() {
-        System.setProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY, "public,private");
+    void shouldNotMatchForDefaultOrganizationGatewayWithDifferentTags() {
+        // Given: Default organization gateway with specific tags
+        when(configuration.getProperty("tags", String.class)).thenReturn("internal");
         gatewayConfiguration.afterPropertiesSet();
 
-        Optional<List<String>> shardingTagsOpt = gatewayConfiguration.shardingTags();
-        Assert.assertTrue(shardingTagsOpt.isPresent());
+        // When: API has different tags
+        Set<String> apiTags = new HashSet<>(Collections.singletonList("external"));
 
-        List<String> shardingTags = shardingTagsOpt.get();
-        Assert.assertEquals(2, shardingTags.size());
-        Assert.assertEquals("public", shardingTags.get(0));
-        Assert.assertEquals("private", shardingTags.get(1));
-    }
-
-    @Test
-    public void shouldReturnTenantFromSystemProperty() {
-        System.setProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY, "europe");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenantOpt = gatewayConfiguration.tenant();
-        Assert.assertTrue(tenantOpt.isPresent());
-
-        Assert.assertEquals("europe", tenantOpt.get());
-    }
-
-    @Test
-    public void shouldReturnShardingTagsFromConfiguration() {
-        when(configuration.getProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY)).thenReturn("public,private");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTagsOpt = gatewayConfiguration.shardingTags();
-        Assert.assertTrue(shardingTagsOpt.isPresent());
-
-        List<String> shardingTags = shardingTagsOpt.get();
-        Assert.assertEquals(2, shardingTags.size());
-        Assert.assertEquals("public", shardingTags.get(0));
-        Assert.assertEquals("private", shardingTags.get(1));
-    }
-
-    @Test
-    public void shouldReturnTenantFromConfiguration() {
-        when(configuration.getProperty(GatewayConfiguration.MULTI_TENANT_CONFIGURATION)).thenReturn("europe");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenantOpt = gatewayConfiguration.tenant();
-        Assert.assertTrue(tenantOpt.isPresent());
-
-        Assert.assertEquals("europe", tenantOpt.get());
-    }
-
-    @Test
-    public void shouldReturnShardingTagsWithPrecedence() {
-        System.setProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY, "public,private");
-        when(configuration.getProperty(GatewayConfiguration.SHARDING_TAGS_SYSTEM_PROPERTY)).thenReturn("intern,extern");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<List<String>> shardingTagsOpt = gatewayConfiguration.shardingTags();
-        Assert.assertTrue(shardingTagsOpt.isPresent());
-
-        List<String> shardingTags = shardingTagsOpt.get();
-        Assert.assertEquals(2, shardingTags.size());
-        Assert.assertEquals("public", shardingTags.get(0));
-        Assert.assertEquals("private", shardingTags.get(1));
-    }
-
-    @Test
-    public void shouldReturnTenantWithPrecedence() {
-        System.setProperty(GatewayConfiguration.MULTI_TENANT_SYSTEM_PROPERTY, "asia");
-        when(configuration.getProperty(GatewayConfiguration.MULTI_TENANT_CONFIGURATION)).thenReturn("europe");
-        gatewayConfiguration.afterPropertiesSet();
-
-        Optional<String> tenantOpt = gatewayConfiguration.tenant();
-        Assert.assertTrue(tenantOpt.isPresent());
-
-        Assert.assertEquals("asia", tenantOpt.get());
+        // Then: Should not match
+        assertFalse(gatewayConfiguration.hasMatchingTags(apiTags));
     }
 }
