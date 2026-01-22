@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
+import io.gravitee.definition.model.v4.Api;
 
 public class Organization implements Serializable {
 
@@ -113,4 +114,10 @@ public class Organization implements Serializable {
     public String toString() {
         return "Organization{" + "id='" + id + '\'' + ", name='" + name + '\'' + '}';
     }
+    public static final String DEFAULT_ORGANIZATION_ID = "DEFAULT";
+
+    public boolean isDefaultOrganization() {
+        return DEFAULT_ORGANIZATION_ID.equals(this.id);
+    }
+
 }
