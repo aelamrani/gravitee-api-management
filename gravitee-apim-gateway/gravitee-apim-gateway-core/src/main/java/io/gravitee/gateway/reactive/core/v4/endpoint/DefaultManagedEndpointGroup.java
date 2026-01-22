@@ -23,6 +23,7 @@ import io.gravitee.gateway.reactive.api.ConnectorMode;
 import io.gravitee.gateway.reactive.core.v4.endpoint.loadbalancer.LoadBalancerStrategy;
 import io.gravitee.gateway.reactive.core.v4.endpoint.loadbalancer.LoadBalancerStrategyFactory;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -86,8 +87,14 @@ public class DefaultManagedEndpointGroup implements ManagedEndpointGroup {
         }
 
         if (supportedModes == null) {
-            supportedModes = managedEndpoint.getConnector().supportedModes();
+            supportedModes = new HashSet<>(managedEndpoint.getConnector().supportedModes());
             supportedApi = managedEndpoint.getConnector().supportedApi();
+        } else {
+            // Merge supported modes from all endpoints to ensure proper tagging support
+            Set<ConnectorMode> endpointModes = managedEndpoint.getConnector().supportedModes();
+            if (endpointModes != null && !endpointModes.isEmpty()) {
+                supportedModes.addAll(endpointModes);
+            }
         }
         return managedEndpoint;
     }
