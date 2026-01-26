@@ -34,6 +34,18 @@ import java.util.stream.Stream;
  */
 public final class Services implements Serializable {
 
+    private static final Set<String> ALLOWED_MIME_TYPES = Set.of(
+        "application/json",
+        "application/xml",
+        "text/plain",
+        "text/xml",
+        "text/html",
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/gif"
+    );
+
     @JsonIgnore
     private final Map<Class<? extends Service>, Service> services = new HashMap<>();
 
@@ -117,5 +129,71 @@ public final class Services implements Serializable {
             .filter(Optional::isPresent)
             .flatMap(Optional::stream)
             .collect(Collectors.toList());
+    }
+
+    /**
+     * Validates if the given MIME type is allowed for file uploads.
+     *
+     * @param mimeType the MIME type to validate
+     * @return true if the MIME type is allowed, false otherwise
+     */
+    @JsonIgnore
+    public static boolean isAllowedMimeType(String mimeType) {
+        if (mimeType == null || mimeType.isEmpty()) {
+            return false;
+        }
+        return ALLOWED_MIME_TYPES.contains(mimeType.toLowerCase());
+    }
+
+    /**
+     * Returns the set of allowed MIME types for file uploads.
+     *
+     * @return an unmodifiable set of allowed MIME types
+     */
+    @JsonIgnore
+    public static Set<String> getAllowedMimeTypes() {
+        return Collections.unmodifiableSet(ALLOWED_MIME_TYPES);
+    }
+
+    /**
+     * Scans file content for potential malicious patterns.
+     * This is a basic implementation that checks for common malicious signatures.
+     *
+     * @param content the file content as byte array
+     * @return true if the content appears safe, false if potentially malicious
+     */
+    @JsonIgnore
+    public static boolean scanFileContent(byte[] content) {
+        if (content == null || content.length == 0) {
+            return false;
+        }
+
+        // Check for common executable signatures
+        if (content.length >= 2) {
+            // MZ header (Windows executable)
+            if (content[0] == 0x4D && content[1] == 0x5A) {
+                return false;
+            }
+            // ELF header (Linux executable)
+            if (content.length >= 4 && content[0] == 0x7F && content[1] == 0x45 && 
+                content[2] == 0x4C && content[3] == 0x46) {
+                return false;
+            }
+        }
+
+        // Check for script tags and other potentially dangerous content in text files
+        String contentStr = new String(content);
+        String lowerContent = contentStr.toLowerCase();
+        
+        // Check for potentially dangerous script patterns
+        if (lowerContent.contains("<script") || 
+            lowerContent.contains("javascript:") ||
+            lowerContent.contains("vbscript:") ||
+            lowerContent.contains("onload=") ||
+            lowerContent.contains("onerror=")) {
+            return false;
+        }
+
+        return true;
     }
 }
