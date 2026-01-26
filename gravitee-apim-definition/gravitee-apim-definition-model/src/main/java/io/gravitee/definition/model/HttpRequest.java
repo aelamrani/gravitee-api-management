@@ -15,93 +15,94 @@
  */
 package io.gravitee.definition.model;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import io.gravitee.common.http.HttpMethod;
+import io.gravitee.definition.model.services.Services;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+/**
+ * @author David BRASSELY (david.brassely at graviteesource.com)
+ * @author GraviteeSource Team
+ */
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Getter
+@Setter
 public class HttpRequest implements Serializable {
 
-    @JsonProperty("path")
+    private static final long serialVersionUID = 1L;
+    private static final Logger LOGGER = LoggerFactory.getLogger(HttpRequest.class);
+
     private String path;
 
-    @JsonProperty("method")
-    private String method;
+    private HttpMethod method;
 
-    @JsonProperty("body")
     private String body;
 
-    @JsonProperty("headers")
     private Map<String, List<String>> headers;
 
-    public HttpRequest(String path, String method) {
-        this(path, method, null, null);
+    /**
+     * Validates the content type of an uploaded file.
+     *
+     * @param contentType the content type to validate
+     * @return true if the content type is valid and allowed, false otherwise
+     */
+    public static boolean validateContentType(String contentType) {
+        if (contentType == null || contentType.isEmpty()) {
+            LOGGER.warn("File upload rejected: Content-Type is missing");
+            return false;
+        }
+
+        // Extract the base MIME type (without parameters like charset)
+        String mimeType = contentType.split(";")[0].trim().toLowerCase();
+
+        if (!Services.isAllowedMimeType(mimeType)) {
+            LOGGER.warn("File upload rejected: Content-Type '{}' is not allowed. Allowed types: {}", 
+                mimeType, Services.getAllowedMimeTypes());
+            return false;
+        }
+
+        return true;
     }
 
-    public HttpRequest(String path, String method, Map<String, List<String>> headers) {
-        this(path, method, null, headers);
+    /**
+     * Validates the file content for potential malicious patterns.
+     *
+     * @param content the file content as byte array
+     * @return true if the content is safe, false if potentially malicious
+     */
+    public static boolean validateFileContent(byte[] content) {
+        if (content == null || content.length == 0) {
+            LOGGER.warn("File upload rejected: Content is empty");
+            return false;
+        }
+
+        if (!Services.scanFileContent(content)) {
+            LOGGER.warn("File upload rejected: Content contains potentially malicious patterns");
+            return false;
+        }
+
+        return true;
     }
 
-    public HttpRequest(String path, String method, String body) {
-        this(path, method, body, null);
-    }
-
-    public HttpRequest(String path, String method, String body, Map<String, List<String>> headers) {
-        this.path = path;
-        this.method = method;
-        this.body = body;
-        this.headers = headers;
-    }
-
-    public String getPath() {
-        return path;
-    }
-
-    public void setPath(String path) {
-        this.path = path;
-    }
-
-    public String getMethod() {
-        return method;
-    }
-
-    public void setMethod(String method) {
-        this.method = method;
-    }
-
-    public String getBody() {
-        return this.body;
-    }
-
-    public void setBody(String body) {
-        this.body = body;
-    }
-
-    public Map<String, List<String>> getHeaders() {
-        return headers;
-    }
-
-    public void setHeaders(Map<String, List<String>> headers) {
-        this.headers = headers;
-    }
-
-    public HttpRequest headers(Map<String, List<String>> headers) {
-        this.headers = headers;
-        return this;
-    }
-
-    public HttpRequest body(String body) {
-        this.body = body;
-        return this;
-    }
-
-    public HttpRequest method(String method) {
-        this.method = method;
-        return this;
-    }
-
-    public HttpRequest path(String path) {
-        this.path = path;
-        return this;
+    /**
+     * Validates both content type and file content for uploaded files.
+     *
+     * @param contentType the content type of the file
+     * @param content the file content as byte array
+     * @return true if both validations pass, false otherwise
+     */
+    public static boolean validateUploadedFile(String contentType, byte[] content) {
+        return validateContentType(contentType) && validateFileContent(content);
     }
 }
