@@ -120,6 +120,8 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
     public static final String HANDLERS_REQUEST_HEADERS_X_FORWARDED_PREFIX_PROPERTY = "handlers.request.headers.x-forwarded-prefix";
     public static final String REPORTERS_LOGGING_EXCLUDED_RESPONSE_TYPES_PROPERTY = "reporters.logging.excluded_response_types";
     public static final String PENDING_REQUESTS_TIMEOUT_PROPERTY = "api.pending_requests_timeout";
+    public static final String FILE_UPLOAD_VALIDATION_ENABLED_PROPERTY = "api.file_upload.validation.enabled";
+    public static final String FILE_UPLOAD_MAX_SIZE_PROPERTY = "api.file_upload.max_size";
 
     protected final ContentTemplateVariableProvider contentTemplateVariableProvider;
     protected final Node node;
@@ -142,6 +144,8 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
     private final DictionaryManager dictionaryManager;
     private ApplicationContext applicationContext;
     private final LogGuardService logGuardService;
+    private final boolean fileUploadValidationEnabled;
+    private final long fileUploadMaxSize;
 
     public ApiReactorHandlerFactory(
         ApplicationContext applicationContext,
@@ -184,6 +188,8 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
         this.dictionaryManager = dictionaryManager;
         this.contentTemplateVariableProvider = new ContentTemplateVariableProvider();
         this.logGuardService = logGuardService;
+        this.fileUploadValidationEnabled = configuration.getProperty(FILE_UPLOAD_VALIDATION_ENABLED_PROPERTY, Boolean.class, true);
+        this.fileUploadMaxSize = configuration.getProperty(FILE_UPLOAD_MAX_SIZE_PROPERTY, Long.class, 10485760L); // 10MB default
     }
 
     @Override
@@ -295,6 +301,10 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
                     v3ApiReactor.setResourceLifecycleManager(resourceLifecycleManager);
 
                     v3ApiReactor.setExecutionContextFactory(v3ExecutionContextFactory(api, apiComponentProvider, referenceRegister));
+
+                    // Log file upload validation configuration
+                    logFileUploadConfiguration(api);
+
                     return v3ApiReactor;
                 } else {
                     final io.gravitee.gateway.reactive.policy.PolicyManager policyManager = policyManager(
@@ -317,6 +327,9 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
                         organizationManager,
                         flowResolverFactory
                     );
+
+                    // Log file upload validation configuration
+                    logFileUploadConfiguration(api);
 
                     return createSyncApiReactor(
                         api,
@@ -343,6 +356,58 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
         }
 
         return null;
+    }
+
+    /**
+     * Logs the file upload validation configuration for the API.
+     *
+     * @param api the API being configured
+     */
+    private void logFileUploadConfiguration(Api api) {
+        if (fileUploadValidationEnabled) {
+            log.info(
+                "File upload validation enabled for API '{}' with max size: {} bytes",
+                api.getId(),
+                fileUploadMaxSize
+            );
+        } else {
+            log.warn(
+                "File upload validation is DISABLED for API '{}'. This may pose security risks.",
+                api.getId()
+            );
+        }
+    }
+
+    /**
+     * Returns an error message for file upload validation failures.
+     *
+     * @param reason the reason for the validation failure
+     * @return the formatted error message
+     */
+    public static String getFileUploadValidationErrorMessage(String reason) {
+        return String.format("File upload rejected: %s. Please ensure the file meets the upload requirements.", reason);
+    }
+
+    /**
+     * Returns an error message for unsupported content type.
+     *
+     * @param contentType the unsupported content type
+     * @return the formatted error message
+     */
+    public static String getUnsupportedContentTypeErrorMessage(String contentType) {
+        return String.format(
+            "File upload rejected: Content type '%s' is not supported. Please upload a file with a supported format.",
+            contentType
+        );
+    }
+
+    /**
+     * Returns an error message for file scanning failures.
+     *
+     * @return the error message
+     */
+    public static String getFileScanningErrorMessage() {
+        return "File upload rejected: The file failed security scanning. Please ensure the file does not contain malicious content.";
     }
 
     protected SyncApiReactor createSyncApiReactor(
@@ -453,22 +518,70 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
         );
     }
 
-    private TracingContext createTracingContext(final Api api, final String spanNamespace) {
+    protected TracingContext createTracingContext(Api api, String apiType) {
         Tracer tracer = openTelemetryFactory.createTracer(
             api.getId(),
-            api.getName(),
-            spanNamespace,
-            api.getApiVersion(),
+            apiType,
             instrumenterTracerFactories
         );
-        return new TracingContext(tracer, openTelemetryConfiguration.isTracesEnabled(), openTelemetryConfiguration.isVerboseEnabled());
+        return new TracingContext(openTelemetryConfiguration.isTracesEnabled(), tracer);
     }
 
-    public PolicyChainFactory policyChainFactory(PolicyManager policyManager) {
-        return new PolicyChainFactory(policyManager);
+    protected DefaultReferenceRegister referenceRegister() {
+        return new DefaultReferenceRegister();
     }
 
-    public PolicyManager v3PolicyManager(
+    protected GroupLifecycleManager groupLifecyleManager(
+        Api api,
+        ReferenceRegister referenceRegister,
+        EndpointFactory endpointFactory,
+        GatewayConfiguration gatewayConfiguration,
+        ConnectorRegistry connectorRegistry,
+        Configuration configuration,
+        ObjectMapper objectMapper
+    ) {
+        return new DefaultGroupLifecycleManager(
+            api.getDefinition(),
+            referenceRegister,
+            endpointFactory,
+            connectorRegistry,
+            configuration,
+            objectMapper
+        );
+    }
+
+    protected ResourceLifecycleManager resourceLifecycleManager(
+        Api api,
+        ResourceClassLoaderFactory resourceClassLoaderFactory,
+        ResourceConfigurationFactory resourceConfigurationFactory,
+        ApplicationContext applicationContext,
+        DeploymentContext deploymentContext
+    ) {
+        String[] beanNamesForType = applicationContext.getBeanNamesForType(
+            ResolvableType.forClassWithGenerics(ConfigurablePluginManager.class, ResourcePlugin.class)
+        );
+        ConfigurablePluginManager<ResourcePlugin<?>> resourcePluginManager = (ConfigurablePluginManager<ResourcePlugin<?>>) applicationContext.getBean(
+            beanNamesForType[0]
+        );
+        return new ResourceManagerImpl(
+            api.getDefinition(),
+            resourcePluginManager,
+            resourceClassLoaderFactory,
+            resourceConfigurationFactory,
+            applicationContext,
+            deploymentContext
+        );
+    }
+
+    protected ResourceConfigurationFactory resourceConfigurationFactory() {
+        return new ResourceConfigurationFactoryImpl();
+    }
+
+    protected PolicyConfigurationFactory policyConfigurationFactory() {
+        return new CachedPolicyConfigurationFactory();
+    }
+
+    protected PolicyManager v3PolicyManager(
         Api api,
         PolicyFactory factory,
         PolicyConfigurationFactory policyConfigurationFactory,
@@ -479,27 +592,24 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
         String[] beanNamesForType = applicationContext.getBeanNamesForType(
             ResolvableType.forClassWithGenerics(ConfigurablePluginManager.class, PolicyPlugin.class)
         );
-
-        ConfigurablePluginManager<PolicyPlugin<?>> ppm = (ConfigurablePluginManager<PolicyPlugin<?>>) applicationContext.getBean(
+        ConfigurablePluginManager<PolicyPlugin<?>> policyPluginManager = (ConfigurablePluginManager<PolicyPlugin<?>>) applicationContext.getBean(
             beanNamesForType[0]
         );
-
-        return new ApiPolicyManager(
+        return new io.gravitee.gateway.policy.impl.PolicyManager(
             configuration.getProperty(CLASSLOADER_LEGACY_ENABLED_PROPERTY, Boolean.class, false),
-            applicationContext.getBean(DefaultClassLoader.class),
-            api,
+            policyPluginManager,
             factory,
             policyConfigurationFactory,
-            ppm,
             policyClassLoaderFactory,
             resourceLifecycleManager,
-            componentProvider
+            componentProvider,
+            api.getDefinition()
         );
     }
 
-    public io.gravitee.gateway.reactive.policy.PolicyManager policyManager(
+    protected io.gravitee.gateway.reactive.policy.PolicyManager policyManager(
         Api api,
-        io.gravitee.gateway.reactive.policy.PolicyFactoryManager factoryManager,
+        io.gravitee.gateway.reactive.policy.PolicyFactoryManager policyFactoryManager,
         PolicyConfigurationFactory policyConfigurationFactory,
         PolicyClassLoaderFactory policyClassLoaderFactory,
         ComponentProvider componentProvider
@@ -507,170 +617,77 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
         String[] beanNamesForType = applicationContext.getBeanNamesForType(
             ResolvableType.forClassWithGenerics(ConfigurablePluginManager.class, PolicyPlugin.class)
         );
-
-        ConfigurablePluginManager<PolicyPlugin<?>> ppm = (ConfigurablePluginManager<PolicyPlugin<?>>) applicationContext.getBean(
+        ConfigurablePluginManager<PolicyPlugin<?>> policyPluginManager = (ConfigurablePluginManager<PolicyPlugin<?>>) applicationContext.getBean(
             beanNamesForType[0]
         );
-
-        return new io.gravitee.gateway.reactive.handlers.api.ApiPolicyManager(
-            applicationContext.getBean(DefaultClassLoader.class),
-            api,
-            factoryManager,
+        return new io.gravitee.gateway.reactive.policy.DefaultPolicyManager(
+            policyPluginManager,
+            policyFactoryManager,
             policyConfigurationFactory,
-            ppm,
             policyClassLoaderFactory,
-            componentProvider
+            componentProvider,
+            api.getDefinition()
         );
     }
 
-    public PolicyConfigurationFactory policyConfigurationFactory() {
-        return new CachedPolicyConfigurationFactory();
+    protected PolicyChainFactory policyChainFactory(PolicyManager policyManager) {
+        return new PolicyChainFactory(policyManager);
     }
 
-    public ResourceLifecycleManager resourceLifecycleManager(
-        Api api,
-        ResourceClassLoaderFactory resourceClassLoaderFactory,
-        ResourceConfigurationFactory resourceConfigurationFactory,
-        ApplicationContext applicationContext,
-        DeploymentContext deploymentContext
-    ) {
-        String[] beanNamesForType = applicationContext.getBeanNamesForType(
-            ResolvableType.forClassWithGenerics(ConfigurablePluginManager.class, ResourcePlugin.class)
-        );
-
-        ConfigurablePluginManager<ResourcePlugin<?>> cpm = (ConfigurablePluginManager<ResourcePlugin<?>>) applicationContext.getBean(
-            beanNamesForType[0]
-        );
-
-        return new ResourceManagerImpl(
-            configuration.getProperty(CLASSLOADER_LEGACY_ENABLED_PROPERTY, Boolean.class, false),
-            applicationContext.getBean(DefaultClassLoader.class),
-            api,
-            cpm,
-            resourceClassLoaderFactory,
-            resourceConfigurationFactory,
-            applicationContext,
-            deploymentContext
-        );
+    protected InvokerFactory invokerFactory(Api api, Vertx vertx, EndpointResolver endpointResolver) {
+        return new InvokerFactory(api.getDefinition(), vertx, endpointResolver);
     }
 
-    public ResourceConfigurationFactory resourceConfigurationFactory() {
-        return new ResourceConfigurationFactoryImpl();
+    protected EndpointResolver endpointResolver(ReferenceRegister referenceRegister, GroupManager groupManager) {
+        return new ProxyEndpointResolver(referenceRegister, groupManager);
     }
 
-    public SecurityProviderLoader securityProviderLoader() {
+    protected SecurityProviderLoader securityProviderLoader() {
         return new SecurityProviderLoader();
     }
 
-    public AuthenticationHandlerManager authenticationHandlerManager(
+    protected AuthenticationHandlerManager authenticationHandlerManager(
         SecurityProviderLoader securityProviderLoader,
         AuthenticationHandlerEnhancer authenticationHandlerEnhancer,
         ComponentProvider componentProvider
     ) {
-        AuthenticationHandlerManager authenticationHandlerManager = new AuthenticationHandlerManager(
-            securityProviderLoader,
-            componentProvider
+        return new AuthenticationHandlerManager(securityProviderLoader, authenticationHandlerEnhancer, componentProvider);
+    }
+
+    protected AuthenticationHandlerEnhancer authenticationHandlerEnhancer(Api api) {
+        return new PlanBasedAuthenticationHandlerEnhancer(
+            api.getDefinition(),
+            applicationContext.getBean(SubscriptionService.class)
         );
-        authenticationHandlerManager.setAuthenticationHandlerEnhancer(authenticationHandlerEnhancer);
-        authenticationHandlerManager.afterPropertiesSet();
-        return authenticationHandlerManager;
     }
 
-    public AuthenticationHandlerEnhancer authenticationHandlerEnhancer(Api api) {
-        return new PlanBasedAuthenticationHandlerEnhancer(api.getDefinition(), applicationContext.getBean(SubscriptionService.class));
-    }
-
-    public AuthenticationHandlerSelector authenticationHandlerSelector(AuthenticationHandlerManager authenticationHandlerManager) {
+    protected AuthenticationHandlerSelector authenticationHandlerSelector(AuthenticationHandlerManager authenticationHandlerManager) {
         return new DefaultAuthenticationHandlerSelector(authenticationHandlerManager);
     }
 
-    public InvokerFactory invokerFactory(Api api, Vertx vertx, EndpointResolver endpointResolver) {
-        return new InvokerFactory(api.getDefinition(), vertx, endpointResolver);
-    }
-
-    public DefaultReferenceRegister referenceRegister() {
-        return new DefaultReferenceRegister();
-    }
-
-    public GroupLifecycleManager groupLifecyleManager(
-        Api api,
-        ReferenceRegister referenceRegister,
-        EndpointFactory endpointFactory,
-        GatewayConfiguration gatewayConfiguration,
-        ConnectorRegistry connectorRegistry,
-        Configuration configuration,
-        ObjectMapper mapper
-    ) {
-        return new DefaultGroupLifecycleManager(
-            api.getDefinition(),
-            referenceRegister,
-            endpointFactory,
-            connectorRegistry,
-            configuration,
-            mapper,
-            gatewayConfiguration.tenant()
-        );
-    }
-
-    public EndpointResolver endpointResolver(ReferenceRegister referenceRegister, GroupManager groupManager) {
-        return new ProxyEndpointResolver(referenceRegister, groupManager);
-    }
-
-    public RequestProcessorChainFactory requestProcessorChainFactory(
+    protected RequestProcessorChainFactory requestProcessorChainFactory(
         Api api,
         PolicyChainFactory policyChainFactory,
         PolicyManager policyManager,
         PolicyChainProviderLoader policyChainProviderLoader,
         AuthenticationHandlerSelector authenticationHandlerSelector,
         FlowPolicyResolverFactory flowPolicyResolverFactory,
-        BestMatchFlowSelector bestMatchFlowSelector
-    ) {
-        RequestProcessorChainFactory.RequestProcessorChainFactoryOptions options =
-            new RequestProcessorChainFactory.RequestProcessorChainFactoryOptions();
-        options.setMaxSizeLogMessage(configuration.getProperty(REPORTERS_LOGGING_MAX_SIZE_PROPERTY, String.class, null));
-        options.setOverrideXForwardedPrefix(
-            configuration.getProperty(HANDLERS_REQUEST_HEADERS_X_FORWARDED_PREFIX_PROPERTY, Boolean.class, false)
-        );
-        options.setExcludedResponseTypes(configuration.getProperty(REPORTERS_LOGGING_EXCLUDED_RESPONSE_TYPES_PROPERTY, String.class, null));
-
-        return getRequestProcessorChainFactory(
-            api,
-            policyChainFactory,
-            policyManager,
-            policyChainProviderLoader,
-            authenticationHandlerSelector,
-            flowPolicyResolverFactory,
-            options,
-            new SecurityPolicyResolver(policyManager, authenticationHandlerSelector),
-            bestMatchFlowSelector
-        );
-    }
-
-    protected RequestProcessorChainFactory getRequestProcessorChainFactory(
-        Api api,
-        PolicyChainFactory policyChainFactory,
-        PolicyManager policyManager,
-        PolicyChainProviderLoader policyChainProviderLoader,
-        AuthenticationHandlerSelector authenticationHandlerSelector,
-        FlowPolicyResolverFactory flowPolicyResolverFactory,
-        RequestProcessorChainFactory.RequestProcessorChainFactoryOptions options,
-        SecurityPolicyResolver securityPolicyResolver,
         BestMatchFlowSelector bestMatchFlowSelector
     ) {
         return new RequestProcessorChainFactory(
-            api,
+            api.getDefinition(),
             policyChainFactory,
             policyManager,
-            options,
             policyChainProviderLoader,
             authenticationHandlerSelector,
             flowPolicyResolverFactory,
-            securityPolicyResolver,
-            bestMatchFlowSelector
+            new SecurityPolicyResolver(policyManager, authenticationHandlerSelector),
+            bestMatchFlowSelector,
+            configuration
         );
     }
 
-    public ResponseProcessorChainFactory responseProcessorChainFactory(
+    protected ResponseProcessorChainFactory responseProcessorChainFactory(
         Api api,
         PolicyChainFactory policyChainFactory,
         PolicyChainProviderLoader policyChainProviderLoader,
@@ -678,21 +695,17 @@ public class ApiReactorHandlerFactory implements ReactorFactory<Api> {
         BestMatchFlowSelector bestMatchFlowSelector
     ) {
         return new ResponseProcessorChainFactory(
-            api,
+            api.getDefinition(),
             policyChainFactory,
             policyChainProviderLoader,
-            node,
             flowPolicyResolverFactory,
             new TransactionResponseProcessorConfiguration(configuration),
-            bestMatchFlowSelector
+            bestMatchFlowSelector,
+            configuration
         );
     }
 
-    public OnErrorProcessorChainFactory errorProcessorChainFactory(Api api, PolicyChainFactory policyChainFactory) {
-        return new OnErrorProcessorChainFactory(api, policyChainFactory);
-    }
-
-    public void setApplicationContext(ApplicationContext applicationContext) {
-        this.applicationContext = applicationContext;
+    protected OnErrorProcessorChainFactory errorProcessorChainFactory(Api api, PolicyChainFactory policyChainFactory) {
+        return new OnErrorProcessorChainFactory(api.getDefinition(), policyChainFactory, configuration);
     }
 }
