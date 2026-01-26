@@ -51,7 +51,10 @@ public final class LoggingUtils {
 
     @Nullable
     public static LoggingContext getLoggingContext(@Nonnull final Api api) {
-        return getLoggingContext(api.getProxy().getLogging());
+        if (api.getProxy() != null) {
+            return getLoggingContext(api.getProxy().getLogging());
+        }
+        return null;
     }
 
     public static int getMaxSizeLogMessage(ExecutionContext executionContext) {
