@@ -15,387 +15,325 @@
  */
 package io.gravitee.gateway.handlers.api;
 
-import io.gravitee.common.component.Lifecycle;
 import io.gravitee.common.event.EventManager;
 import io.gravitee.common.http.HttpStatusCode;
 import io.gravitee.gateway.api.ExecutionContext;
 import io.gravitee.gateway.api.Invoker;
-import io.gravitee.gateway.api.Request;
 import io.gravitee.gateway.api.buffer.Buffer;
+import io.gravitee.gateway.api.context.MutableExecutionContext;
 import io.gravitee.gateway.api.handler.Handler;
-import io.gravitee.gateway.api.http.HttpHeaders;
 import io.gravitee.gateway.api.processor.ProcessorFailure;
+import io.gravitee.gateway.api.proxy.ProxyConnection;
 import io.gravitee.gateway.api.proxy.ProxyResponse;
 import io.gravitee.gateway.core.endpoint.lifecycle.GroupLifecycleManager;
 import io.gravitee.gateway.core.invoker.EndpointInvoker;
+import io.gravitee.gateway.core.logging.LoggingContext;
+import io.gravitee.gateway.core.logging.utils.LoggingUtils;
 import io.gravitee.gateway.core.processor.StreamableProcessor;
 import io.gravitee.gateway.handlers.accesspoint.manager.AccessPointManager;
 import io.gravitee.gateway.handlers.api.definition.Api;
 import io.gravitee.gateway.handlers.api.processor.OnErrorProcessorChainFactory;
 import io.gravitee.gateway.handlers.api.processor.RequestProcessorChainFactory;
 import io.gravitee.gateway.handlers.api.processor.ResponseProcessorChainFactory;
-import io.gravitee.gateway.opentelemetry.TracingContext;
 import io.gravitee.gateway.policy.PolicyManager;
-import io.gravitee.gateway.reactor.handler.AbstractReactorHandler;
-import io.gravitee.gateway.reactor.handler.Acceptor;
 import io.gravitee.gateway.reactor.handler.HttpAcceptorFactory;
-import io.gravitee.gateway.reactor.handler.http.AccessPointHttpAcceptor;
+import io.gravitee.gateway.reactor.handler.context.V3ExecutionContextFactory;
 import io.gravitee.gateway.resource.ResourceLifecycleManager;
 import io.gravitee.node.api.Node;
 import io.gravitee.node.api.configuration.Configuration;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import io.gravitee.reporter.api.v4.metric.Metrics;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * @author David BRASSELY (david.brassely at graviteesource.com)
  * @author GraviteeSource Team
  */
-public class ApiReactorHandler extends AbstractReactorHandler<Api> {
+public class ApiReactorHandler extends AbstractApiReactorHandler {
 
-    public static final String API_VALIDATE_SUBSCRIPTION_PROPERTY = "api.validateSubscription";
+    private final Logger logger = LoggerFactory.getLogger(ApiReactorHandler.class);
 
-    /**
-     * Invoker is the connector to access the remote backend / endpoint.
-     * If not override by a policy, default invoker is {@link EndpointInvoker}.
-     */
+    private RequestProcessorChainFactory requestProcessorChainFactory;
+    private ResponseProcessorChainFactory responseProcessorChainFactory;
+    private OnErrorProcessorChainFactory errorProcessorChainFactory;
     private Invoker invoker;
-
-    private RequestProcessorChainFactory requestProcessorChain;
-
-    private ResponseProcessorChainFactory responseProcessorChain;
-
-    private OnErrorProcessorChainFactory errorProcessorChain;
-
-    private ResourceLifecycleManager resourceLifecycleManager;
-
     private PolicyManager policyManager;
-
     private GroupLifecycleManager groupLifecycleManager;
-
+    private ResourceLifecycleManager resourceLifecycleManager;
+    private V3ExecutionContextFactory executionContextFactory;
     private Node node;
-
-    private final AtomicInteger pendingRequests = new AtomicInteger(0);
-
-    private List<Acceptor<?>> acceptors;
-
-    private long pendingRequestsTimeout;
-    private final Configuration configuration;
-    private final AccessPointManager accessPointManager;
-    private final EventManager eventManager;
-    private final HttpAcceptorFactory httpAcceptorFactory;
 
     public ApiReactorHandler(
         Configuration configuration,
-        final Api api,
-        final AccessPointManager accessPointManager,
-        final EventManager eventManager,
-        final HttpAcceptorFactory httpAcceptorFactory,
-        final TracingContext tracingContext
+        Api api,
+        AccessPointManager accessPointManager,
+        EventManager eventManager,
+        HttpAcceptorFactory httpAcceptorFactory
     ) {
-        super(api, tracingContext);
-        this.configuration = configuration;
-        this.accessPointManager = accessPointManager;
-        this.eventManager = eventManager;
-        this.httpAcceptorFactory = httpAcceptorFactory;
+        super(configuration, api, accessPointManager, eventManager, httpAcceptorFactory);
     }
 
     @Override
-    protected void doHandle(final ExecutionContext context, Handler<ExecutionContext> endHandler) {
-        final Request request = context.request();
+    protected void doHandle(MutableExecutionContext context, Handler<ExecutionContext> endHandler) {
+        // Set the logging context if needed
+        LoggingContext loggingContext = LoggingUtils.getLoggingContext(reactableApi.getDefinition());
+        if (loggingContext != null) {
+            context.request().customFrameHandler(new LogRequestDebugHandler(logger, context));
+            context.setAttribute(LoggingContext.LOGGING_ATTRIBUTE, loggingContext);
+        }
 
-        // Set the timeout handler on the request
-        request.timeoutHandler(result -> handleError(context, endHandler, TIMEOUT_PROCESSOR_FAILURE));
-
-        // Pause the request and resume it as soon as all the stream are plugged and we have processed the HEAD part
-        // of the request. (see handleProxyInvocation method).
-        request.pause();
-
-        context.setAttribute(ExecutionContext.ATTR_CONTEXT_PATH, request.contextPath());
-        context.setAttribute(ExecutionContext.ATTR_API, reactable.getId());
-        context.setAttribute(ExecutionContext.ATTR_API_DEPLOYED_AT, reactable.getDeployedAt().getTime());
-        context.setAttribute(ExecutionContext.ATTR_INVOKER, invoker);
-        context.setAttribute(ExecutionContext.ATTR_ORGANIZATION, reactable.getOrganizationId());
-        context.setAttribute(ExecutionContext.ATTR_ENVIRONMENT, reactable.getEnvironmentId());
-        context.setAttribute(
-            ExecutionContext.ATTR_VALIDATE_SUBSCRIPTION,
-            this.configuration.getProperty(API_VALIDATE_SUBSCRIPTION_PROPERTY, Boolean.class, true)
-        );
-
-        // Prepare request metrics
-        request.metrics().setApi(reactable.getId());
-        request.metrics().setApiName(reactable.getName());
-        request.metrics().setPath(request.pathInfo());
-        request.metrics().setEnvironmentId(reactable.getEnvironmentId());
-        request.metrics().setOrganizationId(reactable.getOrganizationId());
-
-        // keep track of executing request to avoid 500 errors
-        // when stop is called while running a policy chain
-        pendingRequests.incrementAndGet();
-
-        // It's time to process incoming client request
-        handleClientRequest(context, endHandler);
-    }
-
-    private void handleClientRequest(final ExecutionContext context, Handler<ExecutionContext> endHandler) {
-        final StreamableProcessor<ExecutionContext, Buffer> chain = requestProcessorChain.create();
-
-        chain
-            .handler(__ -> handleProxyInvocation(context, endHandler, chain))
-            .streamErrorHandler(failure -> handleError(context, endHandler, failure))
-            .errorHandler(failure -> handleError(context, endHandler, failure))
-            .exitHandler(__ -> {
-                pendingRequests.decrementAndGet();
-                context.request().resume();
-                endHandler.handle(context);
-            })
+        // Apply request processors
+        requestProcessorChainFactory
+            .create()
+            .handler(__ -> handleProxyInvocation(context, endHandler))
+            .errorHandler(failure -> handleProcessorFailure(failure, context, endHandler))
+            .exitHandler(__ -> handleProcessorExit(context, endHandler))
             .handle(context);
     }
 
-    private void handleProxyInvocation(
-        final ExecutionContext context,
-        Handler<ExecutionContext> endHandler,
-        final StreamableProcessor<ExecutionContext, Buffer> chain
-    ) {
-        // Call an invoker to get a proxy connection (connection to an underlying backend, default to HTTP)
-        Invoker upstreamInvoker = getInvoker(context);
-
-        context.request().metrics().setApiResponseTimeMs(System.currentTimeMillis());
-
-        upstreamInvoker.invoke(context, chain, connection -> {
-            context.request().customFrameHandler(connection::writeCustomFrame);
-
-            connection.responseHandler(proxyResponse -> handleProxyResponse(context, endHandler, proxyResponse));
-
-            // Override the stream error handler to be able to cancel connection to backend
-            chain.streamErrorHandler(failure -> {
-                context
-                    .request()
-                    .metrics()
-                    .setApiResponseTimeMs(System.currentTimeMillis() - context.request().metrics().getApiResponseTimeMs());
-                connection.cancel();
-                handleError(context, endHandler, failure);
-            });
-        });
-
-        // Plug server request stream to request processor stream
-        context.request().bodyHandler(chain::write);
-
-        if (context.request().ended()) {
-            // since Vert.x 3.6.0 it can happen that requests without body (e.g. a GET) are ended even while in paused-State
-            // Setting the endHandler would then lead to an Exception
-            // see also https://github.com/eclipse-vertx/vert.x/issues/2763
-            // so we now check if the request already is ended before installing an endHandler
-            chain.end();
-        } else {
-            context.request().endHandler(result -> chain.end());
-        }
+    private void handleProxyInvocation(MutableExecutionContext context, Handler<ExecutionContext> endHandler) {
+        // Call the invoker
+        invoker.invoke(
+            context,
+            context.request().createReadStream(),
+            connectionHandler -> {
+                if (connectionHandler instanceof ProxyConnection) {
+                    handleProxyConnection(context, (ProxyConnection) connectionHandler, endHandler);
+                } else {
+                    handleProxyResponse(context, (ProxyResponse) connectionHandler, endHandler);
+                }
+            }
+        );
     }
 
-    protected Invoker getInvoker(ExecutionContext context) {
-        return (Invoker) context.getAttribute(ExecutionContext.ATTR_INVOKER);
+    private void handleProxyConnection(
+        MutableExecutionContext context,
+        ProxyConnection proxyConnection,
+        Handler<ExecutionContext> endHandler
+    ) {
+        proxyConnection.responseHandler(proxyResponse -> handleProxyResponse(context, proxyResponse, endHandler));
+
+        proxyConnection.exceptionHandler(failure -> {
+            context.request().metrics().setMessage(failure.getMessage());
+            handleProxyError(context, endHandler);
+        });
     }
 
     private void handleProxyResponse(
-        final ExecutionContext context,
-        Handler<ExecutionContext> endHandler,
-        final ProxyResponse proxyResponse
+        MutableExecutionContext context,
+        ProxyResponse proxyResponse,
+        Handler<ExecutionContext> endHandler
     ) {
-        // If the response is not yet ended (by a request timeout for example)
-        if (!context.response().ended()) {
-            if (proxyResponse == null || !proxyResponse.connected()) {
-                context.response().status((proxyResponse == null) ? HttpStatusCode.SERVICE_UNAVAILABLE_503 : proxyResponse.status());
-                context
-                    .request()
-                    .metrics()
-                    .setApiResponseTimeMs(System.currentTimeMillis() - context.request().metrics().getApiResponseTimeMs());
-                if (proxyResponse instanceof ProcessorFailure) {
-                    handleError(context, endHandler, (ProcessorFailure) proxyResponse);
-                } else {
-                    endHandler.handle(context);
-                    pendingRequests.decrementAndGet();
-                }
-            } else {
-                handleClientResponse(context, endHandler, proxyResponse);
-            }
+        if (proxyResponse == null) {
+            handleProxyError(context, endHandler);
         } else {
-            pendingRequests.decrementAndGet();
+            handleProxyResponseSuccess(context, proxyResponse, endHandler);
         }
     }
 
-    private void handleClientResponse(
-        final ExecutionContext context,
-        Handler<ExecutionContext> endHandler,
-        final ProxyResponse proxyResponse
+    private void handleProxyResponseSuccess(
+        MutableExecutionContext context,
+        ProxyResponse proxyResponse,
+        Handler<ExecutionContext> endHandler
     ) {
-        // Set the status
-        context.response().status(proxyResponse.status());
-        context.response().reason(proxyResponse.reason());
+        // Set the proxy response on the context
+        context.setAttribute(ExecutionContext.ATTR_INVOKER_RESPONSE, proxyResponse);
 
-        // Copy HTTP headers
-        proxyResponse.headers().forEach(entry -> context.response().headers().add(entry.getKey(), entry.getValue()));
+        // Apply response processors
+        StreamableProcessor<ExecutionContext, Buffer> responseProcessor = responseProcessorChainFactory.create();
+        responseProcessor
+            .handler(__ -> handleProcessorSuccess(context, proxyResponse, endHandler))
+            .errorHandler(failure -> handleProcessorFailure(failure, context, endHandler))
+            .exitHandler(__ -> handleProcessorExit(context, endHandler))
+            .streamErrorHandler(failure -> handleStreamError(failure, context, proxyResponse, endHandler));
 
-        final StreamableProcessor<ExecutionContext, Buffer> chain = responseProcessorChain.create();
+        // Plug the response processor to the proxy response
+        proxyResponse.bodyHandler(responseProcessor::write).endHandler(result -> responseProcessor.end());
 
-        // For HTTP/2, plug custom frame handler from upstream response to server response
-        proxyResponse.customFrameHandler(frame -> context.response().writeCustomFrame(frame));
+        responseProcessor.handle(context);
+    }
 
-        chain
-            .errorHandler(failure -> {
-                proxyResponse.cancel();
-                handleError(context, endHandler, failure);
-            })
-            .streamErrorHandler(failure -> {
-                proxyResponse.cancel();
-                handleError(context, endHandler, failure);
-            })
-            .exitHandler(__ -> {
-                endHandler.handle(context);
-                pendingRequests.decrementAndGet();
-            })
-            .handler(stream -> {
-                chain.bodyHandler(chunk -> context.response().write(chunk)).endHandler(__ -> endHandler.handle(context));
+    private void handleProcessorSuccess(
+        MutableExecutionContext context,
+        ProxyResponse proxyResponse,
+        Handler<ExecutionContext> endHandler
+    ) {
+        // Write response headers
+        context.response().headers().forEach((name, values) -> values.forEach(value -> context.response().writeHeader(name, value)));
 
-                proxyResponse
-                    .bodyHandler(buffer -> {
-                        chain.write(buffer);
+        // End the response
+        context.response().end();
 
-                        if (context.response().writeQueueFull()) {
-                            proxyResponse.pause();
-                            context.response().drainHandler(aVoid -> proxyResponse.resume());
-                        }
-                    })
-                    .endHandler(__ -> {
-                        // Write trailers
-                        final HttpHeaders trailers = proxyResponse.trailers();
-                        if (trailers != null && !trailers.isEmpty()) {
-                            trailers.forEach((entry -> context.response().trailers().add(entry.getKey(), entry.getValue())));
-                        }
+        // Clean up
+        proxyResponse.cancel();
 
-                        context
-                            .request()
-                            .metrics()
-                            .setApiResponseTimeMs(System.currentTimeMillis() - context.request().metrics().getApiResponseTimeMs());
+        endHandler.handle(context);
+    }
 
-                        chain.end();
-                        pendingRequests.decrementAndGet();
-                    });
+    private void handleProcessorFailure(
+        ProcessorFailure failure,
+        MutableExecutionContext context,
+        Handler<ExecutionContext> endHandler
+    ) {
+        context.request().metrics().setErrorKey(failure.key());
+        context.request().metrics().setMessage(failure.message());
 
-                // Resume response read
-                proxyResponse.resume();
-            })
+        // Apply error processors
+        errorProcessorChainFactory
+            .create()
+            .handler(__ -> handleErrorResponse(context, failure, endHandler))
+            .errorHandler(__ -> handleErrorResponse(context, failure, endHandler))
+            .exitHandler(__ -> handleProcessorExit(context, endHandler))
             .handle(context);
     }
 
-    private void handleError(ExecutionContext context, Handler<ExecutionContext> endHandler, ProcessorFailure failure) {
-        if (context.request().metrics().getApiResponseTimeMs() > Integer.MAX_VALUE) {
-            context
-                .request()
-                .metrics()
-                .setApiResponseTimeMs(System.currentTimeMillis() - context.request().metrics().getApiResponseTimeMs());
-        }
-        context.setAttribute(ExecutionContext.ATTR_PREFIX + "failure", failure);
+    private void handleErrorResponse(
+        MutableExecutionContext context,
+        ProcessorFailure failure,
+        Handler<ExecutionContext> endHandler
+    ) {
+        context.response().status(failure.statusCode());
+        context.response().reason(failure.message());
 
-        // Ensure we are consuming everything from the inbound queue
-        if (!context.request().ended()) {
-            context.request().bodyHandler(__ -> {});
-            context.request().endHandler(__ -> {});
-            context.request().resume();
+        // Write response headers
+        context.response().headers().forEach((name, values) -> values.forEach(value -> context.response().writeHeader(name, value)));
+
+        // Write error content if any
+        if (failure.contentType() != null) {
+            context.response().headers().set(io.gravitee.common.http.HttpHeaders.CONTENT_TYPE, failure.contentType());
         }
 
-        errorProcessorChain
-            .create()
-            .handler(__ -> {
-                endHandler.handle(context);
-                pendingRequests.decrementAndGet();
-            })
-            .errorHandler(__ -> {
-                endHandler.handle(context);
-                pendingRequests.decrementAndGet();
-            })
-            .handle(context);
+        if (failure.message() != null) {
+            context.response().write(Buffer.buffer(failure.message()));
+        }
+
+        context.response().end();
+
+        endHandler.handle(context);
+    }
+
+    private void handleProcessorExit(MutableExecutionContext context, Handler<ExecutionContext> endHandler) {
+        // Write response headers
+        context.response().headers().forEach((name, values) -> values.forEach(value -> context.response().writeHeader(name, value)));
+
+        context.response().end();
+
+        endHandler.handle(context);
+    }
+
+    private void handleProxyError(MutableExecutionContext context, Handler<ExecutionContext> endHandler) {
+        ProcessorFailure failure = new ProcessorFailure() {
+            @Override
+            public int statusCode() {
+                return HttpStatusCode.BAD_GATEWAY_502;
+            }
+
+            @Override
+            public String message() {
+                return "Bad Gateway";
+            }
+
+            @Override
+            public String key() {
+                return "PROXY_ERROR";
+            }
+
+            @Override
+            public String contentType() {
+                return null;
+            }
+
+            @Override
+            public Object parameters() {
+                return null;
+            }
+        };
+
+        handleProcessorFailure(failure, context, endHandler);
+    }
+
+    private void handleStreamError(
+        ProcessorFailure failure,
+        MutableExecutionContext context,
+        ProxyResponse proxyResponse,
+        Handler<ExecutionContext> endHandler
+    ) {
+        proxyResponse.cancel();
+        handleProcessorFailure(failure, context, endHandler);
+    }
+
+    @Override
+    protected V3ExecutionContextFactory executionContextFactory() {
+        return executionContextFactory;
     }
 
     @Override
     protected void doStart() throws Exception {
-        log.debug("API handler is now starting, preparing API context...");
-        long startTime = System.currentTimeMillis(); // Get the start Time
         super.doStart();
 
-        // Start resources before
-        resourceLifecycleManager.start();
-        policyManager.start();
-        groupLifecycleManager.start();
+        // Start policy manager
+        if (policyManager != null) {
+            policyManager.start();
+        }
 
-        dumpVirtualHosts();
+        // Start group lifecycle manager
+        if (groupLifecycleManager != null) {
+            groupLifecycleManager.start();
+        }
 
-        long endTime = System.currentTimeMillis(); // Get the end Time
-        log.debug("API handler started in {} ms", (endTime - startTime));
+        // Start resource lifecycle manager
+        if (resourceLifecycleManager != null) {
+            resourceLifecycleManager.start();
+        }
+
+        // Configure invoker
+        if (invoker instanceof EndpointInvoker) {
+            ((EndpointInvoker) invoker).setGroupManager(groupLifecycleManager);
+        }
+
+        dumpAcceptors();
     }
 
     @Override
     protected void doStop() throws Exception {
         super.doStop();
-        if (!node.lifecycleState().equals(Lifecycle.State.STARTED)) {
-            log.debug("Current node is not started, API handler will be stopped immediately");
-            stopNow();
-        } else {
-            log.debug("Current node is started, API handler will wait for pending requests before stopping");
-            long timeout = System.currentTimeMillis() + pendingRequestsTimeout;
-            stopUntil(timeout);
-        }
-    }
 
-    private void stopUntil(long timeout) throws Exception {
-        while (pendingRequests.get() > 0 && System.currentTimeMillis() <= timeout) {
-            TimeUnit.MILLISECONDS.sleep(100);
+        // Stop resource lifecycle manager
+        if (resourceLifecycleManager != null) {
+            resourceLifecycleManager.stop();
         }
-        stopNow();
-    }
 
-    private void stopNow() throws Exception {
-        log.debug("API handler is now stopping, closing context for {} ...", this);
-        policyManager.stop();
-        resourceLifecycleManager.stop();
-        groupLifecycleManager.stop();
-        super.doStop();
-        log.debug("API handler is now stopped: {}", this);
+        // Stop group lifecycle manager
+        if (groupLifecycleManager != null) {
+            groupLifecycleManager.stop();
+        }
+
+        // Stop policy manager
+        if (policyManager != null) {
+            policyManager.stop();
+        }
     }
 
     @Override
     public String toString() {
-        return "Handler API id[" + reactable.getId() + "] name[" + reactable.getName() + "] version[" + reactable.getApiVersion() + ']';
+        return "ApiReactorHandler{" + "api=" + reactableApi.getId() + ", contextPath=" + reactableApi.getDefinition().getProxy().getVirtualHosts() + '}';
     }
 
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        ApiReactorHandler that = (ApiReactorHandler) o;
-        return reactable.equals(that.reactable);
+    public void setRequestProcessorChain(RequestProcessorChainFactory requestProcessorChainFactory) {
+        this.requestProcessorChainFactory = requestProcessorChainFactory;
+    }
+
+    public void setResponseProcessorChain(ResponseProcessorChainFactory responseProcessorChainFactory) {
+        this.responseProcessorChainFactory = responseProcessorChainFactory;
+    }
+
+    public void setErrorProcessorChain(OnErrorProcessorChainFactory errorProcessorChainFactory) {
+        this.errorProcessorChainFactory = errorProcessorChainFactory;
     }
 
     public void setInvoker(Invoker invoker) {
         this.invoker = invoker;
-    }
-
-    public void setRequestProcessorChain(RequestProcessorChainFactory requestProcessorChain) {
-        this.requestProcessorChain = requestProcessorChain;
-    }
-
-    public void setResponseProcessorChain(ResponseProcessorChainFactory responseProcessorChain) {
-        this.responseProcessorChain = responseProcessorChain;
-    }
-
-    public void setErrorProcessorChain(OnErrorProcessorChainFactory errorProcessorChain) {
-        this.errorProcessorChain = errorProcessorChain;
-    }
-
-    public void setResourceLifecycleManager(ResourceLifecycleManager resourceLifecycleManager) {
-        this.resourceLifecycleManager = resourceLifecycleManager;
     }
 
     public void setPolicyManager(PolicyManager policyManager) {
@@ -406,79 +344,31 @@ public class ApiReactorHandler extends AbstractReactorHandler<Api> {
         this.groupLifecycleManager = groupLifecycleManager;
     }
 
+    public void setResourceLifecycleManager(ResourceLifecycleManager resourceLifecycleManager) {
+        this.resourceLifecycleManager = resourceLifecycleManager;
+    }
+
+    public void setExecutionContextFactory(V3ExecutionContextFactory executionContextFactory) {
+        this.executionContextFactory = executionContextFactory;
+    }
+
     public void setNode(Node node) {
         this.node = node;
     }
 
-    public void setPendingRequestsTimeout(long pendingRequestsTimeout) {
-        this.pendingRequestsTimeout = pendingRequestsTimeout;
-    }
+    private static class LogRequestDebugHandler implements Handler<String> {
 
-    @Override
-    public int hashCode() {
-        return Objects.hash(reactable);
-    }
+        private final Logger logger;
+        private final ExecutionContext context;
 
-    private static final ProcessorFailure TIMEOUT_PROCESSOR_FAILURE = new ProcessorFailure() {
-        private static final String REQUEST_TIMEOUT = "REQUEST_TIMEOUT";
-
-        @Override
-        public int statusCode() {
-            return HttpStatusCode.GATEWAY_TIMEOUT_504;
+        LogRequestDebugHandler(Logger logger, ExecutionContext context) {
+            this.logger = logger;
+            this.context = context;
         }
 
         @Override
-        public String message() {
-            return "Request timeout";
+        public void handle(String frame) {
+            logger.debug("[{}] Received frame: {}", context.request().id(), frame);
         }
-
-        @Override
-        public String key() {
-            return REQUEST_TIMEOUT;
-        }
-
-        @Override
-        public Map<String, Object> parameters() {
-            return null;
-        }
-
-        @Override
-        public String contentType() {
-            return null;
-        }
-    };
-
-    @Override
-    public List<Acceptor<?>> acceptors() {
-        if (acceptors == null) {
-            acceptors = reactable
-                .getDefinition()
-                .getProxy()
-                .getVirtualHosts()
-                .stream()
-                .map(virtualHost -> {
-                    if (virtualHost.getHost() != null) {
-                        return httpAcceptorFactory.create(
-                            virtualHost.getHost(),
-                            virtualHost.getPath(),
-                            this,
-                            reactable.getDefinition().getProxy().getServers()
-                        );
-                    } else {
-                        return new AccessPointHttpAcceptor(
-                            eventManager,
-                            httpAcceptorFactory,
-                            reactable.getEnvironmentId(),
-                            accessPointManager.getByEnvironmentId(reactable.getEnvironmentId()),
-                            virtualHost.getPath(),
-                            this,
-                            reactable.getDefinition().getProxy().getServers()
-                        );
-                    }
-                })
-                .collect(Collectors.toList());
-        }
-
-        return acceptors;
     }
 }
