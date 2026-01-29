@@ -251,9 +251,9 @@ public class ElasticsearchFormatter<T extends Reportable> extends AbstractFormat
 
         data.put("metrics", metrics);
 
-        data.put("endpointResponseTimeMs", metrics.getEndpointResponseTimeMs() >= 0 ? metrics.getEndpointResponseTimeMs() : null);
-        data.put("gatewayResponseTimeMs", metrics.getGatewayResponseTimeMs() >= 0 ? metrics.getGatewayResponseTimeMs() : null);
-        data.put("gatewayLatencyMs", metrics.getGatewayLatencyMs() >= 0 ? metrics.getGatewayLatencyMs() : null);
+        data.put("endpointResponseTimeMs", metrics.getEndpointResponseTimeMs() > 0 ? metrics.getEndpointResponseTimeMs() : null);
+        data.put("gatewayResponseTimeMs", metrics.getGatewayResponseTimeMs() > 0 ? metrics.getGatewayResponseTimeMs() : null);
+        data.put("gatewayLatencyMs", metrics.getGatewayLatencyMs() > 0 ? metrics.getGatewayLatencyMs() : null);
         data.put("requestContentLength", metrics.getRequestContentLength() >= 0 ? metrics.getRequestContentLength() : null);
         data.put("responseContentLength", metrics.getResponseContentLength() >= 0 ? metrics.getResponseContentLength() : null);
 

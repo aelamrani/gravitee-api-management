@@ -27,7 +27,9 @@
   ,"transaction-id":"${metrics.getTransactionId()}"
   <#if metrics.getApiId()??>
   ,"api-id":"${metrics.getApiId()}"
+  <#if metrics.getApiName()??>
   ,"api-name":"${metrics.getApiName()?j_string}"
+  </#if>
   </#if>
   <#if metrics.getOrganizationId()??>
     ,"org-id":"${metrics.getOrganizationId()}"

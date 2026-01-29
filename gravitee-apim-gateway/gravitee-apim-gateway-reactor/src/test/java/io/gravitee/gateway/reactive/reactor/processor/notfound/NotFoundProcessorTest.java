@@ -64,6 +64,7 @@ class NotFoundProcessorTest extends AbstractProcessorTest {
 
         Metrics metrics = ctx.metrics();
         assertThat(metrics.getApiId()).isEqualTo(UNKNOWN_SERVICE);
+        assertThat(metrics.getApiName()).isEqualTo("Unknown API");
         assertThat(metrics.getApplicationId()).isEqualTo(UNKNOWN_SERVICE);
         verify(mockResponse).status(HttpStatusCode.NOT_FOUND_404);
     }
