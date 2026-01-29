@@ -34,6 +34,7 @@ public class NotFoundProcessor implements Processor {
 
     private static final String ID = "processor-not-found";
     protected static final String UNKNOWN_SERVICE = "1";
+    protected static final String UNKNOWN_SERVICE_NAME = "Unknown API";
     private final Environment environment;
 
     @Override
@@ -49,6 +50,7 @@ public class NotFoundProcessor implements Processor {
             // Init not found metrics
             Metrics metrics = ctx.metrics();
             metrics.setApiId(UNKNOWN_SERVICE);
+            metrics.setApiName(UNKNOWN_SERVICE_NAME);
             metrics.setApplicationId(UNKNOWN_SERVICE);
 
             // Send a NOT_FOUND HTTP status code (404)
