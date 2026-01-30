@@ -22,7 +22,9 @@ import static io.vertx.core.http.HttpHeaders.CONNECTION;
 import static io.vertx.core.http.HttpHeaders.CONTENT_LENGTH;
 import static io.vertx.core.http.HttpHeaders.CONTENT_TYPE;
 import static io.vertx.core.http.HttpHeaders.UPGRADE;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.reset;
@@ -230,6 +232,71 @@ class RequestUtilsTest {
         void should_be_streaming_request_when_websocket() {
             lenient().when(request.isWebSocketUpgraded()).thenReturn(true);
             assertTrue(RequestUtils.isStreaming(request, response));
+        }
+    }
+
+    @Nested
+    class PathNormalizationTest {
+
+        @Test
+        void should_return_null_when_path_is_null() {
+            assertNull(RequestUtils.normalizePath(null));
+        }
+
+        @Test
+        void should_return_empty_string_when_path_is_empty() {
+            assertEquals("", RequestUtils.normalizePath(""));
+        }
+
+        @Test
+        void should_not_modify_single_slash() {
+            assertEquals("/", RequestUtils.normalizePath("/"));
+        }
+
+        @Test
+        void should_normalize_double_slashes_to_single_slash() {
+            assertEquals("/path", RequestUtils.normalizePath("//path"));
+        }
+
+        @Test
+        void should_normalize_multiple_consecutive_slashes() {
+            assertEquals("/path/to/resource", RequestUtils.normalizePath("/path//to///resource"));
+        }
+
+        @Test
+        void should_normalize_path_with_double_slash_at_start() {
+            assertEquals("/test-normalize/123/normalize", RequestUtils.normalizePath("//test-normalize/123/normalize"));
+        }
+
+        @Test
+        void should_normalize_path_with_double_slash_in_middle() {
+            assertEquals("/test-normalize/123/normalize", RequestUtils.normalizePath("/test-normalize//123/normalize"));
+        }
+
+        @Test
+        void should_normalize_path_with_multiple_double_slashes() {
+            assertEquals("/a/b/c/d", RequestUtils.normalizePath("//a//b//c//d"));
+        }
+
+        @Test
+        void should_normalize_path_with_triple_slashes() {
+            assertEquals("/path/to/resource", RequestUtils.normalizePath("/path///to/resource"));
+        }
+
+        @Test
+        void should_not_modify_already_normalized_path() {
+            String normalPath = "/path/to/resource";
+            assertEquals(normalPath, RequestUtils.normalizePath(normalPath));
+        }
+
+        @Test
+        void should_normalize_path_with_query_string() {
+            assertEquals("/path/resource?query=value", RequestUtils.normalizePath("/path//resource?query=value"));
+        }
+
+        @Test
+        void should_normalize_root_with_multiple_slashes() {
+            assertEquals("/", RequestUtils.normalizePath("///"));
         }
     }
 }

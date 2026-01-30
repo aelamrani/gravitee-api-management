@@ -26,6 +26,7 @@ import io.gravitee.gateway.reactive.api.message.Message;
 import io.gravitee.gateway.reactive.api.ws.WebSocket;
 import io.gravitee.gateway.reactive.core.BufferFlow;
 import io.gravitee.gateway.reactive.core.MessageFlow;
+import io.gravitee.gateway.reactive.core.utils.PathUtils;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.FlowableTransformer;
@@ -199,9 +200,9 @@ public abstract class AbstractRequest implements MutableRequest, HttpRequestInte
     public MutableRequest contextPath(String contextPath) {
         this.contextPath = contextPath;
         if (contextPath == null || contextPath.isEmpty()) {
-            this.pathInfo = path();
+            this.pathInfo = PathUtils.normalizePath(path());
         } else if (path().length() > 1) {
-            this.pathInfo = path().substring(contextPath.length() - 1);
+            this.pathInfo = PathUtils.normalizePath(path().substring(contextPath.length() - 1));
         } else {
             this.pathInfo = "";
         }

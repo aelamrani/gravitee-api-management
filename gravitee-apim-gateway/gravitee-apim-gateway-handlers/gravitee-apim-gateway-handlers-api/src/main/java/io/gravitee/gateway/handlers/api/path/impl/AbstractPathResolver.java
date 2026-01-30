@@ -20,6 +20,7 @@ import io.gravitee.gateway.api.Request;
 import io.gravitee.gateway.handlers.api.path.Path;
 import io.gravitee.gateway.handlers.api.path.PathParam;
 import io.gravitee.gateway.handlers.api.path.PathResolver;
+import io.gravitee.gateway.reactive.core.utils.PathUtils;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -64,6 +65,9 @@ public abstract class AbstractPathResolver implements PathResolver {
         try {
             path = QueryStringDecoder.decodeComponent(path, Charset.defaultCharset());
         } catch (IllegalArgumentException iae) {}
+
+        // Normalize the path to collapse multiple consecutive slashes
+        path = PathUtils.normalizePath(path);
 
         int pieces = -1;
         Path bestPath = null;
