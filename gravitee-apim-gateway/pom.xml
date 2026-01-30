@@ -35,13 +35,13 @@
 
     <modules>
         <module>gravitee-apim-gateway-connector</module>
+        <module>gravitee-apim-gateway-http</module>
         <module>gravitee-apim-gateway-core</module>
         <module>gravitee-apim-gateway-coverage</module>
         <module>gravitee-apim-gateway-dictionary</module>
         <module>gravitee-apim-gateway-env</module>
         <module>gravitee-apim-gateway-flow</module>
         <module>gravitee-apim-gateway-handlers</module>
-        <module>gravitee-apim-gateway-http</module>
         <module>gravitee-apim-gateway-opentelemetry</module>
         <module>gravitee-apim-gateway-platform</module>
         <module>gravitee-apim-gateway-policy</module>

@@ -24,6 +24,7 @@ import io.gravitee.common.http.MediaType;
 import io.gravitee.gateway.api.http.HttpHeaders;
 import io.gravitee.gateway.reactive.api.context.Request;
 import io.gravitee.gateway.reactive.api.context.Response;
+import io.gravitee.gateway.reactive.core.utils.PathUtils;
 import io.gravitee.gateway.reactive.http.vertx.VertxHttpServerRequest;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.vertx.core.http.HttpMethod;
@@ -107,5 +108,22 @@ public final class RequestUtils {
             );
         }
         return false;
+    }
+
+    /**
+     * Normalize a path by collapsing multiple consecutive slashes into a single slash.
+     * This is useful for ensuring consistent path matching behavior.
+     *
+     * Examples:
+     * - "//path" becomes "/path"
+     * - "/path//to///resource" becomes "/path/to/resource"
+     * - "/" remains "/"
+     *
+     * @param path the path to normalize
+     * @return the normalized path; null if the path is null; empty string if the path is empty
+     * @see PathUtils#normalizePath(String)
+     */
+    public static String normalizePath(String path) {
+        return PathUtils.normalizePath(path);
     }
 }
