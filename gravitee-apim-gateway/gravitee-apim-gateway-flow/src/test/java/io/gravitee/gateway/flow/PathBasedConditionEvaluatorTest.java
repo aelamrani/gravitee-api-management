@@ -170,4 +170,31 @@ public class PathBasedConditionEvaluatorTest {
 
         assertTrue(evaluator.evaluate(context, flow));
     }
+
+    @Test
+    public void shouldEvaluate_equals_withDoubleSlash() {
+        when(request.pathInfo()).thenReturn("/my//path");
+        when(flow.getOperator()).thenReturn(Operator.EQUALS);
+        when(flow.getPath()).thenReturn("/my/path");
+
+        assertTrue(evaluator.evaluate(context, flow));
+    }
+
+    @Test
+    public void shouldEvaluate_startsWith_withDoubleSlash() {
+        when(request.pathInfo()).thenReturn("/test-normalize//123/normalize");
+        when(flow.getOperator()).thenReturn(Operator.STARTS_WITH);
+        when(flow.getPath()).thenReturn("/:testId/normalize");
+
+        assertTrue(evaluator.evaluate(context, flow));
+    }
+
+    @Test
+    public void shouldEvaluate_startsWith_withMultipleDoubleSlashes() {
+        when(request.pathInfo()).thenReturn("/api///v1//users//123");
+        when(flow.getOperator()).thenReturn(Operator.STARTS_WITH);
+        when(flow.getPath()).thenReturn("/api/v1");
+
+        assertTrue(evaluator.evaluate(context, flow));
+    }
 }
