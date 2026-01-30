@@ -19,6 +19,7 @@ import io.gravitee.definition.model.flow.Operator;
 import io.gravitee.definition.model.v4.flow.Flow;
 import io.gravitee.definition.model.v4.flow.selector.HttpSelector;
 import io.gravitee.definition.model.v4.flow.selector.SelectorType;
+import io.gravitee.gateway.flow.condition.evaluation.PathNormalizer;
 import io.gravitee.gateway.flow.condition.evaluation.PathPatterns;
 import io.gravitee.gateway.reactive.api.context.base.BaseExecutionContext;
 import io.gravitee.gateway.reactive.api.context.http.HttpBaseExecutionContext;
@@ -55,7 +56,8 @@ public class HttpSelectorConditionFilter implements HttpConditionFilter<Flow> {
 
     private boolean isPathMatches(final HttpBaseExecutionContext ctx, final HttpSelector httpSelector) {
         Pattern pattern = pathPatterns.getOrCreate(httpSelector.getPath());
-        String pathInfo = ctx.request().pathInfo();
+        // Normalize the path to handle consecutive slashes before matching
+        String pathInfo = PathNormalizer.normalize(ctx.request().pathInfo());
         return (httpSelector.getPathOperator() == Operator.EQUALS)
             ? pattern.matcher(pathInfo).matches()
             : pattern.matcher(pathInfo).lookingAt();

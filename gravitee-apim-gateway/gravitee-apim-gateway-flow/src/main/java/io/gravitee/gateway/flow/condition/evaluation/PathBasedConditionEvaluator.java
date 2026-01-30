@@ -39,7 +39,9 @@ public class PathBasedConditionEvaluator implements ConditionEvaluator<Flow> {
 
     protected boolean evaluate(String pathInfo, Flow flow) {
         Pattern pattern = pathPatterns.getOrCreate(flow.getPath());
+        // Normalize the path to handle consecutive slashes before matching
+        String normalizedPath = PathNormalizer.normalize(pathInfo);
 
-        return (flow.getOperator() == Operator.EQUALS) ? pattern.matcher(pathInfo).matches() : pattern.matcher(pathInfo).lookingAt();
+        return (flow.getOperator() == Operator.EQUALS) ? pattern.matcher(normalizedPath).matches() : pattern.matcher(normalizedPath).lookingAt();
     }
 }

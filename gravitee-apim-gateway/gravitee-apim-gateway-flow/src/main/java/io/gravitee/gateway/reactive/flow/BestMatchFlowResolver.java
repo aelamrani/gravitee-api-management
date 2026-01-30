@@ -16,6 +16,7 @@
 package io.gravitee.gateway.reactive.flow;
 
 import io.gravitee.definition.model.flow.Flow;
+import io.gravitee.gateway.flow.condition.evaluation.PathNormalizer;
 import io.gravitee.gateway.reactive.api.context.GenericExecutionContext;
 import io.gravitee.gateway.reactive.api.context.base.BaseExecutionContext;
 import io.gravitee.gateway.reactive.api.context.http.HttpBaseExecutionContext;
@@ -45,7 +46,7 @@ public class BestMatchFlowResolver implements FlowResolver<HttpBaseExecutionCont
     public Flowable<Flow> resolve(final HttpBaseExecutionContext ctx) {
         return provideFlows(ctx)
             .toList()
-            .flatMapMaybe(flows -> Maybe.fromCallable(() -> bestMatchFlowResolver.forPath(flows, ctx.request().pathInfo())))
+            .flatMapMaybe(flows -> Maybe.fromCallable(() -> bestMatchFlowResolver.forPath(flows, PathNormalizer.normalize(ctx.request().pathInfo()))))
             .toFlowable();
     }
 
