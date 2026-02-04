@@ -62,11 +62,24 @@ public class SharedConfigurationMigration {
         "http2MultiplexingLimit"
     );
 
+    private static final Set<String> PROXY_SYSTEM_ALLOWED = Set.of("enabled", "useSystemProxy");
+
+    private static final Set<String> PROXY_MANUAL_ALLOWED = Set.of(
+        "enabled",
+        "useSystemProxy",
+        "host",
+        "port",
+        "username",
+        "password",
+        "type"
+    );
+
     private final ObjectMapper objectMapper;
 
     public String convert(io.gravitee.definition.model.EndpointGroup source) throws JsonProcessingException {
         ObjectNode httpClientOptions = mapHttpClientOptions(source.getHttpClientOptions());
         ObjectNode httpClientSslOptionsNode = mapHttpClientSslOptions(source.getHttpClientSslOptions());
+        ObjectNode proxyNode = mapHttpProxy(source.getHttpProxy());
         ObjectNode sharedConfiguration = objectMapper.createObjectNode();
         if (httpClientOptions != null) {
             sharedConfiguration.set("http", httpClientOptions);
@@ -77,8 +90,8 @@ public class SharedConfigurationMigration {
         if (source.getHeaders() != null) {
             sharedConfiguration.set("headers", objectMapper.valueToTree(source.getHeaders()));
         }
-        if (source.getHttpProxy() != null) {
-            sharedConfiguration.set("proxy", objectMapper.valueToTree((source.getHttpProxy())));
+        if (proxyNode != null) {
+            sharedConfiguration.set("proxy", proxyNode);
         }
         return objectMapper.writeValueAsString(sharedConfiguration);
     }
@@ -124,5 +137,39 @@ public class SharedConfigurationMigration {
         sslOptionsV4.setKeyStore(KeyStoreMigration.convert(httpClientSslOptions.getKeyStore()));
 
         return objectMapper.valueToTree(sslOptionsV4);
+    }
+
+    private ObjectNode mapHttpProxy(io.gravitee.definition.model.HttpProxy httpProxy) {
+        if (httpProxy == null) {
+            return null;
+        }
+
+        // Serialize the proxy to an ObjectNode
+        ObjectNode proxyNode = objectMapper.valueToTree(httpProxy);
+
+        // Filter fields based on useSystemProxy setting
+        // When useSystemProxy is true, only keep enabled and useSystemProxy fields
+        // When useSystemProxy is false, keep all relevant fields but exclude null/default values
+        if (httpProxy.isUseSystemProxy()) {
+            return proxyNode.retain(PROXY_SYSTEM_ALLOWED);
+        } else {
+            // First retain allowed fields
+            proxyNode = proxyNode.retain(PROXY_MANUAL_ALLOWED);
+
+            // Then remove null/default fields to comply with the JSON schema validation
+            if (proxyNode.has("host") && proxyNode.get("host").isNull()) {
+                proxyNode.remove("host");
+            }
+            if (proxyNode.has("port") && proxyNode.get("port").asInt() == 0) {
+                proxyNode.remove("port");
+            }
+            if (proxyNode.has("username") && proxyNode.get("username").isNull()) {
+                proxyNode.remove("username");
+            }
+            if (proxyNode.has("password") && proxyNode.get("password").isNull()) {
+                proxyNode.remove("password");
+            }
+            return proxyNode;
+        }
     }
 }
