@@ -28,10 +28,18 @@ public class HttpClientOptions implements Serializable {
     public static long DEFAULT_KEEP_ALIVE_TIMEOUT = 30000;
     public static long DEFAULT_CONNECT_TIMEOUT = 5000;
     public static long DEFAULT_READ_TIMEOUT = 10000;
-    // Increased from 100 to 500 to support sustained high-load scenarios (APIM-12617)
-    // Under load with ~450 VUs and 500KB payloads, 100 connections caused response time
-    // degradation and CPU throttling after 5-30 minutes. Increasing to 500 aligns with
-    // performance testing requirements and prevents connection pool exhaustion.
+    // Increased from 100 to 500 to support sustained high-load scenarios (APIM-12617).
+    // Under load with ~450 VUs and 500KB payloads, 100 connections caused:
+    // - Response time degradation after 5-30 minutes (P99: 1.09s → 1.50s)
+    // - CPU throttling despite low CPU usage (~35%)
+    // - Throughput degradation (439 → 380 rps)
+    //
+    // This default can be overridden per endpoint via the maxConcurrentConnections property.
+    // For low-resource environments or lower load scenarios, consider setting a lower value.
+    //
+    // Resource considerations: Each connection consumes memory for buffers (~8-64KB per connection
+    // depending on buffer sizes). With 500 connections, ensure adequate heap size (recommend
+    // minimum 2-4GB heap depending on payload sizes, response times, and number of endpoints).
     public static int DEFAULT_MAX_CONCURRENT_CONNECTIONS = 500;
     public static boolean DEFAULT_KEEP_ALIVE = true;
     public static boolean DEFAULT_PIPELINING = false;
