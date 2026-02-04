@@ -18,6 +18,7 @@ package io.gravitee.gateway.handlers.sharedpolicygroup.spring;
 import io.gravitee.common.event.EventManager;
 import io.gravitee.gateway.core.classloader.DefaultClassLoader;
 import io.gravitee.gateway.core.component.ComponentProvider;
+import io.gravitee.gateway.core.component.ResourceFilteringComponentProvider;
 import io.gravitee.gateway.handlers.sharedpolicygroup.event.SharedPolicyGroupEventListener;
 import io.gravitee.gateway.handlers.sharedpolicygroup.manager.SharedPolicyGroupManager;
 import io.gravitee.gateway.handlers.sharedpolicygroup.manager.impl.SharedPolicyGroupManagerImpl;
@@ -84,12 +85,17 @@ public class SharedPolicyGroupConfiguration {
         ComponentProvider componentProvider,
         OpenTelemetryConfiguration openTelemetryConfiguration
     ) {
+        // Wrap the component provider to filter out ResourceManager lookups.
+        // This ensures policies in shared policy groups always use the ExecutionContext
+        // at runtime for resource access, preventing resource name collisions across APIs.
+        ComponentProvider filteredComponentProvider = new ResourceFilteringComponentProvider(componentProvider);
+        
         return new DefaultSharedPolicyGroupReactorFactory(
             classLoader,
             applicationContext,
             policyFactoryManager,
             policyClassLoaderFactory,
-            componentProvider,
+            filteredComponentProvider,
             openTelemetryConfiguration
         );
     }
