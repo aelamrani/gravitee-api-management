@@ -83,4 +83,91 @@ class SharedConfigurationMigrationTest {
         assertThat(json.has("headers")).isFalse();
         assertThat(json.has("proxy")).isFalse();
     }
+
+    @Test
+    void should_filter_proxy_fields_when_useSystemProxy_is_enabled() throws JsonProcessingException {
+        var group = new EndpointGroup();
+        var options = new HttpClientOptions();
+        options.setVersion(ProtocolVersion.HTTP_1_1);
+        group.setHttpClientOptions(options);
+
+        var proxy = new HttpProxy();
+        proxy.setEnabled(true);
+        proxy.setUseSystemProxy(true);
+        proxy.setHost("some-host"); // This should be filtered out
+        proxy.setPort(8080); // This should be filtered out
+        group.setHttpProxy(proxy);
+
+        var result = sharedConfigurationMigration.convert(group);
+        JsonNode json = objectMapper.readTree(result);
+
+        JsonNode proxyNode = json.get("proxy");
+        assertThat(proxyNode).isNotNull();
+        assertThat(proxyNode.get("enabled").asBoolean()).isTrue();
+        assertThat(proxyNode.get("useSystemProxy").asBoolean()).isTrue();
+        // host and port should not be present when useSystemProxy is true
+        assertThat(proxyNode.has("host")).isFalse();
+        assertThat(proxyNode.has("port")).isFalse();
+        assertThat(proxyNode.has("username")).isFalse();
+        assertThat(proxyNode.has("password")).isFalse();
+        assertThat(proxyNode.has("type")).isFalse();
+    }
+
+    @Test
+    void should_keep_proxy_fields_when_useSystemProxy_is_disabled() throws JsonProcessingException {
+        var group = new EndpointGroup();
+        var options = new HttpClientOptions();
+        options.setVersion(ProtocolVersion.HTTP_1_1);
+        group.setHttpClientOptions(options);
+
+        var proxy = new HttpProxy();
+        proxy.setEnabled(true);
+        proxy.setUseSystemProxy(false);
+        proxy.setHost("my-proxy-host");
+        proxy.setPort(3128);
+        proxy.setUsername("proxyuser");
+        proxy.setPassword("proxypass");
+        group.setHttpProxy(proxy);
+
+        var result = sharedConfigurationMigration.convert(group);
+        JsonNode json = objectMapper.readTree(result);
+
+        JsonNode proxyNode = json.get("proxy");
+        assertThat(proxyNode).isNotNull();
+        assertThat(proxyNode.get("enabled").asBoolean()).isTrue();
+        assertThat(proxyNode.get("useSystemProxy").asBoolean()).isFalse();
+        assertThat(proxyNode.get("host").asText()).isEqualTo("my-proxy-host");
+        assertThat(proxyNode.get("port").asInt()).isEqualTo(3128);
+        assertThat(proxyNode.get("username").asText()).isEqualTo("proxyuser");
+        assertThat(proxyNode.get("password").asText()).isEqualTo("proxypass");
+        assertThat(proxyNode.get("type").asText()).isEqualTo("HTTP");
+    }
+
+    @Test
+    void should_remove_null_host_and_zero_port_when_useSystemProxy_is_disabled() throws JsonProcessingException {
+        var group = new EndpointGroup();
+        var options = new HttpClientOptions();
+        options.setVersion(ProtocolVersion.HTTP_1_1);
+        group.setHttpClientOptions(options);
+
+        var proxy = new HttpProxy();
+        proxy.setEnabled(true);
+        proxy.setUseSystemProxy(false);
+        // host is null and port is 0 by default
+        group.setHttpProxy(proxy);
+
+        var result = sharedConfigurationMigration.convert(group);
+        JsonNode json = objectMapper.readTree(result);
+
+        JsonNode proxyNode = json.get("proxy");
+        assertThat(proxyNode).isNotNull();
+        assertThat(proxyNode.get("enabled").asBoolean()).isTrue();
+        assertThat(proxyNode.get("useSystemProxy").asBoolean()).isFalse();
+        // null host and zero port should be removed
+        assertThat(proxyNode.has("host")).isFalse();
+        assertThat(proxyNode.has("port")).isFalse();
+        assertThat(proxyNode.has("username")).isFalse();
+        assertThat(proxyNode.has("password")).isFalse();
+        assertThat(proxyNode.get("type").asText()).isEqualTo("HTTP");
+    }
 }
