@@ -115,8 +115,11 @@ http:
 
     # Adds the Content-Security-Policy header.
     # Example: "default-src 'self'; frame-ancestors 'none';"
+    # Strict CSP v3 policy to mitigate XSS and other browser-based attacks
+    # Note: 'unsafe-inline' and 'unsafe-eval' are included for Angular compatibility.
+    #       For production hardening, consider implementing nonce-based CSP (see CSP_README.md)
     csp:
-      policy: "frame-ancestors 'self';"
+      policy: "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-src 'self'; media-src 'self'; manifest-src 'self';"
 
     # Adds the Referrer-Policy header.
     # Example: "no-referrer", "strict-origin-when-cross-origin", ...
