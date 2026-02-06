@@ -68,7 +68,7 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
         "http.secureHeaders.xframe.enabled=true",
         "http.secureHeaders.xframe.action=SAMEORIGIN",
         "http.secureHeaders.xContentTypeOptions.enabled=true",
-        "http.secureHeaders.csp.policy=frame-ancestors 'self';",
+        "http.secureHeaders.csp.policy=default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-src 'self'; media-src 'self'; manifest-src 'self';",
         "http.secureHeaders.referrerPolicy.policy=strict-origin-when-cross-origin",
         "http.secureHeaders.permissionsPolicy.policy=camera=(), microphone=(), geolocation=()",
         "http.secureHeaders.hsts.enabled=true",
@@ -102,7 +102,7 @@ public abstract class AbstractSecurityConfigurerAdapterTest {
             .andExpect(header().string("X-Frame-Options", "SAMEORIGIN"))
             .andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"))
             .andExpect(header().string("Permissions-Policy", "camera=(), microphone=(), geolocation=()"))
-            .andExpect(header().string("Content-Security-Policy", "frame-ancestors 'self';"))
+            .andExpect(header().string("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-src 'self'; media-src 'self'; manifest-src 'self';"))
             .andExpect(header().string("Strict-Transport-Security", "max-age=31536000 ; includeSubDomains"))
             .andExpect(cookie().exists("XSRF-TOKEN"));
     }
