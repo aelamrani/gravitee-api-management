@@ -752,7 +752,7 @@ api:
       # Adds the Content-Security-Policy header.
       # Example: "default-src 'self'; frame-ancestors 'none';"
       csp:
-        policy: "frame-ancestors 'self';"
+        policy: "default-src 'none'; script-src 'self'; object-src 'none'; frame-ancestors 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; font-src 'self';"
 
       # Adds the Referrer-Policy header.
       # Example: "no-referrer", "strict-origin-when-cross-origin", ...
