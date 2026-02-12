@@ -201,6 +201,20 @@ class ApiAnalyticsResourceTest extends ApiResourceTest {
                     assertThat(r.getAveragesByEntrypoint()).containsAllEntriesOf(Map.of("http-get", 10.0, "sse", 100.0));
                 });
         }
+
+        @Test
+        void should_return_400_bad_request_for_native_api() {
+            // Use a native (proxy) API instead of message API
+            apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aProxyApiV4().toBuilder().environmentId(ENVIRONMENT).build()));
+
+            final Response response = averageMessagesPerRequestTarget.request().get();
+
+            MAPIAssertions.assertThat(response)
+                .hasStatus(400)
+                .asError()
+                .hasHttpStatus(400)
+                .hasMessage("Only V4 MESSAGE API definition is supported");
+        }
     }
 
     @Nested
@@ -247,6 +261,26 @@ class ApiAnalyticsResourceTest extends ApiResourceTest {
                 .satisfies(r -> {
                     assertThat(r.getAverage()).isEqualTo(55.0);
                     assertThat(r.getAveragesByEntrypoint()).containsAllEntriesOf(Map.of("http-get", 10.0, "sse", 100.0));
+                });
+        }
+
+        @Test
+        void should_return_average_connection_duration_for_native_api() {
+            // Native APIs should work with average connection duration endpoint
+            apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aProxyApiV4().toBuilder().environmentId(ENVIRONMENT).build()));
+            fakeAnalyticsQueryService.averageConnectionDuration = AverageConnectionDuration.builder()
+                .globalAverage(25.0)
+                .averagesByEntrypoint(Map.of("http-proxy", 25.0))
+                .build();
+
+            final Response response = averageConnectionDurationTarget.request().get();
+
+            MAPIAssertions.assertThat(response)
+                .hasStatus(OK_200)
+                .asEntity(ApiAnalyticsAverageConnectionDurationResponse.class)
+                .satisfies(r -> {
+                    assertThat(r.getAverage()).isEqualTo(25.0);
+                    assertThat(r.getAveragesByEntrypoint()).containsAllEntriesOf(Map.of("http-proxy", 25.0));
                 });
         }
     }
