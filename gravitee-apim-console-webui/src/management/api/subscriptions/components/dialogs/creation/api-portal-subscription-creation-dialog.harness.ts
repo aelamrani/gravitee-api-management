@@ -45,7 +45,7 @@ export class ApiPortalSubscriptionCreationDialogHarness extends MatDialogHarness
 
   protected getInitialDelayInput = this.locatorForOptional(MatInputHarness.with({ selector: '[id*="initialDelaySeconds"]' }));
   protected getMaxDelayInput = this.locatorForOptional(MatInputHarness.with({ selector: '[id*="maxDelaySeconds"]' }));
-
+  protected getCustomApiKeyInput = this.locatorForOptional(MatInputHarness.with({ selector: '[formControlName="customApiKey"]' }));
   public async addInitialDelay(initialDelay: string) {
     const matInputHarness = await this.getInitialDelayInput();
     return await matInputHarness.setValue(initialDelay);
@@ -107,7 +107,7 @@ export class ApiPortalSubscriptionCreationDialogHarness extends MatDialogHarness
     const matRadioGroupHarness = await this.getApiKeyModeRadioGroup();
     return await matRadioGroupHarness.checkRadioButton({ label });
   }
-
+    return await matInputHarness.setValue(customApikey);
   public async addCustomKey(customApikey: string) {
     const matInputHarness = await this.getCustomApiKeyInput();
     return await matInputHarness.setInputValue(customApikey);
