@@ -15,33 +15,21 @@
  */
 package io.gravitee.rest.api.management.rest.resource;
 
-import io.gravitee.apim.core.api_product.use_case.GetApiProductsUseCase;
 import io.gravitee.common.data.domain.Page;
 import io.gravitee.common.http.MediaType;
-import io.gravitee.definition.model.v4.plan.PlanMode;
-import io.gravitee.repository.management.model.SubscriptionReferenceType;
-import io.gravitee.rest.api.management.rest.model.Pageable;
 import io.gravitee.rest.api.management.rest.model.Subscription;
-import io.gravitee.rest.api.management.rest.model.wrapper.SubscriptionEntityPageResult;
-import io.gravitee.rest.api.management.rest.resource.param.ListStringParam;
-import io.gravitee.rest.api.management.rest.resource.param.ListSubscriptionStatusParam;
-import io.gravitee.rest.api.model.NewSubscriptionEntity;
-import io.gravitee.rest.api.model.SubscriptionEntity;
+import io.gravitee.rest.api.model.*;
+import io.gravitee.rest.api.model.parameters.Key;
+import io.gravitee.rest.api.model.parameters.ParameterReferenceType;
 import io.gravitee.rest.api.model.permissions.RolePermission;
 import io.gravitee.rest.api.model.permissions.RolePermissionAction;
-import io.gravitee.rest.api.model.subscription.ReferenceDisplayInfo;
-import io.gravitee.rest.api.model.subscription.SubscriptionMetadataQuery;
 import io.gravitee.rest.api.model.subscription.SubscriptionQuery;
-import io.gravitee.rest.api.model.v4.api.GenericApiEntity;
-import io.gravitee.rest.api.model.v4.plan.GenericPlanEntity;
 import io.gravitee.rest.api.rest.annotation.Permission;
 import io.gravitee.rest.api.rest.annotation.Permissions;
-import io.gravitee.rest.api.service.ApplicationService;
+import io.gravitee.rest.api.service.ParameterService;
 import io.gravitee.rest.api.service.SubscriptionService;
 import io.gravitee.rest.api.service.UserService;
-import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
-import io.gravitee.rest.api.service.v4.PlanSearchService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.Explode;
@@ -53,19 +41,13 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import jakarta.ws.rs.BeanParam;
-import jakarta.ws.rs.DefaultValue;
-import jakarta.ws.rs.GET;
-import jakarta.ws.rs.POST;
-import jakarta.ws.rs.Path;
-import jakarta.ws.rs.PathParam;
-import jakarta.ws.rs.Produces;
-import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.*;
 import jakarta.ws.rs.container.ResourceContext;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
+import java.net.URI;
 import java.util.List;
-import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * @author David BRASSELY (david.brassely at graviteesource.com)
@@ -75,23 +57,17 @@ import java.util.Objects;
 @Tag(name = "Application Subscriptions")
 public class ApplicationSubscriptionsResource extends AbstractResource {
 
-    @Context
-    private ResourceContext resourceContext;
-
     @Inject
     private SubscriptionService subscriptionService;
-
-    @Inject
-    private PlanSearchService planSearchService;
-
-    @Inject
-    private ApplicationService applicationService;
 
     @Inject
     private UserService userService;
 
     @Inject
-    private GetApiProductsUseCase getApiProductsUseCase;
+    private ParameterService parameterService;
+
+    @Context
+    private ResourceContext resourceContext;
 
     @SuppressWarnings("UnresolvedRestParam")
     @PathParam("application")
@@ -110,27 +86,27 @@ public class ApplicationSubscriptionsResource extends AbstractResource {
     @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.CREATE) })
     public Response createSubscriptionWithApplication(
         @Parameter(name = "plan", required = true) @NotNull @QueryParam("plan") String plan,
-        NewSubscriptionEntity newSubscriptionEntity
+        @Parameter(name = "customApiKey") @QueryParam("customApiKey") String customApiKey,
+        @Valid NewSubscriptionConfigurationEntity newSubscriptionConfigurationEntity
     ) {
-        // If no request message has been passed, the entity is not created
-        if (newSubscriptionEntity == null) {
-            newSubscriptionEntity = new NewSubscriptionEntity();
-        }
-
-        final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
-        GenericPlanEntity planEntity = planSearchService.findById(executionContext, plan);
-
-        if (
-            planEntity.isCommentRequired() && (newSubscriptionEntity.getRequest() == null || newSubscriptionEntity.getRequest().isEmpty())
-        ) {
-            return Response.status(Response.Status.BAD_REQUEST).entity("Plan requires a consumer comment when subscribing").build();
-        }
-
+        NewSubscriptionEntity newSubscriptionEntity = new NewSubscriptionEntity();
         newSubscriptionEntity.setApplication(application);
         newSubscriptionEntity.setPlan(plan);
-        Subscription subscription = convert(executionContext, subscriptionService.create(executionContext, newSubscriptionEntity));
-        return Response.created(this.getRequestUriBuilder().path(subscription.getId()).replaceQueryParam("plan", null).build())
-            .entity(subscription)
+        newSubscriptionEntity.setConfiguration(newSubscriptionConfigurationEntity);
+
+        SubscriptionEntity subscription = subscriptionService.create(
+            GraviteeContext.getExecutionContext(),
+            newSubscriptionEntity,
+            customApiKey
+        );
+
+        if (subscription.getStatus() == SubscriptionStatus.PENDING) {
+            return Response.status(Response.Status.OK).entity(convert(subscription)).build();
+        }
+
+        return Response
+            .created(URI.create("/applications/" + application + "/subscriptions/" + subscription.getId()))
+            .entity(convert(subscription))
             .build();
     }
 
@@ -143,215 +119,191 @@ public class ApplicationSubscriptionsResource extends AbstractResource {
     @ApiResponse(
         responseCode = "200",
         description = "Paged result of application's subscriptions",
-        content = @Content(mediaType = MediaType.APPLICATION_JSON, schema = @Schema(implementation = SubscriptionEntityPageResult.class))
+        content = @Content(mediaType = MediaType.APPLICATION_JSON, schema = @Schema(implementation = PageSubscription.class))
     )
     @ApiResponse(responseCode = "500", description = "Internal server error")
     @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.READ) })
-    public SubscriptionEntityPageResult getApplicationSubscriptions(
-        @BeanParam SubscriptionParam subscriptionParam,
-        @Valid @BeanParam Pageable pageable,
+    public PageSubscription getSubscriptionsForApplicationSubscription(
+        @QueryParam("page") @DefaultValue("1") int page,
+        @QueryParam("size") @DefaultValue("10") int size,
         @Parameter(
-            description = "Expansion of data to return in subscriptions",
-            array = @ArraySchema(schema = @Schema(allowableValues = { "keys", "security" }))
-        ) @QueryParam("expand") List<String> expand
+            name = "status",
+            explode = Explode.FALSE,
+            schema = @Schema(type = "array", implementation = SubscriptionStatus.class)
+        ) @QueryParam("status") SubscriptionListItem.SubscriptionStatusListParam statuses,
+        @QueryParam("api_key") String apiKey
     ) {
-        // Transform query parameters to a subscription query
-        SubscriptionQuery subscriptionQuery = subscriptionParam.toQuery();
+        SubscriptionQuery subscriptionQuery = new SubscriptionQuery();
         subscriptionQuery.setApplication(application);
 
-        boolean expandApiKeys = expand != null && expand.contains("keys");
-        boolean expandPlanSecurity = expand != null && expand.contains("security");
-        final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        if (statuses != null && !statuses.getStatus().isEmpty()) {
+            subscriptionQuery.setStatuses(statuses.getStatus());
+        }
+
+        if (apiKey != null) {
+            subscriptionQuery.setApiKey(apiKey);
+        }
+
         Page<SubscriptionEntity> subscriptions = subscriptionService.search(
-            executionContext,
+            GraviteeContext.getExecutionContext(),
             subscriptionQuery,
-            pageable.toPageable(),
-            expandApiKeys,
-            expandPlanSecurity
+            new PageableImpl(page, size)
         );
 
-        SubscriptionEntityPageResult result = new SubscriptionEntityPageResult(subscriptions, pageable.getSize());
-        SubscriptionMetadataQuery subscriptionMetadataQuery = new SubscriptionMetadataQuery(
-            executionContext.getOrganizationId(),
-            executionContext.getEnvironmentId(),
-            subscriptions.getContent()
-        )
-            .withApis(true)
-            .withApiProducts(true)
-            .withApplications(true)
-            .withPlans(true);
-        result.setMetadata(subscriptionService.getMetadata(executionContext, subscriptionMetadataQuery).toMap());
-        return result;
+        PageSubscription pageSubscription = new PageSubscription();
+        pageSubscription.setData(
+            subscriptions.getContent().stream().map(this::convert).collect(Collectors.toList())
+        );
+        pageSubscription.setMetadata(subscriptions.getMetadata());
+        pageSubscription.setPage(
+            new PageSubscription.PageItem(subscriptions.getPageNumber(), (int) subscriptions.getPageElements(), subscriptions.getTotalElements())
+        );
+
+        return pageSubscription;
     }
 
+    @GET
     @Path("{subscription}")
-    public ApplicationSubscriptionResource getApplicationSubscriptionResource() {
-        return resourceContext.getResource(ApplicationSubscriptionResource.class);
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(
+        summary = "Get subscription information",
+        description = "User must have the READ permission to use this service"
+    )
+    @ApiResponse(
+        responseCode = "200",
+        description = "Subscription information",
+        content = @Content(mediaType = MediaType.APPLICATION_JSON, schema = @Schema(implementation = Subscription.class))
+    )
+    @ApiResponse(responseCode = "500", description = "Internal server error")
+    @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.READ) })
+    public Subscription getSubscriptionForApplicationSubscription(
+        @PathParam("subscription") String subscriptionId
+    ) {
+        return convert(subscriptionService.findById(subscriptionId));
     }
 
-    private Subscription convert(final ExecutionContext executionContext, SubscriptionEntity subscriptionEntity) {
+    @DELETE
+    @Path("{subscription}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(
+        summary = "Close the subscription",
+        description = "User must have the MANAGE_SUBSCRIPTIONS permission to use this service"
+    )
+    @ApiResponse(responseCode = "200", description = "Subscription successfully closed",
+        content = @Content(mediaType = MediaType.APPLICATION_JSON, schema = @Schema(implementation = Subscription.class)))
+    @ApiResponse(responseCode = "500", description = "Internal server error")
+    @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.DELETE) })
+    public Response closeSubscriptionForApplicationSubscription(
+        @PathParam("subscription") String subscriptionId
+    ) {
+        SubscriptionEntity subscription = subscriptionService.close(GraviteeContext.getExecutionContext(), subscriptionId);
+        return Response.ok(convert(subscription)).build();
+    }
+
+    @Path("{subscription}/apikeys")
+    public ApplicationSubscriptionApiKeysResource getApplicationSubscriptionApiKeysResource() {
+        return resourceContext.getResource(ApplicationSubscriptionApiKeysResource.class);
+    }
+
+    private Subscription convert(SubscriptionEntity subscriptionEntity) {
         Subscription subscription = new Subscription();
 
         subscription.setId(subscriptionEntity.getId());
-        subscription.setCreatedAt(subscriptionEntity.getCreatedAt());
-        subscription.setUpdatedAt(subscriptionEntity.getUpdatedAt());
-        subscription.setStartingAt(subscriptionEntity.getStartingAt());
-        subscription.setEndingAt(subscriptionEntity.getEndingAt());
+        subscription.setApi(subscriptionEntity.getApi());
+        subscription.setPlan(subscriptionEntity.getPlan());
         subscription.setProcessedAt(subscriptionEntity.getProcessedAt());
-        subscription.setProcessedBy(subscriptionEntity.getProcessedBy());
-        subscription.setReason(subscriptionEntity.getReason());
-        subscription.setRequest(subscriptionEntity.getRequest());
         subscription.setStatus(subscriptionEntity.getStatus());
+        subscription.setProcessedBy(subscriptionEntity.getProcessedBy());
+        subscription.setRequest(subscriptionEntity.getRequest());
+        subscription.setReason(subscriptionEntity.getReason());
+        subscription.setApplication(
+            new Subscription.Application(
+                subscriptionEntity.getApplication(),
+                "",
+                "",
+                "",
+                null,
+                null
+            )
+        );
+        subscription.setClosedAt(subscriptionEntity.getClosedAt());
+        subscription.setCreatedAt(subscriptionEntity.getCreatedAt());
+        subscription.setEndingAt(subscriptionEntity.getEndingAt());
+        subscription.setPausedAt(subscriptionEntity.getPausedAt());
+        subscription.setStartingAt(subscriptionEntity.getStartingAt());
         subscription.setSubscribedBy(
             new Subscription.User(
                 subscriptionEntity.getSubscribedBy(),
-                userService.findById(executionContext, subscriptionEntity.getSubscribedBy(), true).getDisplayName()
+                userService.findById(GraviteeContext.getExecutionContext(), subscriptionEntity.getSubscribedBy()).getDisplayName()
             )
         );
-
-        GenericPlanEntity plan = planSearchService.findById(executionContext, subscriptionEntity.getPlan());
-        subscription.setPlan(new Subscription.Plan(plan.getId(), plan.getName()));
-        if (plan.getPlanMode() == PlanMode.STANDARD) {
-            subscription.getPlan().setSecurity(plan.getPlanSecurity().getType());
-        }
-
-        subscription.setReferenceId(subscriptionEntity.getReferenceId());
-        subscription.setReferenceType(subscriptionEntity.getReferenceType());
-        if (
-            subscriptionEntity.getReferenceId() != null &&
-            SubscriptionReferenceType.API_PRODUCT.name().equals(subscriptionEntity.getReferenceType())
-        ) {
-            fetchApiProductAndSetSubscriptionApiProduct(executionContext, subscription, subscriptionEntity.getReferenceId());
-        } else if (subscriptionEntity.getApi() != null) {
-            subscription.setApi(fetchApi(executionContext, subscriptionEntity.getApi()));
-        }
-
-        subscription.setClosedAt(subscriptionEntity.getClosedAt());
-        subscription.setPausedAt(subscriptionEntity.getPausedAt());
 
         return subscription;
     }
 
-    private Subscription.Api fetchApi(ExecutionContext executionContext, String apiId) {
-        GenericApiEntity genericApiEntity = apiSearchService.findGenericById(executionContext, apiId, false, false, false);
-        return new Subscription.Api(
-            genericApiEntity.getId(),
-            genericApiEntity.getName(),
-            genericApiEntity.getApiVersion(),
-            genericApiEntity.getDefinitionVersion(),
-            new Subscription.User(genericApiEntity.getPrimaryOwner().getId(), genericApiEntity.getPrimaryOwner().getDisplayName())
-        );
-    }
+    private static class PageSubscription {
+        private List<Subscription> data;
+        private java.util.Map<String, java.util.Map<String, Object>> metadata;
+        private PageItem page;
 
-    private void fetchApiProductAndSetSubscriptionApiProduct(
-        ExecutionContext executionContext,
-        Subscription subscription,
-        String referenceId
-    ) {
-        subscriptionService
-            .getReferenceDisplayInfo(executionContext, SubscriptionReferenceType.API_PRODUCT.name(), referenceId)
-            .ifPresent(ref -> {
-                var input = GetApiProductsUseCase.Input.of(
-                    executionContext.getEnvironmentId(),
-                    referenceId,
-                    executionContext.getOrganizationId()
-                );
-                Subscription.User owner = getApiProductsUseCase
-                    .execute(input)
-                    .apiProduct()
-                    .filter(ap -> ap.getPrimaryOwner() != null)
-                    .map(ap -> {
-                        var po = ap.getPrimaryOwner();
-                        return new Subscription.User(
-                            Objects.requireNonNullElse(po.id(), ""),
-                            Objects.requireNonNullElse(po.displayName(), "")
-                        );
-                    })
-                    .orElse(
-                        new Subscription.User(
-                            Objects.requireNonNullElse(ref.getOwnerId(), ""),
-                            Objects.requireNonNullElse(ref.getOwnerDisplayName(), "")
-                        )
-                    );
-                subscription.setApiProduct(
-                    new Subscription.ApiProduct(ref.getId(), ref.getName(), Objects.requireNonNullElse(ref.getVersion(), ""), owner)
-                );
-            });
-    }
-
-    private static class SubscriptionParam {
-
-        @QueryParam("plan")
-        @Parameter(description = "plan", explode = Explode.FALSE, schema = @Schema(type = "array"))
-        private ListStringParam plans;
-
-        @QueryParam("api")
-        @Parameter(description = "api", explode = Explode.FALSE, schema = @Schema(type = "array"))
-        private ListStringParam apis;
-
-        @QueryParam("status")
-        @DefaultValue("ACCEPTED")
-        @Parameter(
-            description = "Comma separated list of Subscription status, default is ACCEPTED",
-            explode = Explode.FALSE,
-            schema = @Schema(type = "array")
-        )
-        private ListSubscriptionStatusParam status;
-
-        @QueryParam("api_key")
-        private String apiKey;
-
-        @QueryParam("security_types")
-        private ListStringParam securityTypes;
-
-        public ListStringParam getPlans() {
-            return plans;
+        public List<Subscription> getData() {
+            return data;
         }
 
-        public void setPlans(ListStringParam plans) {
-            this.plans = plans;
+        public void setData(List<Subscription> data) {
+            this.data = data;
         }
 
-        public ListStringParam getApis() {
-            return apis;
+        public java.util.Map<String, java.util.Map<String, Object>> getMetadata() {
+            return metadata;
         }
 
-        public void setApis(ListStringParam apis) {
-            this.apis = apis;
+        public void setMetadata(java.util.Map<String, java.util.Map<String, Object>> metadata) {
+            this.metadata = metadata;
         }
 
-        public ListSubscriptionStatusParam getStatus() {
-            return status;
+        public PageItem getPage() {
+            return page;
         }
 
-        public void setStatus(ListSubscriptionStatusParam status) {
-            this.status = status;
+        public void setPage(PageItem page) {
+            this.page = page;
         }
 
-        public String getApiKey() {
-            return apiKey;
-        }
+        static class PageItem {
+            private int current;
+            private int perPage;
+            private long totalElements;
 
-        public void setApiKey(String apiKey) {
-            this.apiKey = apiKey;
-        }
+            public PageItem(int current, int perPage, long totalElements) {
+                this.current = current;
+                this.perPage = perPage;
+                this.totalElements = totalElements;
+            }
 
-        public ListStringParam getSecurityTypes() {
-            return securityTypes;
-        }
+            public int getCurrent() {
+                return current;
+            }
 
-        public void setSecurityTypes(ListStringParam securityTypes) {
-            this.securityTypes = securityTypes;
-        }
+            public void setCurrent(int current) {
+                this.current = current;
+            }
 
-        private SubscriptionQuery toQuery() {
-            SubscriptionQuery query = new SubscriptionQuery();
-            query.setApis(apis);
-            query.setPlans(plans);
-            query.setStatuses(status);
-            query.setApiKey(apiKey);
-            query.setPlanSecurityTypes(securityTypes);
-            return query;
+            public int getPerPage() {
+                return perPage;
+            }
+
+            public void setPerPage(int perPage) {
+                this.perPage = perPage;
+            }
+
+            public long getTotalElements() {
+                return totalElements;
+            }
+
+            public void setTotalElements(long totalElements) {
+                this.totalElements = totalElements;
+            }
         }
     }
 }
