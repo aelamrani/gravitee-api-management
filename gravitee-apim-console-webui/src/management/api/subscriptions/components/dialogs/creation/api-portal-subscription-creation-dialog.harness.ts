@@ -98,7 +98,7 @@ export class ApiPortalSubscriptionCreationDialogHarness extends MatDialogHarness
     return matInputHarness !== null;
   }
 
-  public async isApiKeyModeRadioGroupDisplayed() {
+    return await matInputHarness.setValue(customApikey);
     const matRadioGroupHarness = await this.getApiKeyModeRadioGroup();
     return matRadioGroupHarness !== null;
   }
