@@ -24,9 +24,7 @@ import io.gravitee.rest.api.rest.annotation.Permission;
 import io.gravitee.rest.api.rest.annotation.Permissions;
 import io.gravitee.rest.api.service.ApiKeyService;
 import io.gravitee.rest.api.service.SubscriptionService;
-import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
-import io.gravitee.rest.api.service.exceptions.SubscriptionNotFoundException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
@@ -35,13 +33,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.GET;
-import jakarta.ws.rs.POST;
-import jakarta.ws.rs.Path;
-import jakarta.ws.rs.PathParam;
-import jakarta.ws.rs.Produces;
-import jakarta.ws.rs.container.ResourceContext;
-import jakarta.ws.rs.core.Context;
+import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 import java.net.URI;
 import java.util.List;
@@ -49,11 +41,8 @@ import java.util.List;
 /**
  * @author GraviteeSource Team
  */
-@Tag(name = "API Keys")
-public class ApplicationSubscriptionApiKeysResource extends AbstractApiKeyResource {
-
-    @Context
-    private ResourceContext resourceContext;
+@Tag(name = "Application Subscription API Keys")
+public class ApplicationSubscriptionApiKeysResource extends AbstractResource {
 
     @Inject
     private ApiKeyService apiKeyService;
@@ -79,22 +68,22 @@ public class ApplicationSubscriptionApiKeysResource extends AbstractApiKeyResour
         description = "List of API Keys for a subscription",
         content = @Content(
             mediaType = MediaType.APPLICATION_JSON,
-            array = @ArraySchema(schema = @Schema(implementation = ApiKeyEntity.class), uniqueItems = true)
+            array = @ArraySchema(schema = @Schema(implementation = ApiKeyEntity.class))
         )
     )
     @ApiResponse(responseCode = "500", description = "Internal server error")
     @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.READ) })
     public List<ApiKeyEntity> getApiKeysForApplicationSubscription() {
-        // Check subscription exists and belongs to application
-        checkSubscription(subscription);
-
         return apiKeyService.findBySubscription(GraviteeContext.getExecutionContext(), subscription);
     }
 
     @POST
     @Path("/_renew")
     @Produces(MediaType.APPLICATION_JSON)
-    @Operation(summary = "Renew an API Key", description = "User must have the MANAGE_API_KEYS permission to use this service")
+    @Operation(
+        summary = "Renew an API key",
+        description = "User must have the MANAGE_API_KEYS permission to use this service"
+    )
     @ApiResponse(
         responseCode = "201",
         description = "A new API Key",
@@ -102,25 +91,53 @@ public class ApplicationSubscriptionApiKeysResource extends AbstractApiKeyResour
     )
     @ApiResponse(responseCode = "500", description = "Internal server error")
     @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.UPDATE) })
-    public Response renewApiKeyForApplicationSubscription() {
-        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
-        checkApplicationDoesntUseSharedApiKey(executionContext, application);
-        SubscriptionEntity subscriptionEntity = checkSubscription(subscription);
-        ApiKeyEntity apiKeyEntity = apiKeyService.renew(executionContext, subscriptionEntity);
+    public Response renewApiKeyForApplicationSubscription(
+        @QueryParam("customApiKey") String customApiKey
+    ) {
+        SubscriptionEntity subscriptionEntity = subscriptionService.findById(subscription);
+        ApiKeyEntity apiKeyEntity = apiKeyService.renew(GraviteeContext.getExecutionContext(), subscriptionEntity, customApiKey);
+
         URI location = URI.create(uriInfo.getPath().replace("_renew", apiKeyEntity.getId()));
         return Response.created(location).entity(apiKeyEntity).build();
     }
 
-    @Path("{apikey}")
-    public ApplicationSubscriptionApiKeyResource getApplicationSubscriptionApiKeyResource() {
-        return resourceContext.getResource(ApplicationSubscriptionApiKeyResource.class);
+    @POST
+    @Path("/{apikey}/_reactivate")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(
+        summary = "Reactivate an API Key",
+        description = "User must have the MANAGE_API_KEYS permission to use this service"
+    )
+    @ApiResponse(
+        responseCode = "200",
+        description = "API Key reactivated"
+    )
+    @ApiResponse(responseCode = "500", description = "Internal server error")
+    @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.UPDATE) })
+    public Response reactivateApiKeyForApplicationSubscription(
+        @PathParam("apikey") String apiKeyId
+    ) {
+        ApiKeyEntity apiKeyEntity = apiKeyService.reactivate(GraviteeContext.getExecutionContext(), apiKeyId);
+        return Response.ok(apiKeyEntity).build();
     }
 
-    private SubscriptionEntity checkSubscription(String subscription) {
-        SubscriptionEntity searchedSubscription = subscriptionService.findById(subscription);
-        if (application.equalsIgnoreCase(searchedSubscription.getApplication())) {
-            return searchedSubscription;
-        }
-        throw new SubscriptionNotFoundException(subscription);
+    @DELETE
+    @Path("/{apikey}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(
+        summary = "Revoke an API Key",
+        description = "User must have the MANAGE_API_KEYS permission to use this service"
+    )
+    @ApiResponse(
+        responseCode = "204",
+        description = "API Key revoked"
+    )
+    @ApiResponse(responseCode = "500", description = "Internal server error")
+    @Permissions({ @Permission(value = RolePermission.APPLICATION_SUBSCRIPTION, acls = RolePermissionAction.UPDATE) })
+    public Response revokeApiKeyForApplicationSubscription(
+        @PathParam("apikey") String apiKeyId
+    ) {
+        apiKeyService.revoke(GraviteeContext.getExecutionContext(), apiKeyId, true);
+        return Response.noContent().build();
     }
 }
