@@ -22,7 +22,39 @@ import java.util.Date;
 import java.util.List;
 import java.util.Objects;
 
+/**
+ * Organization model representing an organization entity.
+ * 
+ * <p>Security Note: When serving content from the Gravitee Console UI, 
+ * a strict Content-Security-Policy (CSP) should be applied to mitigate 
+ * XSS and other browser-based attacks. The recommended CSP directives are:</p>
+ * <ul>
+ *   <li>default-src 'none' - Blocks all content by default</li>
+ *   <li>script-src 'self' - Only allows scripts from the same origin</li>
+ *   <li>style-src 'self' 'unsafe-inline' - Allows styles from same origin and inline styles</li>
+ *   <li>img-src 'self' data: - Allows images from same origin and data URIs</li>
+ *   <li>font-src 'self' - Allows fonts from same origin</li>
+ *   <li>connect-src 'self' - Allows connections to same origin</li>
+ *   <li>frame-ancestors 'none' - Prevents embedding in frames</li>
+ *   <li>base-uri 'self' - Restricts base URI to same origin</li>
+ *   <li>form-action 'self' - Restricts form submissions to same origin</li>
+ *   <li>object-src 'none' - Blocks plugins like Flash</li>
+ * </ul>
+ * 
+ * <p>Example CSP header value:</p>
+ * <pre>
+ * Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; 
+ * img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; 
+ * base-uri 'self'; form-action 'self'; object-src 'none'
+ * </pre>
+ */
 public class Organization implements Serializable {
+
+    /**
+     * Default Content-Security-Policy header value for the Gravitee Console UI.
+     * This strict CSP helps mitigate XSS and other browser-based attacks.
+     */
+    public static final String DEFAULT_CONSOLE_CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
 
     private String id;
     private List<String> hrids;
@@ -32,6 +64,7 @@ public class Organization implements Serializable {
     private FlowMode flowMode;
     private List<Flow> flows = new ArrayList<>();
     private Date updatedAt;
+    private String consoleContentSecurityPolicy;
 
     public String getId() {
         return id;
@@ -95,6 +128,25 @@ public class Organization implements Serializable {
 
     public void setUpdatedAt(Date updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    /**
+     * Gets the Content-Security-Policy for the Gravitee Console UI.
+     * If not explicitly set, returns the default strict CSP.
+     * 
+     * @return the CSP header value to use for the Console UI
+     */
+    public String getConsoleContentSecurityPolicy() {
+        return consoleContentSecurityPolicy != null ? consoleContentSecurityPolicy : DEFAULT_CONSOLE_CSP;
+    }
+
+    /**
+     * Sets a custom Content-Security-Policy for the Gravitee Console UI.
+     * 
+     * @param consoleContentSecurityPolicy the CSP header value, or null to use the default
+     */
+    public void setConsoleContentSecurityPolicy(String consoleContentSecurityPolicy) {
+        this.consoleContentSecurityPolicy = consoleContentSecurityPolicy;
     }
 
     @Override
