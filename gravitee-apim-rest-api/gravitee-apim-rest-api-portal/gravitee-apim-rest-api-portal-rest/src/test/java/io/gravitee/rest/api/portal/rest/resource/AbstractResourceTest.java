@@ -25,6 +25,7 @@ import io.gravitee.apim.core.application_certificate.use_case.UpdateClientCertif
 import io.gravitee.apim.core.application_certificate.use_case.ValidateClientCertificateUseCase;
 import io.gravitee.apim.core.invitation.use_case.AcceptUserInvitationUseCase;
 import io.gravitee.apim.core.subscription.use_case.CreateSubscriptionUseCase;
+import io.gravitee.apim.core.subscription.use_case.GetPortalApiProductSubscriptionDetailsUseCase;
 import io.gravitee.apim.core.subscription.use_case.SearchPortalSubscriptionsUseCase;
 import io.gravitee.apim.core.subscription_form.domain_service.SubscriptionFormSchemaGenerator;
 import io.gravitee.rest.api.portal.rest.JerseySpringTest;
@@ -134,6 +135,9 @@ public abstract class AbstractResourceTest extends JerseySpringTest {
 
     @Autowired
     protected SearchPortalSubscriptionsUseCase searchPortalSubscriptionsUseCase;
+
+    @Autowired
+    protected GetPortalApiProductSubscriptionDetailsUseCase getPortalApiProductSubscriptionDetailsUseCase;
 
     @Autowired
     protected GetClientCertificatesUseCase getClientCertificatesUseCase;
@@ -385,6 +389,7 @@ public abstract class AbstractResourceTest extends JerseySpringTest {
         reset(
             createSubscriptionUseCase,
             searchPortalSubscriptionsUseCase,
+            getPortalApiProductSubscriptionDetailsUseCase,
             getClientCertificatesUseCase,
             getClientCertificateUseCase,
             createClientCertificateUseCase,
