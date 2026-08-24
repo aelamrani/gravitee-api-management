@@ -112,10 +112,10 @@ public class GetVisiblePortalCatalogItemsUseCase {
             visibleApis,
             navigationItemsById
         );
-        // Category assignment and catalog filtering are delivered separately; exclude products until catalog filtering is implemented.
-        List<PortalNavigationApiProduct> visibleApiProducts = input.categoryId().isPresent()
-            ? List.of()
-            : findVisibleApiProducts(navigationItems, input, navigationItemsById, accessibleApiNavigationItemIds, accessibleApiProductIds);
+        List<PortalNavigationApiProduct> visibleApiProducts = filterApiProductsByCategory(
+            findVisibleApiProducts(navigationItems, input, navigationItemsById, accessibleApiNavigationItemIds, accessibleApiProductIds),
+            input.categoryId()
+        );
 
         Optional<String> query = input
             .query()
@@ -176,6 +176,20 @@ public class GetVisiblePortalCatalogItemsUseCase {
             accessibleApiNavigationItemIds,
             accessibleApiProductIds
         );
+    }
+
+    private List<PortalNavigationApiProduct> filterApiProductsByCategory(
+        List<PortalNavigationApiProduct> apiProducts,
+        Optional<PortalCategoryId> categoryId
+    ) {
+        return categoryId
+            .map(selectedCategoryId ->
+                apiProducts
+                    .stream()
+                    .filter(item -> item.getCategoryIds().contains(selectedCategoryId))
+                    .toList()
+            )
+            .orElse(apiProducts);
     }
 
     private List<Api> findMatchingApis(
