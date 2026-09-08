@@ -40,14 +40,20 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
 import { Navigate, Outlet, useParams } from 'react-router-dom';
 
-import { API_PROXY_NAV_GROUPS, ApiDetailSidebarNav, withMetadataPermission, withTcpRestrictions } from './ApiDetailSidebarNav';
+import {
+    API_PROXY_NAV_GROUPS,
+    ApiDetailSidebarNav,
+    withMetadataPermission,
+    withResponseTemplatesPermission,
+    withTcpRestrictions,
+} from './ApiDetailSidebarNav';
 import { useDetailBasePath } from '../../../../shared/hooks/useDetailBasePath';
 import { ApiDetailContext } from '../../context/ApiDetailContext';
 import { useApiDetail } from '../../hooks/useApiDetail';
 import { useApiPermissions } from '../../hooks/useApiPermissions';
 import { deployApi } from '../../services/apis';
 import type { ApiDetailDto } from '../../types';
-import { hasTcpListeners } from '../../utils/apiHttpProxy';
+import { hasTcpListeners, supportsResponseTemplates } from '../../utils/apiHttpProxy';
 import { apiDetailKeys } from '../../utils/queryKeys';
 
 /** Classic console caps the deployment label at 32 characters. */
@@ -254,6 +260,8 @@ export function ApiDetailLayout() {
     const { permissionsReady } = useApiPermissions(apiId);
     const canDeploy = useHasPermission({ anyOf: ['api-definition-u'] });
     const canReadMetadata = useHasPermission({ anyOf: ['api-metadata-r'] });
+    const canReadResponseTemplates = useHasPermission({ anyOf: ['api-response_templates-r'] });
+    const showResponseTemplates = Boolean(api) && canReadResponseTemplates && supportsResponseTemplates(api);
     const queryClient = useQueryClient();
     const [contextExpanded, setContextExpanded] = useState(true);
     const [showDeployDialog, setShowDeployDialog] = useState(false);
@@ -272,7 +280,10 @@ export function ApiDetailLayout() {
     });
 
     const showDeployBanner = !isError && api?.deploymentState === 'NEED_REDEPLOY' && canDeploy;
-    const navGroups = withMetadataPermission(withTcpRestrictions(API_PROXY_NAV_GROUPS, hasTcpListeners(api)), canReadMetadata);
+    const navGroups = withResponseTemplatesPermission(
+        withMetadataPermission(withTcpRestrictions(API_PROXY_NAV_GROUPS, hasTcpListeners(api)), canReadMetadata),
+        showResponseTemplates,
+    );
 
     useLayoutConfig(
         {
@@ -293,7 +304,17 @@ export function ApiDetailLayout() {
             ) : null,
             bannerSticky: true,
         },
-        [contextExpanded, api, isLoading, basePath, permissionsReady, showDeployBanner, deployMutation.isPending, canReadMetadata],
+        [
+            contextExpanded,
+            api,
+            isLoading,
+            basePath,
+            permissionsReady,
+            showDeployBanner,
+            deployMutation.isPending,
+            canReadMetadata,
+            showResponseTemplates,
+        ],
     );
 
     if (isError) {

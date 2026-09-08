@@ -108,6 +108,7 @@ jest.mock('./ApiDetailSidebarNav', () => ({
     ApiDetailSidebarNav: () => <div />,
     withTcpRestrictions: (groups: unknown[]) => groups,
     withMetadataPermission: (groups: unknown[]) => groups,
+    withResponseTemplatesPermission: (groups: unknown[]) => groups,
 }));
 
 import { ApiDetailIndexRedirect, ApiDetailLayout } from './ApiDetailLayout';

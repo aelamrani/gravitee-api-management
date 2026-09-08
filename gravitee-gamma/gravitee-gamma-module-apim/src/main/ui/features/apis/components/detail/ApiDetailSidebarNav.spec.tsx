@@ -17,7 +17,13 @@ import { DatabaseIcon } from '@gravitee/graphene-core/icons';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 
-import { API_PROXY_NAV_GROUPS, ApiDetailSidebarNav, withMetadataPermission, withTcpRestrictions } from './ApiDetailSidebarNav';
+import {
+    API_PROXY_NAV_GROUPS,
+    ApiDetailSidebarNav,
+    withMetadataPermission,
+    withResponseTemplatesPermission,
+    withTcpRestrictions,
+} from './ApiDetailSidebarNav';
 
 const GROUPS = API_PROXY_NAV_GROUPS;
 const BASE = '/env/apis/abc-123';
@@ -96,12 +102,17 @@ describe('ApiDetailSidebarNav — flat links', () => {
         expect(screen.getByRole('link', { name: /^metadata$/i })).toHaveAttribute('href', `${BASE}/metadata`);
     });
 
-    it('renders "coming soon" items (API Score, Response Templates, Authorization) as disabled, non-navigable rows', () => {
+    it('renders "coming soon" items (API Score, Authorization) as disabled, non-navigable rows', () => {
         renderNav(`${BASE}/overview`);
-        for (const label of ['API Score', 'Response Templates', 'Authorization']) {
+        for (const label of ['API Score', 'Authorization']) {
             expect(screen.getByText(label)).toBeInTheDocument();
             expect(screen.queryByRole('link', { name: new RegExp(`^${label}$`, 'i') })).not.toBeInTheDocument();
         }
+    });
+
+    it('renders the Response Templates link with the correct href', () => {
+        renderNav(`${BASE}/overview`);
+        expect(screen.getByRole('link', { name: /^response templates$/i })).toHaveAttribute('href', `${BASE}/response-templates`);
     });
 
     it('makes "coming soon" rows reachable by keyboard, with their reason exposed for assistive tech', () => {
@@ -121,15 +132,18 @@ describe('withTcpRestrictions', () => {
         expect(withTcpRestrictions(GROUPS, false)).toBe(GROUPS);
     });
 
-    it('marks Policy Studio and CORS as comingSoon when the API has TCP listeners', () => {
+    it('marks Policy Studio, CORS, and Response Templates as comingSoon when the API has TCP listeners', () => {
         const restricted = withTcpRestrictions(GROUPS, true);
         const policyStudio = restricted.find(g => g.label === 'Design')!.items.find(i => i.path === 'policy-studio')!;
         const cors = restricted.find(g => g.label === 'General')!.items.find(i => i.path === 'cors')!;
+        const responseTemplates = restricted.find(g => g.label === 'General')!.items.find(i => i.path === 'response-templates')!;
 
         expect(policyStudio.comingSoon).toBe(true);
         expect(policyStudio.comingSoonReason).toBe('Coming soon for V4 APIs');
         expect(cors.comingSoon).toBe(true);
         expect(cors.comingSoonReason).toBe('Coming soon for V4 APIs');
+        expect(responseTemplates.comingSoon).toBe(true);
+        expect(responseTemplates.comingSoonReason).toBe('Coming soon for V4 APIs');
     });
 
     it('does not affect unrelated items', () => {
@@ -159,6 +173,19 @@ describe('withMetadataPermission', () => {
         const restricted = withMetadataPermission(GROUPS, false);
         const general = restricted.find(g => g.label === 'General')!;
         expect(general.items.find(item => item.path === 'metadata')).toBeUndefined();
+        expect(general.items.find(item => item.path === 'cors')).toBeDefined();
+    });
+});
+
+describe('withResponseTemplatesPermission', () => {
+    it('returns the groups unchanged when the user can read response templates', () => {
+        expect(withResponseTemplatesPermission(GROUPS, true)).toBe(GROUPS);
+    });
+
+    it('omits Response Templates from the General group when the user lacks api-response_templates-r', () => {
+        const restricted = withResponseTemplatesPermission(GROUPS, false);
+        const general = restricted.find(g => g.label === 'General')!;
+        expect(general.items.find(item => item.path === 'response-templates')).toBeUndefined();
         expect(general.items.find(item => item.path === 'cors')).toBeDefined();
     });
 });

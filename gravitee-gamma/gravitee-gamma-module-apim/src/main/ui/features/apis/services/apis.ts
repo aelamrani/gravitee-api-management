@@ -26,6 +26,7 @@ import type {
     ImportSwaggerDescriptor,
     ImportWsdlDescriptor,
     Property,
+    ResponseTemplatesMap,
 } from '../types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -291,5 +292,22 @@ export async function updateDynamicProperties(environmentId: string, apiId: stri
         method: 'PUT',
         headers: JSON_HEADERS,
         body: JSON.stringify({ ...current, services: { ...services, dynamicProperty: config } }),
+    });
+}
+
+export async function updateApiResponseTemplates(
+    environmentId: string,
+    apiId: string,
+    updater: (current: ResponseTemplatesMap) => ResponseTemplatesMap,
+): Promise<void> {
+    const current = await apimFetchJsonV2<{ responseTemplates?: ResponseTemplatesMap }>(
+        environmentId,
+        `/apis/${encodeURIComponent(apiId)}`,
+    );
+    const responseTemplates = updater(current.responseTemplates ?? {});
+    await apimFetchJsonV2(environmentId, `/apis/${encodeURIComponent(apiId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json-patch+json' },
+        body: JSON.stringify([{ op: 'add', path: '/responseTemplates', value: responseTemplates }]),
     });
 }
