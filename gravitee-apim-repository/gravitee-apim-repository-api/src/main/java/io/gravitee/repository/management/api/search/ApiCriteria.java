@@ -48,6 +48,7 @@ public class ApiCriteria {
     private String crossId;
     private List<DefinitionVersion> definitionVersion;
     private String integrationId;
+    private String query;
     private List<ApiType> apiTypes;
     private List<ApiType> notApiTypes;
     private Date updatedAtFrom;
@@ -67,6 +68,7 @@ public class ApiCriteria {
         this.crossId = builder.crossId;
         this.definitionVersion = builder.definitionVersion;
         this.integrationId = builder.integrationId;
+        this.query = builder.query;
         this.apiTypes = builder.apiTypes;
         this.notApiTypes = builder.notApiTypes;
         this.updatedAtFrom = builder.updatedAtFrom;
@@ -140,6 +142,10 @@ public class ApiCriteria {
         this.integrationId = integrationId;
     }
 
+    public String getQuery() {
+        return query;
+    }
+
     public List<ApiType> getApiTypes() {
         return apiTypes;
     }
@@ -172,6 +178,7 @@ public class ApiCriteria {
             Objects.equals(crossId, that.crossId) &&
             Objects.equals(definitionVersion, that.definitionVersion) &&
             Objects.equals(integrationId, that.integrationId) &&
+            Objects.equals(query, that.query) &&
             Objects.equals(apiTypes, that.apiTypes) &&
             Objects.equals(notApiTypes, that.notApiTypes) &&
             Objects.equals(updatedAtFrom, that.updatedAtFrom)
@@ -195,6 +202,7 @@ public class ApiCriteria {
             crossId,
             definitionVersion,
             integrationId,
+            query,
             apiTypes,
             notApiTypes,
             updatedAtFrom
@@ -217,6 +225,7 @@ public class ApiCriteria {
         private String crossId;
         private List<DefinitionVersion> definitionVersion;
         private String integrationId;
+        private String query;
         private List<ApiType> apiTypes;
         private List<ApiType> notApiTypes;
         private Date updatedAtFrom;
@@ -298,6 +307,11 @@ public class ApiCriteria {
 
         public ApiCriteria.Builder integrationId(final String integrationId) {
             this.integrationId = integrationId;
+            return this;
+        }
+
+        public ApiCriteria.Builder query(final String query) {
+            this.query = query;
             return this;
         }
 

@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: 4.13.0_18_add_provider_organization_to_apis
+      author: GraviteeSource Team
+      changes:
+        - addColumn:
+            tableName: ${gravitee_prefix}apis
+            columns:
+              - column: {name: provider_organization, type: nvarchar(256), constraints: { nullable: true } }

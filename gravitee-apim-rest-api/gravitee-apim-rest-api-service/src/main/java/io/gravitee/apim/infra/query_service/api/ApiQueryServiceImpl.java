@@ -25,12 +25,14 @@ import io.gravitee.apim.infra.adapter.ApiFieldFilterAdapter;
 import io.gravitee.apim.infra.adapter.ApiSearchCriteriaAdapter;
 import io.gravitee.apim.infra.adapter.SortableAdapter;
 import io.gravitee.common.data.domain.Page;
+import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.ApiRepository;
 import io.gravitee.repository.management.api.search.ApiCriteria;
 import io.gravitee.rest.api.model.common.Pageable;
 import io.gravitee.rest.api.service.exceptions.TechnicalManagementException;
 import io.gravitee.rest.api.service.impl.AbstractService;
+import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
 import lombok.CustomLog;
@@ -79,7 +81,23 @@ public class ApiQueryServiceImpl extends AbstractService implements ApiQueryServ
 
     @Override
     public Page<Api> findByIntegrationId(String integrationId, Pageable pageable) {
-        var searchCriteria = new ApiCriteria.Builder().integrationId(integrationId).build();
+        return findByIntegrationId(integrationId, null, null, pageable);
+    }
+
+    @Override
+    public Page<Api> findByIntegrationId(
+        String integrationId,
+        List<DefinitionVersion> definitionVersions,
+        String query,
+        Pageable pageable
+    ) {
+        var criteriaBuilder = new ApiCriteria.Builder().integrationId(integrationId);
+        if (definitionVersions != null && !definitionVersions.isEmpty()) {
+            criteriaBuilder.definitionVersion(definitionVersions);
+        }
+        if (query != null && !query.isBlank()) {
+            criteriaBuilder.query(query);
+        }
         var sortable = SortableAdapter.INSTANCE.toSortableForRepository(
             Sortable.builder().field("updatedAt").order(Sortable.Order.DESC).build()
         );
@@ -88,6 +106,8 @@ public class ApiQueryServiceImpl extends AbstractService implements ApiQueryServ
             .excludePicture()
             .build();
 
-        return apiRepository.search(searchCriteria, sortable, convert(pageable), fieldFilter).map(ApiAdapter.INSTANCE::toCoreModel);
+        return apiRepository
+            .search(criteriaBuilder.build(), sortable, convert(pageable), fieldFilter)
+            .map(ApiAdapter.INSTANCE::toCoreModel);
     }
 }

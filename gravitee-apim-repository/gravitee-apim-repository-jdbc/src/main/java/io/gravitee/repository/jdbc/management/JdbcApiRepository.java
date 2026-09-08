@@ -73,6 +73,12 @@ public class JdbcApiRepository extends JdbcAbstractPageableRepository<Api> imple
             categories.add(rs.getString("category"));
         }
     };
+    /**
+     * MySQL and MariaDB also treat a backslash as an escape character inside a string literal, so a backslash here would
+     * need dialect-specific doubling. Any other character avoids that.
+     */
+    private static final String LIKE_ESCAPE_CHARACTER = "$";
+
     private final String API_CATEGORIES;
     private final String API_LABELS;
     private final String API_GROUPS;
@@ -95,6 +101,7 @@ public class JdbcApiRepository extends JdbcAbstractPageableRepository<Api> imple
             .addColumn("sync_from", Types.NVARCHAR, String.class)
             .addColumn("environment_id", Types.NVARCHAR, String.class)
             .addColumn("integration_id", Types.NVARCHAR, String.class)
+            .addColumn("provider_organization", Types.NVARCHAR, String.class)
             .addColumn("name", Types.NVARCHAR, String.class)
             .addColumn("description", Types.NVARCHAR, String.class)
             .addColumn("version", Types.NVARCHAR, String.class)
@@ -429,7 +436,7 @@ public class JdbcApiRepository extends JdbcAbstractPageableRepository<Api> imple
 
         String projection =
             "ac.*, a.id, a.environment_id, a.cross_id, a.name, a.description, a.version, a.type, a.deployed_at, a.created_at, a.updated_at, " +
-            "a.visibility, a.lifecycle_state, a.api_lifecycle_state, a.definition_version, a.origin, a.sync_from";
+            "a.visibility, a.lifecycle_state, a.api_lifecycle_state, a.definition_version, a.origin, a.sync_from, a.provider_organization";
 
         if (apiFieldFilter == null || !apiFieldFilter.isDefinitionExcluded()) {
             projection += ", a.definition";
@@ -529,15 +536,21 @@ public class JdbcApiRepository extends JdbcAbstractPageableRepository<Api> imple
             if (!isEmpty(apiCriteria.getEnvironments())) {
                 lastIndex = getOrm().setArguments(ps, apiCriteria.getEnvironments(), lastIndex);
             }
+            if (hasText(apiCriteria.getIntegrationId())) {
+                ps.setString(lastIndex++, apiCriteria.getIntegrationId());
+            }
+            if (hasText(apiCriteria.getQuery())) {
+                var pattern = "%" + escapeLike(apiCriteria.getQuery().toLowerCase()) + "%";
+                ps.setString(lastIndex++, pattern);
+                ps.setString(lastIndex++, pattern);
+                ps.setString(lastIndex++, pattern);
+            }
             if (!isEmpty(apiCriteria.getDefinitionVersion())) {
                 List<DefinitionVersion> definitionVersionList = new ArrayList<>(apiCriteria.getDefinitionVersion());
                 definitionVersionList.remove(null);
                 if (!definitionVersionList.isEmpty()) {
                     lastIndex = getOrm().setArguments(ps, definitionVersionList, lastIndex);
                 }
-            }
-            if (hasText(apiCriteria.getIntegrationId())) {
-                ps.setString(lastIndex++, apiCriteria.getIntegrationId());
             }
             if (!isEmpty(apiCriteria.getApiTypes())) {
                 lastIndex = getOrm().setArguments(ps, apiCriteria.getApiTypes(), lastIndex);
@@ -550,6 +563,13 @@ public class JdbcApiRepository extends JdbcAbstractPageableRepository<Api> imple
             }
         }
         return lastIndex;
+    }
+
+    private static String escapeLike(String value) {
+        return value
+            .replace(LIKE_ESCAPE_CHARACTER, LIKE_ESCAPE_CHARACTER + LIKE_ESCAPE_CHARACTER)
+            .replace("%", LIKE_ESCAPE_CHARACTER + "%")
+            .replace("_", LIKE_ESCAPE_CHARACTER + "_");
     }
 
     private String convert(ApiCriteria apiCriteria) {
@@ -592,6 +612,17 @@ public class JdbcApiRepository extends JdbcAbstractPageableRepository<Api> imple
         }
         if (hasText(apiCriteria.getIntegrationId())) {
             clauses.add("a.integration_id = ?");
+        }
+        if (hasText(apiCriteria.getQuery())) {
+            clauses.add(
+                "(lower(a.name) like ? escape '" +
+                    LIKE_ESCAPE_CHARACTER +
+                    "' or lower(a.description) like ? escape '" +
+                    LIKE_ESCAPE_CHARACTER +
+                    "' or lower(a.provider_organization) like ? escape '" +
+                    LIKE_ESCAPE_CHARACTER +
+                    "')"
+            );
         }
         if (!isEmpty(apiCriteria.getDefinitionVersion())) {
             List<DefinitionVersion> definitionVersionList = new ArrayList<>(apiCriteria.getDefinitionVersion());

@@ -117,6 +117,8 @@ public class Api {
     private String mode;
     /** The id of the integration that created the API */
     private String integrationId;
+    /** The organization declared by the agent card of a federated agent, denormalized here so it can be searched on */
+    private String providerOrganization;
     /**
      * The api definition version.
      */
@@ -202,6 +204,7 @@ public class Api {
         this.disableMembershipNotifications = cloned.disableMembershipNotifications;
         this.allowMultiJwtOauth2Subscriptions = cloned.allowMultiJwtOauth2Subscriptions;
         this.integrationId = cloned.integrationId;
+        this.providerOrganization = cloned.providerOrganization;
         this.syncFrom = cloned.syncFrom;
         this.portalNavigation = cloned.portalNavigation;
     }

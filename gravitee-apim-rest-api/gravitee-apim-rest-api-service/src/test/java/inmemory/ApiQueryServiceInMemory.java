@@ -23,6 +23,7 @@ import io.gravitee.apim.core.api.model.ApiSearchCriteria;
 import io.gravitee.apim.core.api.model.Sortable;
 import io.gravitee.apim.core.api.query_service.ApiQueryService;
 import io.gravitee.common.data.domain.Page;
+import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.rest.api.model.common.Pageable;
 import io.gravitee.rest.api.model.context.OriginContext;
 import java.util.ArrayList;
@@ -140,12 +141,28 @@ public class ApiQueryServiceInMemory implements ApiQueryService, InMemoryAlterna
 
     @Override
     public Page<Api> findByIntegrationId(String integrationId, Pageable pageable) {
+        return findByIntegrationId(integrationId, null, null, pageable);
+    }
+
+    /**
+     * WARNING: the free-text query is matched on name and description only, because the core Api model carries no
+     * providerOrganization field.
+     */
+    @Override
+    public Page<Api> findByIntegrationId(
+        String integrationId,
+        List<DefinitionVersion> definitionVersions,
+        String query,
+        Pageable pageable
+    ) {
         var pageNumber = pageable.getPageNumber();
         var pageSize = pageable.getPageSize();
 
         var matches = storage
             .stream()
             .filter(api -> api.getOriginContext() instanceof OriginContext.Integration inte && integrationId.equals(inte.integrationId()))
+            .filter(api -> matchesDefinitionVersions(api, definitionVersions))
+            .filter(api -> matchesQuery(api, query))
             .sorted(Comparator.comparing(Api::getUpdatedAt).reversed())
             .toList();
 
@@ -154,6 +171,28 @@ public class ApiQueryServiceInMemory implements ApiQueryService, InMemoryAlterna
             : matches.subList((pageNumber - 1) * pageSize, Math.min(pageNumber * pageSize, matches.size()));
 
         return new Page<>(page, pageNumber, pageSize, matches.size());
+    }
+
+    private static boolean matchesDefinitionVersions(Api api, List<DefinitionVersion> definitionVersions) {
+        if (isNull(definitionVersions) || definitionVersions.isEmpty()) {
+            return true;
+        }
+        if (isNull(api.getDefinitionVersion())) {
+            return definitionVersions.stream().anyMatch(version -> isNull(version) || DefinitionVersion.V2.equals(version));
+        }
+        return definitionVersions.contains(api.getDefinitionVersion());
+    }
+
+    private static boolean matchesQuery(Api api, String query) {
+        if (isNull(query) || query.isBlank()) {
+            return true;
+        }
+        var lowerCasedQuery = query.toLowerCase();
+        return containsIgnoringCase(api.getName(), lowerCasedQuery) || containsIgnoringCase(api.getDescription(), lowerCasedQuery);
+    }
+
+    private static boolean containsIgnoringCase(String value, String lowerCasedQuery) {
+        return !isNull(value) && value.toLowerCase().contains(lowerCasedQuery);
     }
 
     @Override

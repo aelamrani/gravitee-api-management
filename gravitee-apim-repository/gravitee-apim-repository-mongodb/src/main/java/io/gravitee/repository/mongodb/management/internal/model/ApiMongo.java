@@ -72,6 +72,9 @@ public class ApiMongo extends DeprecatedAuditable {
     /** The integration id for Federated API */
     private String integrationId;
 
+    /** The organization declared by the agent card of a federated agent, denormalized here so it can be searched on */
+    private String providerOrganization;
+
     @Field("name")
     private String name;
 

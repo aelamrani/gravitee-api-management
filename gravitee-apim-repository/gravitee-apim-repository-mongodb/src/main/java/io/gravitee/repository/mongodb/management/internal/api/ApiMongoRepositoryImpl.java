@@ -30,6 +30,7 @@ import io.gravitee.repository.mongodb.management.internal.model.ApiMongo;
 import io.gravitee.repository.mongodb.utils.FieldUtils;
 import io.gravitee.repository.mongodb.utils.MongoQueries;
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.bson.Document;
 import org.bson.conversions.Bson;
@@ -160,6 +161,17 @@ public class ApiMongoRepositoryImpl implements ApiMongoRepositoryCustom {
                     }
                     if (apiCriteria.getIntegrationId() != null && !apiCriteria.getIntegrationId().isEmpty()) {
                         criteria.add(where("integrationId").is(apiCriteria.getIntegrationId()));
+                    }
+                    if (apiCriteria.getQuery() != null && !apiCriteria.getQuery().isBlank()) {
+                        // Quoted so regex metacharacters in the query match literally, as they do in the JDBC like clause.
+                        var pattern = Pattern.quote(apiCriteria.getQuery());
+                        criteria.add(
+                            new Criteria().orOperator(
+                                where("name").regex(pattern, "i"),
+                                where("description").regex(pattern, "i"),
+                                where("providerOrganization").regex(pattern, "i")
+                            )
+                        );
                     }
                     if (apiCriteria.getApiTypes() != null && !apiCriteria.getApiTypes().isEmpty()) {
                         criteria.add(where("type").in(apiCriteria.getApiTypes()));

@@ -42,13 +42,23 @@ import io.gravitee.repository.management.model.ApiLifecycleState;
 import io.gravitee.repository.management.model.LifecycleState;
 import io.gravitee.repository.management.model.Visibility;
 import java.util.*;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.DisplayNameGeneration;
+import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * @author Azize ELAMRANI (azize.elamrani at graviteesource.com)
  * @author GraviteeSource Team
  */
+@DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
 public class ApiRepositoryTest extends AbstractManagementRepositoryTest {
+
+    private static final String SEARCHABLE_INTEGRATION_ID = "searchable-integration-id";
 
     @Override
     protected String getTestCasesPath() {
@@ -560,6 +570,223 @@ public class ApiRepositoryTest extends AbstractManagementRepositoryTest {
             ApiFieldFilter.allFields()
         );
         assertThat(apis).isNotNull().isNotEmpty().hasSize(1);
+    }
+
+    @Test
+    public void should_find_by_integration_id_and_query_matching_any_searched_column() throws TechnicalException {
+        createSearchableApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId(SEARCHABLE_INTEGRATION_ID).query("ALPHA").build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactlyInAnyOrder(
+            "query-name-match",
+            "query-description-match",
+            "query-provider-organization-match"
+        );
+    }
+
+    @Test
+    public void should_round_trip_the_provider_organization() throws TechnicalException {
+        createSearchableApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().ids("query-provider-organization-match").build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis).singleElement().extracting(Api::getProviderOrganization).isEqualTo("Alpha Robotics");
+    }
+
+    @Test
+    public void should_find_by_integration_id_query_and_definition_version() throws TechnicalException {
+        createSearchableApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder()
+                .integrationId(SEARCHABLE_INTEGRATION_ID)
+                .query("alpha")
+                .definitionVersion(List.of(DefinitionVersion.FEDERATED_AGENT))
+                .build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactlyInAnyOrder(
+            "query-name-match",
+            "query-provider-organization-match"
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("exactNameAndQueryCombinations")
+    public void should_find_by_exact_name_and_query_together(String query, List<String> expectedIds) throws TechnicalException {
+        createSearchableApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId(SEARCHABLE_INTEGRATION_ID).name("Alpha Billing Agent").query(query).build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactlyElementsOf(expectedIds);
+    }
+
+    private static Stream<Arguments> exactNameAndQueryCombinations() {
+        return Stream.of(Arguments.of("alpha", List.of("query-name-match")), Arguments.of("robotics", List.of()));
+    }
+
+    @Test
+    public void should_ignore_a_blank_query_when_searching_by_integration_id() throws TechnicalException {
+        createSearchableApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId(SEARCHABLE_INTEGRATION_ID).query("   ").build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactlyInAnyOrder(
+            "query-name-match",
+            "query-description-match",
+            "query-provider-organization-match",
+            "query-no-match"
+        );
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+        {
+            "50%, query-percent-literal",
+            "v_1, query-underscore-literal",
+            "cost$, query-escape-character-literal",
+            "delta.one, query-regex-metacharacter-literal",
+        }
+    )
+    public void should_match_a_query_special_character_literally(String query, String expectedId) throws TechnicalException {
+        createSpecialCharacterApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId(SEARCHABLE_INTEGRATION_ID).query(query).build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactly(expectedId);
+    }
+
+    @ParameterizedTest
+    @CsvSource({ "alpha, query-null-columns", "acme, query-populated-columns" })
+    public void should_match_a_query_only_on_the_columns_that_carry_a_value(String query, String expectedId) throws TechnicalException {
+        createNullColumnApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId(SEARCHABLE_INTEGRATION_ID).query(query).build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactly(expectedId);
+    }
+
+    @ParameterizedTest
+    @CsvSource({ "lobal, query-contiguous-phrase", "Alpha Agent, query-contiguous-phrase" })
+    public void should_match_a_query_as_one_unanchored_contiguous_string(String query, String expectedId) throws TechnicalException {
+        createPhraseApis();
+
+        final List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId(SEARCHABLE_INTEGRATION_ID).query(query).build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis.stream().map(Api::getId).toList()).containsExactly(expectedId);
+    }
+
+    private void createPhraseApis() throws TechnicalException {
+        apiRepository.create(phraseApi("query-contiguous-phrase", "Global Alpha Agent", "Handles onboarding"));
+        apiRepository.create(phraseApi("query-split-phrase", "Alpha Billing", "Agent onboarding notes"));
+    }
+
+    private Api phraseApi(String id, String name, String description) {
+        return searchableApi(id).name(name).description(description).providerOrganization("Globex").build();
+    }
+
+    private void createNullColumnApis() throws TechnicalException {
+        apiRepository.create(searchableApi("query-null-columns").name("Alpha Agent").build());
+        apiRepository.create(
+            searchableApi("query-populated-columns")
+                .name("Beta Agent")
+                .description("Handles onboarding")
+                .providerOrganization("Acme Robotics")
+                .build()
+        );
+    }
+
+    private void createSpecialCharacterApis() throws TechnicalException {
+        apiRepository.create(specialCharacterApi("query-percent-literal", "50% Complete Agent"));
+        apiRepository.create(specialCharacterApi("query-percent-decoy", "500 Complete Agent"));
+        apiRepository.create(specialCharacterApi("query-underscore-literal", "v_1 Agent"));
+        apiRepository.create(specialCharacterApi("query-underscore-decoy", "vX1 Agent"));
+        apiRepository.create(specialCharacterApi("query-escape-character-literal", "cost$ Agent"));
+        apiRepository.create(specialCharacterApi("query-escape-character-decoy", "cost Agent"));
+        apiRepository.create(specialCharacterApi("query-regex-metacharacter-literal", "Delta.One Agent"));
+        apiRepository.create(specialCharacterApi("query-regex-metacharacter-decoy", "DeltaXOne Agent"));
+    }
+
+    private Api specialCharacterApi(String id, String name) {
+        return searchableApi(id).name(name).description("Handles onboarding").providerOrganization("Globex").build();
+    }
+
+    private void createSearchableApis() throws TechnicalException {
+        apiRepository.create(
+            searchableApi("query-name-match")
+                .name("Alpha Billing Agent")
+                .description("Handles onboarding")
+                .providerOrganization("Globex")
+                .build()
+        );
+        apiRepository.create(
+            searchableApi("query-description-match")
+                .definitionVersion(DefinitionVersion.FEDERATED)
+                .name("Beta Agent")
+                .description("Alpha workload handler")
+                .providerOrganization("Globex")
+                .build()
+        );
+        apiRepository.create(
+            searchableApi("query-provider-organization-match")
+                .name("Gamma Agent")
+                .description("Handles onboarding")
+                .providerOrganization("Alpha Robotics")
+                .build()
+        );
+        apiRepository.create(
+            searchableApi("query-no-match").name("Delta Agent").description("Handles onboarding").providerOrganization("Globex").build()
+        );
+        apiRepository.create(
+            searchableApi("query-other-integration")
+                .integrationId("other-integration-id")
+                .name("Alpha Agent")
+                .description("Handles onboarding")
+                .providerOrganization("Globex")
+                .build()
+        );
+    }
+
+    private Api.ApiBuilder searchableApi(String id) {
+        return Api.builder()
+            .id(id)
+            .environmentId("DEFAULT")
+            .origin("integration")
+            .integrationId(SEARCHABLE_INTEGRATION_ID)
+            .definitionVersion(DefinitionVersion.FEDERATED_AGENT)
+            .definition("{}")
+            .version("1.0")
+            .visibility(PRIVATE)
+            .createdAt(parse("11/02/2024"))
+            .updatedAt(parse("11/02/2024"))
+            .labels(List.of())
+            .categories(Set.of())
+            .groups(Set.of())
+            .apiLifecycleState(CREATED)
+            .syncFrom("MANAGEMENT");
     }
 
     @Test
