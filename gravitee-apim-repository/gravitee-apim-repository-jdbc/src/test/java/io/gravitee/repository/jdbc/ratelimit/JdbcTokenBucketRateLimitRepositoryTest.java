@@ -26,6 +26,7 @@ import liquibase.Contexts;
 import liquibase.Liquibase;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.ContextConfiguration;
@@ -37,6 +38,8 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
  * applies the Liquibase schema once, with the same prefixes the repository reads so the table names
  * line up. The database is selected by the {@code jdbcType} property (PostgreSQL by default). No
  * per-test cleanup is needed: the container is fresh and the contract suite uses a distinct key per test.
+ * The prefixes are passed to Liquibase as JVM-wide system properties, so they are cleared once the class
+ * is done — otherwise they leak into every later test class sharing the surefire fork.
  */
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes = JdbcTestRepositoryConfiguration.class)
@@ -52,6 +55,14 @@ class JdbcTokenBucketRateLimitRepositoryTest extends AbstractTokenBucketRateLimi
 
     @Autowired
     private Properties graviteeProperties;
+
+    @AfterAll
+    static void clearLiquibaseSystemProperties() {
+        System.clearProperty("liquibase.databaseChangeLogTableName");
+        System.clearProperty("liquibase.databaseChangeLogLockTableName");
+        System.clearProperty("gravitee_prefix");
+        System.clearProperty("gravitee_rate_limit_prefix");
+    }
 
     @Override
     protected TokenBucketRateLimitRepository<TokenBucket> createRepository() {
