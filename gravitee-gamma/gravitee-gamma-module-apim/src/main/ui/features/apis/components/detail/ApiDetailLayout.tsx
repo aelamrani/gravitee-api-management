@@ -279,7 +279,7 @@ export function ApiDetailLayout() {
             contextExpanded,
             contextSidebar: (
                 <ContextSidebar header={<ApiInfoHeader api={api ?? null} isLoading={isLoading} />}>
-                    <ApiDetailSidebarNav groups={navGroups} basePath={basePath} permissionsReady={permissionsReady} />
+                    {isError ? null : <ApiDetailSidebarNav groups={navGroups} basePath={basePath} permissionsReady={permissionsReady} />}
                 </ContextSidebar>
             ),
             leading: <ContextToggleButton expanded={contextExpanded} onToggle={() => setContextExpanded(v => !v)} />,
@@ -292,7 +292,7 @@ export function ApiDetailLayout() {
             ) : null,
             bannerSticky: true,
         },
-        [contextExpanded, api, isLoading, basePath, permissionsReady, showDeployBanner, deployMutation.isPending],
+        [contextExpanded, api, isLoading, isError, basePath, permissionsReady, showDeployBanner, deployMutation.isPending],
     );
 
     if (isError) {
