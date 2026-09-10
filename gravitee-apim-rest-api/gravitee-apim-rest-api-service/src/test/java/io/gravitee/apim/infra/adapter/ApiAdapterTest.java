@@ -21,6 +21,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import fixtures.core.model.ApiFixtures;
 import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.definition.model.ResponseTemplate;
+import io.gravitee.definition.model.federation.FederatedAgent;
 import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.definition.model.v4.analytics.Analytics;
 import io.gravitee.definition.model.v4.edge.EdgeApi;
@@ -42,14 +43,20 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
 class ApiAdapterTest {
+
+    private static final String PROVIDER_URL = "https://provider.example.com";
 
     @Nested
     class RepositoryToModel {
@@ -313,6 +320,7 @@ class ApiAdapterTest {
                 soft.assertThat(api.getName()).isEqualTo("My Api");
                 soft.assertThat(api.getOrigin()).isEqualTo("management");
                 soft.assertThat(api.getPicture()).isEqualTo("api-picture");
+                soft.assertThat(api.getProviderOrganization()).isNull();
                 soft.assertThat(api.getType()).isEqualTo(ApiType.PROXY);
                 soft.assertThat(api.getUpdatedAt()).isEqualTo(Date.from(Instant.parse("2020-02-02T20:22:02.00Z")));
                 soft.assertThat(api.getVisibility()).isEqualTo(Visibility.PUBLIC);
@@ -392,6 +400,64 @@ class ApiAdapterTest {
 
             assertThat(api.getType()).isEqualTo(ApiType.EDGE);
             assertThat(api.getDefinition()).isEqualTo(GraviteeJacksonMapper.getInstance().writeValueAsString(edgeDefinition));
+        }
+
+        @Test
+        void should_convert_federated_agent_api_to_repository() {
+            var model = ApiFixtures.aFederatedAgent()
+                .toBuilder()
+                .name("Support Bot")
+                .description("Handles ticket triage")
+                .definitionVersion(DefinitionVersion.FEDERATED_AGENT)
+                .apiDefinitionValue(
+                    FederatedAgent.builder()
+                        .name("Support Bot")
+                        .url("https://example.net")
+                        .provider(new FederatedAgent.Provider("Acme Robotics", PROVIDER_URL))
+                        .build()
+                )
+                .build();
+
+            var api = ApiAdapter.INSTANCE.toRepository(model);
+
+            SoftAssertions.assertSoftly(soft -> {
+                soft.assertThat(api.getProviderOrganization()).isEqualTo("Acme Robotics");
+                soft.assertThat(api.getName()).isEqualTo("Support Bot");
+                soft.assertThat(api.getDescription()).isEqualTo("Handles ticket triage");
+                soft.assertThat(api.getIntegrationId()).isEqualTo("integration-id");
+                soft.assertThat(api.getOrigin()).isEqualTo("integration");
+            });
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("providerOrganizationCases")
+        void should_derive_provider_organization_from_the_agent_card(
+            String caseName,
+            FederatedAgent.Provider provider,
+            String expectedOrganization
+        ) {
+            var model = ApiFixtures.aFederatedAgent()
+                .toBuilder()
+                .apiDefinitionValue(FederatedAgent.builder().name("My agent").url("https://example.net").provider(provider).build())
+                .build();
+
+            var api = ApiAdapter.INSTANCE.toRepository(model);
+
+            assertThat(api.getProviderOrganization()).isEqualTo(expectedOrganization);
+        }
+
+        private static Stream<Arguments> providerOrganizationCases() {
+            return Stream.of(
+                Arguments.of("card_carries_no_provider_object", null, null),
+                Arguments.of("provider_has_no_organization", new FederatedAgent.Provider(null, PROVIDER_URL), null),
+                Arguments.of("organization_is_empty", new FederatedAgent.Provider("", PROVIDER_URL), null),
+                Arguments.of("organization_is_whitespace_only", new FederatedAgent.Provider("   ", PROVIDER_URL), null),
+                Arguments.of(
+                    "organization_is_surrounded_by_whitespace",
+                    new FederatedAgent.Provider("  Acme Robotics  ", PROVIDER_URL),
+                    "  Acme Robotics  "
+                )
+            );
         }
     }
 

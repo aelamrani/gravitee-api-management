@@ -16,6 +16,7 @@
 package io.gravitee.apim.infra.adapter;
 
 import io.gravitee.apim.core.membership.model.PrimaryOwnerEntity;
+import io.gravitee.definition.model.federation.FederatedAgent;
 import io.gravitee.repository.management.model.Api;
 import io.gravitee.rest.api.model.context.OriginContext;
 import io.gravitee.rest.api.model.federation.FederatedApiEntity;
@@ -40,7 +41,16 @@ public abstract class ApiAdapterDecorator implements ApiAdapter {
             api.setSyncFrom(kub.syncFrom());
         }
 
+        if (source.getApiDefinitionValue() instanceof FederatedAgent agent) {
+            api.setProviderOrganization(providerOrganization(agent));
+        }
+
         return api;
+    }
+
+    private static String providerOrganization(FederatedAgent agent) {
+        var provider = agent.getProvider();
+        return provider == null || provider.organization() == null || provider.organization().isBlank() ? null : provider.organization();
     }
 
     @Override

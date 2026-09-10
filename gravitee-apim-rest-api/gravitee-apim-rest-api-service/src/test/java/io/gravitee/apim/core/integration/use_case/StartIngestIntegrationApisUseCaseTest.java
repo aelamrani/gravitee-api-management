@@ -80,6 +80,7 @@ import io.gravitee.apim.core.plan.domain_service.UpdatePlanDomainService;
 import io.gravitee.apim.core.plan.model.Plan;
 import io.gravitee.apim.core.policy.domain_service.PolicyValidationDomainService;
 import io.gravitee.apim.core.user.model.BaseUserEntity;
+import io.gravitee.apim.infra.adapter.ApiAdapter;
 import io.gravitee.apim.infra.domain_service.plan.PlanSynchronizationLegacyWrapper;
 import io.gravitee.apim.infra.json.jackson.JacksonJsonDiffProcessor;
 import io.gravitee.apim.infra.template.FreemarkerTemplateProcessor;
@@ -423,13 +424,13 @@ class StartIngestIntegrationApisUseCaseTest {
     @Nested
     class A2aDiscovery {
 
-        private FederatedAgent createFederatedAgent(String name, String version, String url) {
+        private FederatedAgent createFederatedAgent(String name, String version, String url, String organization) {
             return FederatedAgent.builder()
                 .name(name)
                 .description("Test agent description")
                 .version(version)
                 .url(url)
-                .provider(new FederatedAgent.Provider("test-org", "https://provider.example.com"))
+                .provider(new FederatedAgent.Provider(organization, "https://provider.example.com"))
                 .capabilities(Map.of())
                 .skills(List.of())
                 .defaultInputModes(List.of())
@@ -445,7 +446,7 @@ class StartIngestIntegrationApisUseCaseTest {
             parametersQueryService.initWith(List.of(Parameter.builder().key(Key.API_PRIMARY_OWNER_MODE.key()).value("USER").build()));
             userCrudService.initWith(List.of(BaseUserEntity.builder().id("user-id").build()));
 
-            var federatedAgent = createFederatedAgent("Test Agent", "1.0.0", "https://example.com/.well-known/agent.json");
+            var federatedAgent = createFederatedAgent("Test Agent", "1.0.0", "https://example.com/.well-known/agent.json", "test-org");
             a2aAgentFetcher.add("https://example.com/.well-known/agent.json", federatedAgent);
 
             // When
@@ -522,8 +523,8 @@ class StartIngestIntegrationApisUseCaseTest {
             var a2aIntegration = IntegrationFixture.anA2aIntegrationWithWellKnownUrls(wellKnownUrls).withEnvironmentId(ENVIRONMENT_ID);
             givenAnIntegration(a2aIntegration);
 
-            var federatedAgent1 = createFederatedAgent("Agent 1", "1.0.0", "https://example1.com/.well-known/agent.json");
-            var federatedAgent2 = createFederatedAgent("Agent 2", "2.0.0", "https://example2.com/.well-known/agent.json");
+            var federatedAgent1 = createFederatedAgent("Agent 1", "1.0.0", "https://example1.com/.well-known/agent.json", "test-org");
+            var federatedAgent2 = createFederatedAgent("Agent 2", "2.0.0", "https://example2.com/.well-known/agent.json", "test-org");
 
             a2aAgentFetcher.initWithMap(
                 Map.of(
@@ -639,6 +640,74 @@ class StartIngestIntegrationApisUseCaseTest {
                         )
                         .build()
                 );
+        }
+
+        private Integration.A2aIntegration givenAnAgentAlreadyIngestedFrom(String wellKnownUrl, String organization) {
+            var a2aIntegration = IntegrationFixture.anA2aIntegrationWithId("a2a-integration-id").withEnvironmentId(ENVIRONMENT_ID);
+            givenAnIntegration(a2aIntegration);
+            parametersQueryService.initWith(List.of(Parameter.builder().key(Key.API_PRIMARY_OWNER_MODE.key()).value("USER").build()));
+            userCrudService.initWith(List.of(BaseUserEntity.builder().id(USER_ID).build()));
+            apiCrudService.initWith(
+                List.of(
+                    Api.builder()
+                        .id(UuidString.generateForEnvironment(ENVIRONMENT_ID, a2aIntegration.id(), wellKnownUrl, wellKnownUrl))
+                        .environmentId(ENVIRONMENT_ID)
+                        .name("Test Agent")
+                        .description("Test agent description")
+                        .version("1.0.0")
+                        .createdAt(ZonedDateTime.ofInstant(INSTANT_NOW, ZoneId.systemDefault()))
+                        .updatedAt(ZonedDateTime.ofInstant(INSTANT_NOW, ZoneId.systemDefault()))
+                        .definitionVersion(DefinitionVersion.FEDERATED_AGENT)
+                        .originContext(new OriginContext.Integration("a2a-integration-id", "A2A Integration", "A2A"))
+                        .groups(Set.of())
+                        .apiDefinitionValue(createFederatedAgent("Test Agent", "1.0.0", wellKnownUrl, organization))
+                        .build()
+                )
+            );
+            return a2aIntegration;
+        }
+
+        private List<AsyncJob.Status> reIngest(Integration.A2aIntegration a2aIntegration) {
+            return useCase
+                .execute(new StartIngestIntegrationApisUseCase.Input(a2aIntegration.id(), List.of(), AUDIT_INFO))
+                .test()
+                .awaitDone(10, TimeUnit.SECONDS)
+                .assertNoErrors()
+                .values();
+        }
+
+        @Test
+        void should_replace_the_stored_agent_card_when_an_already_ingested_agent_is_re_ingested() {
+            // Given an agent already ingested from a card naming Acme Robotics, whose provider now fetches as a renamed card naming Globex
+            var wellKnownUrl = "https://example.com/.well-known/agent.json";
+            var a2aIntegration = givenAnAgentAlreadyIngestedFrom(wellKnownUrl, "Acme Robotics");
+            var reIngestedAgent = createFederatedAgent("Renamed Agent", "2.0.0", wellKnownUrl, "Globex");
+            a2aAgentFetcher.add(wellKnownUrl, reIngestedAgent);
+
+            // When the integration is ingested again
+            var result = reIngest(a2aIntegration);
+
+            // Then the ingestion succeeds and the stored definition is the freshly fetched card rather than the previous one
+            assertThat(result).containsExactly(AsyncJob.Status.SUCCESS);
+            assertThat(apiCrudService.storage()).singleElement().extracting(Api::getApiDefinitionValue).isEqualTo(reIngestedAgent);
+        }
+
+        @Test
+        void should_clear_the_provider_organization_when_a_re_ingested_card_no_longer_names_one() {
+            // Given an agent already ingested from a card naming Acme Robotics, whose provider now fetches as a card naming no organization
+            var wellKnownUrl = "https://example.com/.well-known/agent.json";
+            var a2aIntegration = givenAnAgentAlreadyIngestedFrom(wellKnownUrl, "Acme Robotics");
+            a2aAgentFetcher.add(wellKnownUrl, createFederatedAgent("Test Agent", "1.0.0", wellKnownUrl, null));
+
+            // When the integration is ingested again
+            var result = reIngest(a2aIntegration);
+
+            // Then the ingestion succeeds and the row the stored agent converts to no longer carries the previous organization
+            assertThat(result).containsExactly(AsyncJob.Status.SUCCESS);
+            assertThat(apiCrudService.storage())
+                .singleElement()
+                .extracting(api -> ApiAdapter.INSTANCE.toRepository(api).getProviderOrganization())
+                .isNull();
         }
 
         @Test
