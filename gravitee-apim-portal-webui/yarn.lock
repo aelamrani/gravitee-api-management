@@ -682,7 +682,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@asyncapi/parser@npm:^3.1.0, @asyncapi/parser@npm:^3.3.0, @asyncapi/parser@npm:^3.4.0":
+"@asyncapi/parser@npm:^3.1.0, @asyncapi/parser@npm:^3.3.0":
   version: 3.4.0
   resolution: "@asyncapi/parser@npm:3.4.0"
   dependencies:
@@ -709,25 +709,52 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@asyncapi/protobuf-schema-parser@npm:^3.5.1":
-  version: 3.5.1
-  resolution: "@asyncapi/protobuf-schema-parser@npm:3.5.1"
+"@asyncapi/parser@npm:^3.6.2":
+  version: 3.6.3
+  resolution: "@asyncapi/parser@npm:3.6.3"
   dependencies:
-    "@asyncapi/parser": "npm:^3.4.0"
-    "@types/protocol-buffers-schema": "npm:^3.4.3"
-    protobufjs: "npm:^7.4.0"
-  checksum: 10c0/3d25c7974d3c734841e619ab31f198e2301a591f025b49cd3ba4fab4e3b684fa6bf3ae63740d1c519e12cd8258193789412b74891b698a39a101d0513726b3c1
+    "@asyncapi/specs": "npm:^6.11.1"
+    "@openapi-contrib/openapi-schema-to-json-schema": "npm:~3.2.0"
+    "@stoplight/json": "npm:3.21.0"
+    "@stoplight/json-ref-readers": "npm:^1.2.2"
+    "@stoplight/json-ref-resolver": "npm:^3.1.5"
+    "@stoplight/spectral-core": "npm:^1.18.3"
+    "@stoplight/spectral-functions": "npm:^1.7.2"
+    "@stoplight/spectral-parsers": "npm:^1.0.2"
+    "@stoplight/spectral-ref-resolver": "npm:^1.0.3"
+    "@stoplight/types": "npm:^13.12.0"
+    "@types/json-schema": "npm:^7.0.11"
+    "@types/urijs": "npm:^1.19.19"
+    ajv: "npm:^8.18.0"
+    ajv-errors: "npm:^3.0.0"
+    ajv-formats: "npm:^2.1.1"
+    avsc: "npm:^5.7.5"
+    js-yaml: "npm:^4.3.1"
+    jsonpath-plus: "npm:^10.0.7"
+    node-fetch: "npm:2.6.7"
+  checksum: 10c0/4eda8bea397e7bd0f5974dedeecf677a632696de06af369c3f78b430bca95c5de3f193d38cefe8d0454d0e1817d97da51861d6590c4da3f28214813cef6384fd
   languageName: node
   linkType: hard
 
-"@asyncapi/react-component@npm:^2.6.3":
-  version: 2.6.3
-  resolution: "@asyncapi/react-component@npm:2.6.3"
+"@asyncapi/protobuf-schema-parser@npm:^3.6.0":
+  version: 3.9.0
+  resolution: "@asyncapi/protobuf-schema-parser@npm:3.9.0"
+  dependencies:
+    "@asyncapi/parser": "npm:^3.6.2"
+    "@types/protocol-buffers-schema": "npm:^3.4.3"
+    protobufjs: "npm:^8.7.1"
+  checksum: 10c0/c8c0c693398e367df8bc8cc3d57168b9f889cb6b38524bec8217ef9e8f2cf2143906919ba45f18ecc9f49dd0f590976954c2d0c813877a6f28f7793bc7f88ede
+  languageName: node
+  linkType: hard
+
+"@asyncapi/react-component@npm:^2.6.5":
+  version: 2.6.5
+  resolution: "@asyncapi/react-component@npm:2.6.5"
   dependencies:
     "@asyncapi/avro-schema-parser": "npm:^3.0.24"
     "@asyncapi/openapi-schema-parser": "npm:^3.0.24"
     "@asyncapi/parser": "npm:^3.3.0"
-    "@asyncapi/protobuf-schema-parser": "npm:^3.5.1"
+    "@asyncapi/protobuf-schema-parser": "npm:^3.6.0"
     highlight.js: "npm:^10.7.2"
     isomorphic-dompurify: "npm:^2.14.0"
     marked: "npm:^4.0.14"
@@ -737,7 +764,16 @@ __metadata:
   peerDependencies:
     react: ">=18.0.0"
     react-dom: ">=18.0.0"
-  checksum: 10c0/974ca6b16258870864d03bf5cc73e61b330b4d7d210ccd2d31efb976eb2e6ca6509a5ffd2776ef23b03abf7e0044217dda581285a82f2713d1dbbc3950af775d
+  checksum: 10c0/f0647f02bebabd37760d6917202c9a595dd083cd9f525275f99b35532d185aa415920112ed3400dc31d620db6d884e2f35855b947b613f7287c33028163a3a5e
+  languageName: node
+  linkType: hard
+
+"@asyncapi/specs@npm:^6.11.1":
+  version: 6.11.1
+  resolution: "@asyncapi/specs@npm:6.11.1"
+  dependencies:
+    "@types/json-schema": "npm:^7.0.11"
+  checksum: 10c0/dac4bfb88a0e8bb163b99072ee839705d5909d951968a0c9187e90d72430341d51e7e4e3beee037fc14159262fc7ff003d74d1e11272a3f41b53ece0efc67523
   languageName: node
   linkType: hard
 
@@ -750,15 +786,15 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@asyncapi/web-component@npm:2.6.3":
-  version: 2.6.3
-  resolution: "@asyncapi/web-component@npm:2.6.3"
+"@asyncapi/web-component@npm:2.6.5":
+  version: 2.6.5
+  resolution: "@asyncapi/web-component@npm:2.6.5"
   dependencies:
-    "@asyncapi/react-component": "npm:^2.6.3"
+    "@asyncapi/react-component": "npm:^2.6.5"
     react: "npm:^18.2.0"
     react-dom: "npm:^18.2.0"
     web-react-components: "npm:^1.4.2"
-  checksum: 10c0/e8de2caf5d15ba9eae2e353342fcd08b501b2c3029ccf743a5226c1ad4a7a2c2e27a6fa06db46ebb4f218b940f998212af1bfe202b23beddf05cd15100eaabda
+  checksum: 10c0/c80334be2a7f809a7afc50294f9b2fc004a86b9a18e2eebf6dea055cd25393a6067180612818858c79bc4dec66db044ea89d69ca459276f002faa0e61f62cf69
   languageName: node
   linkType: hard
 
@@ -3281,7 +3317,7 @@ __metadata:
     "@angular/platform-browser-dynamic": "npm:20.3.16"
     "@angular/router": "npm:20.3.16"
     "@asciidoctor/core": "npm:3.0.4"
-    "@asyncapi/web-component": "npm:2.6.3"
+    "@asyncapi/web-component": "npm:2.6.5"
     "@babel/preset-env": "npm:7.26.9"
     "@emoji-mart/data": "npm:1.2.1"
     "@fontsource/dm-mono": "npm:5.2.5"
@@ -7299,6 +7335,18 @@ __metadata:
     json-schema-traverse: "npm:^0.4.1"
     uri-js: "npm:^4.2.2"
   checksum: 10c0/41e23642cbe545889245b9d2a45854ebba51cda6c778ebced9649420d9205f2efb39cb43dbc41e358409223b1ea43303ae4839db682c848b891e4811da1a5a71
+  languageName: node
+  linkType: hard
+
+"ajv@npm:^8.18.0":
+  version: 8.20.0
+  resolution: "ajv@npm:8.20.0"
+  dependencies:
+    fast-deep-equal: "npm:^3.1.3"
+    fast-uri: "npm:^3.0.1"
+    json-schema-traverse: "npm:^1.0.0"
+    require-from-string: "npm:^2.0.2"
+  checksum: 10c0/5df9a1c8f83863cde1bd3a9ddb426f599718f88e3dc9153616c79fb28e0be455335830d7f21d745576519f057b371352daa31047b6a33d7036fe08777d60cf2a
   languageName: node
   linkType: hard
 
@@ -12282,6 +12330,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"js-yaml@npm:^4.3.1":
+  version: 4.3.2
+  resolution: "js-yaml@npm:4.3.2"
+  dependencies:
+    argparse: "npm:^2.0.1"
+  bin:
+    js-yaml: bin/js-yaml.js
+  checksum: 10c0/dedd34c2e8fef1d504687f1bc94ed0ee1311a1f78770fa2800352c6d59c635ccf555009d74e9afe529ae62199da2b1ccef30e53dc84dcd8d2d8187c22574bc97
+  languageName: node
+  linkType: hard
+
 "jsbn@npm:1.1.0":
   version: 1.1.0
   resolution: "jsbn@npm:1.1.0"
@@ -12509,6 +12568,20 @@ __metadata:
     jsonpath: bin/jsonpath-cli.js
     jsonpath-plus: bin/jsonpath-cli.js
   checksum: 10c0/f5ff53078ecab98e8afd1dcdb4488e528653fa5a03a32d671f52db1ae9c3236e6e072d75e1949a80929fd21b07603924a586f829b40ad35993fa0247fa4f7506
+  languageName: node
+  linkType: hard
+
+"jsonpath-plus@npm:^10.0.7":
+  version: 10.4.0
+  resolution: "jsonpath-plus@npm:10.4.0"
+  dependencies:
+    "@jsep-plugin/assignment": "npm:^1.3.0"
+    "@jsep-plugin/regex": "npm:^1.0.4"
+    jsep: "npm:^1.4.0"
+  bin:
+    jsonpath: bin/jsonpath-cli.js
+    jsonpath-plus: bin/jsonpath-cli.js
+  checksum: 10c0/500ace17c7b8d084f9e1284e96761722600909b8ddc1f3a5b18f9152ad9e1d63a61e3d713abd6d7141d4b61e1f632f1eb67b57be6a220b17b215b95ba050af07
   languageName: node
   linkType: hard
 
