@@ -33,6 +33,7 @@ import io.vertx.rxjava3.SingleHelper;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -135,20 +136,30 @@ public class RedisTokenBucketRateLimitRepository implements TokenBucketRateLimit
                                         return Future.failedFuture(evalError);
                                     });
                             })
+                            .timeout(operationTimeout, TimeUnit.MILLISECONDS)
+                            .recover(this::mapTimeout)
                     )
-                    .onFailure(this::logOperationFailure)
+                    .onFailure(t -> {
+                        logOperationFailure(t);
+                        redisClient.notifyConnectionFailure(t);
+                    })
                     .onComplete(asyncResultHandler)
-        )
-            .map(response -> {
-                boolean allowed = response.get(0).toLong() == 1L;
-                long newTokens = response.get(1).toLong();
-                return new TokenBucketConsumeResult(
-                    allowed,
-                    newTokens,
-                    TokenBucketCalculator.nextAvailableAtMillis(newTokens, refillRate, refillPeriodMillis, nowMillis)
-                );
-            })
-            .timeout(operationTimeout, TimeUnit.MILLISECONDS, Single.error(new RedisOperationTimeoutException(operationTimeout)));
+        ).map(response -> {
+            boolean allowed = response.get(0).toLong() == 1L;
+            long newTokens = response.get(1).toLong();
+            return new TokenBucketConsumeResult(
+                allowed,
+                newTokens,
+                TokenBucketCalculator.nextAvailableAtMillis(newTokens, refillRate, refillPeriodMillis, nowMillis)
+            );
+        });
+    }
+
+    private Future<Response> mapTimeout(Throwable t) {
+        if (t instanceof TimeoutException) {
+            return Future.failedFuture(new RedisOperationTimeoutException(operationTimeout));
+        }
+        return Future.failedFuture(t);
     }
 
     // numkeys is "1": only the bucket key is a KEY, so all keys touched share one hash slot.
