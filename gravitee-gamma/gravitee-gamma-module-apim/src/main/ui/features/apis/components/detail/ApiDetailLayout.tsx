@@ -56,10 +56,7 @@ const DEPLOYMENT_LABEL_MAX_LENGTH = 32;
 function StateIndicator({ state, deploymentState }: { state: ApiDetailDto['state']; deploymentState?: string }) {
     if (state === 'STARTED' && deploymentState === 'NEED_REDEPLOY') {
         return (
-            <Badge
-                className="gap-1 h-5 px-1.5 text-xs font-medium border-transparent"
-                style={{ backgroundColor: 'color-mix(in oklab, var(--color-warning) 12%, transparent)', color: 'var(--color-warning)' }}
-            >
+            <Badge variant="warning" className="gap-1 h-5 px-1.5 text-xs font-medium">
                 <TriangleAlertIcon className="size-3" />
                 Out of sync
             </Badge>
@@ -69,7 +66,7 @@ function StateIndicator({ state, deploymentState }: { state: ApiDetailDto['state
     switch (state) {
         case 'STARTED':
             return (
-                <Badge className="gap-1 h-5 px-1.5 text-xs font-medium bg-success/10 text-success border-transparent">
+                <Badge variant="success" className="gap-1 h-5 px-1.5 text-xs font-medium">
                     <CircleCheckIcon className="size-3" />
                     Started
                 </Badge>
@@ -83,7 +80,7 @@ function StateIndicator({ state, deploymentState }: { state: ApiDetailDto['state
             );
         case 'CLOSED':
             return (
-                <Badge variant="outline" className="gap-1 h-5 px-1.5 text-xs font-medium text-muted-foreground">
+                <Badge variant="outline" className="gap-1 h-5 px-1.5 text-xs font-medium">
                     <CircleXIcon className="size-3" />
                     Closed
                 </Badge>
