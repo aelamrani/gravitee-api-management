@@ -45,6 +45,8 @@ interface ResolvedError {
     readonly message: string;
     /** The server's stable identifier for this failure, where it sent one. */
     readonly technicalCode?: string;
+    /** Detail belonging to the technical code, such as the key of a rejected field. */
+    readonly parameters?: Readonly<Record<string, string>>;
 }
 
 async function resolveError(res: Response, fallback: string): Promise<ResolvedError> {
@@ -54,8 +56,8 @@ async function resolveError(res: Response, fallback: string): Promise<ResolvedEr
     }
 
     try {
-        const parsed = JSON.parse(text) as { message?: string; technicalCode?: string };
-        return { message: parsed.message?.trim() || fallback, technicalCode: parsed.technicalCode };
+        const parsed = JSON.parse(text) as { message?: string; technicalCode?: string; parameters?: Record<string, string> };
+        return { message: parsed.message?.trim() || fallback, technicalCode: parsed.technicalCode, parameters: parsed.parameters };
     } catch {
         return { message: text.trim() || fallback };
     }
@@ -79,7 +81,7 @@ export async function request<T>(backend: Backend, path: string, init?: RequestI
     if (!res.ok) {
         const fallback = `${init?.method ?? 'GET'} ${path} failed`;
         const resolved = await resolveError(res, fallback);
-        throw new ApiError(res.status, resolved.message, resolved.technicalCode);
+        throw new ApiError(res.status, resolved.message, resolved.technicalCode, resolved.parameters);
     }
 
     if (res.status === 204) return undefined as T;
@@ -95,6 +97,8 @@ export class ApiError extends Error {
         /** The server's stable identifier for this failure, so callers can branch on the cause
          *  rather than on wording that is free to change. */
         public readonly technicalCode?: string,
+        /** Detail belonging to {@link technicalCode}, such as the key of the rejected field. */
+        public readonly parameters?: Readonly<Record<string, string>>,
     ) {
         super(message);
         this.name = 'ApiError';

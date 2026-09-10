@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { http, HttpResponse } from 'msw';
+
 import { ApiError, gammaApi, managementApi, managementV2EnvironmentApi, managementV2OrganizationApi } from './api-client';
 import {
     TEST_GAMMA_BASE,
@@ -21,6 +23,7 @@ import {
     TEST_MANAGEMENT_V2_ORGANIZATION_BASE,
 } from '../../testing/factories';
 import { trackHandler, respondWithError } from '../../testing/helpers';
+import { server } from '../../testing/server';
 
 describe('managementApi', () => {
     it('should resolve to correct management url', async () => {
@@ -54,6 +57,41 @@ describe('managementApi', () => {
         await expect(managementApi.get('/user')).rejects.toMatchObject({
             message: 'Error 400',
             status: 400,
+        });
+    });
+
+    it('should carry the technical code and parameters a management error names', async () => {
+        // Anonymous pages attribute a rejection to the input that caused it, and only the
+        // technical code and its parameters say which input that was.
+        server.use(
+            http.post(`${TEST_MANAGEMENT_BASE}/users/registration`, () =>
+                HttpResponse.json(
+                    {
+                        message: "Unable to  the custom user field 'Job Title'",
+                        http_status: 400,
+                        technicalCode: 'custom-user-field',
+                        parameters: { key: 'Job Title', action: '' },
+                    },
+                    { status: 400 },
+                ),
+            ),
+        );
+
+        await expect(managementApi.post('/users/registration', {})).rejects.toMatchObject({
+            status: 400,
+            message: "Unable to  the custom user field 'Job Title'",
+            technicalCode: 'custom-user-field',
+            parameters: { key: 'Job Title', action: '' },
+        });
+    });
+
+    it('should leave the technical code undefined when the error names none', async () => {
+        respondWithError('get', `${TEST_MANAGEMENT_BASE}/user`, 500);
+
+        await expect(managementApi.get('/user')).rejects.toMatchObject({
+            status: 500,
+            technicalCode: undefined,
+            parameters: undefined,
         });
     });
 
