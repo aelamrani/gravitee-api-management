@@ -74,7 +74,7 @@ class ObservabilityFiltersDefinitionResourceTest extends AbstractResourceTest {
             .satisfies(filters -> {
                 // The bare count keeps every catalog addition a deliberate decision. On its own it
                 // says nothing about what broke, so the names of the last additions come with it.
-                assertThat(filters).hasSize(64);
+                assertThat(filters).hasSize(65);
                 assertThat(filters)
                     .extracting(filter -> filter.getName().getValue())
                     .contains(
@@ -95,7 +95,8 @@ class ObservabilityFiltersDefinitionResourceTest extends AbstractResourceTest {
                         "MCP_PROXY_TOOL_PRICE_STATUS",
                         "MCP_PROXY_TOOL_BILLED",
                         "LLM_PROXY_CONVERSATION",
-                        "LLM_PROXY_REQUEST_KIND"
+                        "LLM_PROXY_REQUEST_KIND",
+                        "LLM_PROXY_TOOL"
                     );
             });
     }

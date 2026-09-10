@@ -52,6 +52,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_TOOL_PRICE_STATUS
@@ -86,6 +87,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_TOOL_PRICE_STATUS
@@ -128,6 +130,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_TOOL_PRICE_STATUS
@@ -162,6 +165,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_TOOL_PRICE_STATUS
@@ -1557,6 +1561,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_TOOL_PRICE_STATUS
@@ -1591,6 +1596,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_TOOL_PRICE_STATUS
@@ -1631,6 +1637,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_RESOURCE
@@ -1661,6 +1668,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_RESOURCE
@@ -1701,6 +1709,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_RESOURCE
@@ -1733,6 +1742,7 @@ spec:
               - LLM_PROXY_MODEL
               - LLM_PROXY_PROVIDER
               - LLM_PROXY_CONVERSATION
+              - LLM_PROXY_TOOL
               - MCP_PROXY_METHOD
               - MCP_PROXY_TOOL
               - MCP_PROXY_RESOURCE
@@ -2775,6 +2785,15 @@ spec:
           apis:
               - LLM
 
+        - name: LLM_PROXY_TOOL
+          label: LLM Tool
+          type: KEYWORD
+          operators:
+              - EQ
+              - IN
+          apis:
+              - LLM
+
         - name: MCP_PROXY_METHOD
           label: MCP Method
           signals:
@@ -3169,6 +3188,10 @@ spec:
 
         - name: LLM_PROXY_CONVERSATION
           label: LLM Conversation
+          type: KEYWORD
+
+        - name: LLM_PROXY_TOOL
+          label: LLM Tool
           type: KEYWORD
 
         - name: MCP_PROXY_METHOD
