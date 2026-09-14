@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import { ComponentHarness } from '@angular/cdk/testing';
+import { MatButtonHarness } from '@angular/material/button/testing';
 
 export class ApiProductSubscriptionDetailsHarness extends ComponentHarness {
   static hostSelector = 'app-api-product-subscription-details';
@@ -22,6 +23,10 @@ export class ApiProductSubscriptionDetailsHarness extends ComponentHarness {
   private readonly credentials = this.locatorFor('[data-testid="product-subscription-credentials"]');
   private readonly apiCards = this.locatorForAll('app-api-product-subscription-api-access');
   private readonly applicationLink = this.locatorForOptional('a[href*="/dashboard/applications/"]');
+  private readonly pauseButton = this.locatorForOptional(MatButtonHarness.with({ selector: '[data-testid="pause-subscription"]' }));
+  private readonly resumeButton = this.locatorForOptional(MatButtonHarness.with({ selector: '[data-testid="resume-subscription"]' }));
+  private readonly closeButton = this.locatorForOptional(MatButtonHarness.with({ selector: '[data-testid="close-subscription"]' }));
+  private readonly feedback = this.locatorForOptional('[data-testid="subscription-action-feedback"]');
 
   async getSummaryText(): Promise<string> {
     return (await this.summary()).text();
@@ -37,5 +42,21 @@ export class ApiProductSubscriptionDetailsHarness extends ComponentHarness {
 
   async getApplicationLink(): Promise<string | null> {
     return (await this.applicationLink())?.getAttribute('href') ?? null;
+  }
+
+  async getPauseButton(): Promise<MatButtonHarness | null> {
+    return this.pauseButton();
+  }
+
+  async getResumeButton(): Promise<MatButtonHarness | null> {
+    return this.resumeButton();
+  }
+
+  async getCloseButton(): Promise<MatButtonHarness | null> {
+    return this.closeButton();
+  }
+
+  async getFeedbackText(): Promise<string | null> {
+    return (await this.feedback())?.text() ?? null;
   }
 }

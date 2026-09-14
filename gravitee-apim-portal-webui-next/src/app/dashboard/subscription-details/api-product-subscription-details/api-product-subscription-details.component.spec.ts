@@ -13,41 +13,94 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { HarnessLoader } from '@angular/cdk/testing';
 import { TestbedHarnessEnvironment } from '@angular/cdk/testing/testbed';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 
 import { ApiProductSubscriptionDetailsComponent } from './api-product-subscription-details.component';
 import { ApiProductSubscriptionDetailsHarness } from './api-product-subscription-details.harness';
+import { ConfirmDialogHarness } from '../../../../components/confirm-dialog/confirm-dialog.harness';
 import { fakeApplication } from '../../../../entities/application/application.fixture';
-import { fakeApiProductSubscriptionDetails, fakeSubscription } from '../../../../entities/subscription';
+import { UserApplicationPermissions } from '../../../../entities/permission/permission';
+import { fakeUserApplicationPermissions } from '../../../../entities/permission/permission.fixtures';
+import {
+  fakeApiProductSubscriptionDetails,
+  fakeSubscription,
+  Subscription,
+  SubscriptionConsumerStatusEnum,
+} from '../../../../entities/subscription';
 import { ApplicationService } from '../../../../services/application.service';
+import { PermissionsService } from '../../../../services/permissions.service';
+import { SubscriptionService } from '../../../../services/subscription.service';
 import { AppTestingModule } from '../../../../testing/app-testing.module';
 
 describe('ApiProductSubscriptionDetailsComponent', () => {
   let fixture: ComponentFixture<ApiProductSubscriptionDetailsComponent>;
+  let rootLoader: HarnessLoader;
   let applicationService: jest.Mocked<Pick<ApplicationService, 'get'>>;
+  let permissionsService: jest.Mocked<Pick<PermissionsService, 'getApplicationPermissions'>>;
+  let subscriptionService: jest.Mocked<Pick<SubscriptionService, 'changeConsumerStatus' | 'close' | 'get'>>;
+
+  const acceptedSubscription = (modifier: Partial<Subscription> = {}): Subscription =>
+    fakeSubscription({
+      status: 'ACCEPTED',
+      consumerStatus: SubscriptionConsumerStatusEnum.STARTED,
+      reference_type: 'API_PRODUCT',
+      reference_id: 'api-product-id',
+      api: undefined,
+      apiProduct: fakeApiProductSubscriptionDetails(),
+      ...modifier,
+    });
 
   beforeEach(async () => {
     applicationService = {
       get: jest.fn().mockReturnValue(of(fakeApplication({ name: 'My application' }))),
     };
+    permissionsService = {
+      getApplicationPermissions: jest.fn(),
+    };
+    subscriptionService = {
+      changeConsumerStatus: jest.fn(),
+      close: jest.fn(),
+      get: jest.fn(),
+    };
 
     await TestBed.configureTestingModule({
       imports: [ApiProductSubscriptionDetailsComponent, AppTestingModule],
-      providers: [provideNoopAnimations(), provideRouter([]), { provide: ApplicationService, useValue: applicationService }],
+      providers: [
+        provideNoopAnimations(),
+        provideRouter([]),
+        { provide: ApplicationService, useValue: applicationService },
+        { provide: PermissionsService, useValue: permissionsService },
+        { provide: SubscriptionService, useValue: subscriptionService },
+      ],
     }).compileComponents();
 
     fixture = TestBed.createComponent(ApiProductSubscriptionDetailsComponent);
+    rootLoader = TestbedHarnessEnvironment.documentRootLoader(fixture);
   });
 
+  async function init(
+    subscription: Subscription = acceptedSubscription(),
+    permissions: UserApplicationPermissions = fakeUserApplicationPermissions({ SUBSCRIPTION: ['U', 'D'] }),
+  ): Promise<ApiProductSubscriptionDetailsHarness> {
+    permissionsService.getApplicationPermissions.mockReturnValue(of(permissions));
+    subscriptionService.get.mockReturnValue(of(subscription));
+    subscriptionService.changeConsumerStatus.mockReturnValue(of(subscription));
+    subscriptionService.close.mockReturnValue(of(undefined));
+    fixture.componentRef.setInput('subscription', subscription);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    return TestbedHarnessEnvironment.harnessForFixture(fixture, ApiProductSubscriptionDetailsHarness);
+  }
+
   it('should show API Product subscription summary and included APIs', async () => {
-    fixture.componentRef.setInput(
-      'subscription',
-      fakeSubscription({
-        status: 'ACCEPTED',
+    const harness = await init(
+      acceptedSubscription({
         start_at: '2026-08-01T10:00:00Z',
         end_at: '2027-08-01T10:00:00Z',
         apiProduct: fakeApiProductSubscriptionDetails({
@@ -56,10 +109,9 @@ describe('ApiProductSubscriptionDetailsComponent', () => {
       }),
     );
 
-    const harness = await TestbedHarnessEnvironment.harnessForFixture(fixture, ApiProductSubscriptionDetailsHarness);
-
     expect(await harness.getSummaryText()).toContain('Commerce Product');
     expect(await harness.getSummaryText()).toContain('Accepted');
+    expect(await harness.getSummaryText()).toContain('Active');
     expect(await harness.getSummaryText()).toContain('My application');
     expect(await harness.getCredentialsText()).toContain('No credentials are required');
     expect(await harness.getApiCount()).toBe(1);
@@ -67,32 +119,21 @@ describe('ApiProductSubscriptionDetailsComponent', () => {
   });
 
   it('should show the subscription lifecycle state instead of credentials', async () => {
-    fixture.componentRef.setInput(
-      'subscription',
-      fakeSubscription({
-        status: 'PENDING',
-        apiProduct: fakeApiProductSubscriptionDetails(),
-      }),
-    );
-
-    const harness = await TestbedHarnessEnvironment.harnessForFixture(fixture, ApiProductSubscriptionDetailsHarness);
+    const harness = await init(acceptedSubscription({ status: 'PENDING' }));
 
     expect(await harness.getCredentialsText()).toContain('subscription request is being reviewed');
     expect(fixture.nativeElement.querySelectorAll('app-api-product-subscription-api-access app-copy-code')).toHaveLength(0);
   });
 
   it.each(['CLOSED', 'REJECTED'] as const)('should not show KEY_LESS access for a %s subscription', async status => {
-    fixture.componentRef.setInput(
-      'subscription',
-      fakeSubscription({
+    const harness = await init(
+      acceptedSubscription({
         status,
         apiProduct: fakeApiProductSubscriptionDetails({
           plan: { id: 'plan-id', name: 'Keyless', security: 'KEY_LESS', mode: 'STANDARD' },
         }),
       }),
     );
-
-    const harness = await TestbedHarnessEnvironment.harnessForFixture(fixture, ApiProductSubscriptionDetailsHarness);
 
     expect(await harness.getCredentialsText()).toContain(
       status === 'CLOSED' ? 'subscription is closed' : 'subscription request was rejected',
@@ -102,20 +143,118 @@ describe('ApiProductSubscriptionDetailsComponent', () => {
   });
 
   it('should show OAuth2 application credentials once', async () => {
-    fixture.componentRef.setInput(
-      'subscription',
-      fakeSubscription({
-        status: 'ACCEPTED',
+    const harness = await init(
+      acceptedSubscription({
         apiProduct: fakeApiProductSubscriptionDetails({
           plan: { id: 'plan-id', name: 'OAuth', security: 'OAUTH2', mode: 'STANDARD' },
         }),
       }),
     );
 
-    const harness = await TestbedHarnessEnvironment.harnessForFixture(fixture, ApiProductSubscriptionDetailsHarness);
-
     expect(await harness.getCredentialsText()).toContain('Client ID');
     expect(await harness.getCredentialsText()).toContain('Client Secret');
     expect(fixture.nativeElement.querySelectorAll('[data-testid="product-subscription-credentials"] app-copy-code')).toHaveLength(2);
+  });
+
+  it('should show Pause and Close actions for an active accepted subscription', async () => {
+    const harness = await init();
+
+    expect(await harness.getPauseButton()).not.toBeNull();
+    expect(await harness.getResumeButton()).toBeNull();
+    expect(await harness.getCloseButton()).not.toBeNull();
+  });
+
+  it('should hide lifecycle actions without application permissions', async () => {
+    const harness = await init(acceptedSubscription(), fakeUserApplicationPermissions());
+
+    expect(await harness.getPauseButton()).toBeNull();
+    expect(await harness.getResumeButton()).toBeNull();
+    expect(await harness.getCloseButton()).toBeNull();
+  });
+
+  it('should pause the subscription, reload details and disable API access', async () => {
+    const initialSubscription = acceptedSubscription();
+    const pausedSubscription = acceptedSubscription({ consumerStatus: SubscriptionConsumerStatusEnum.STOPPED });
+    const harness = await init(initialSubscription);
+    subscriptionService.changeConsumerStatus.mockReturnValue(of(pausedSubscription));
+    subscriptionService.get.mockReturnValue(of(pausedSubscription));
+
+    await (await harness.getPauseButton())!.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(subscriptionService.changeConsumerStatus).toHaveBeenCalledWith(initialSubscription.id, SubscriptionConsumerStatusEnum.STOPPED);
+    expect(subscriptionService.get).toHaveBeenCalledWith(initialSubscription.id);
+    expect(await harness.getFeedbackText()).toContain('paused');
+    expect(await harness.getResumeButton()).not.toBeNull();
+    expect(await harness.getCredentialsText()).toContain('subscription is paused');
+    expect(fixture.nativeElement.textContent).toContain('API access is not available for the current subscription status');
+  });
+
+  it('should resume a consumer-paused subscription', async () => {
+    const pausedSubscription = acceptedSubscription({ consumerStatus: SubscriptionConsumerStatusEnum.STOPPED });
+    const resumedSubscription = acceptedSubscription();
+    const harness = await init(pausedSubscription);
+    subscriptionService.changeConsumerStatus.mockReturnValue(of(resumedSubscription));
+    subscriptionService.get.mockReturnValue(of(resumedSubscription));
+
+    await (await harness.getResumeButton())!.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(subscriptionService.changeConsumerStatus).toHaveBeenCalledWith(pausedSubscription.id, SubscriptionConsumerStatusEnum.STARTED);
+    expect(await harness.getFeedbackText()).toContain('resumed');
+    expect(await harness.getPauseButton()).not.toBeNull();
+  });
+
+  it('should close the subscription after confirmation', async () => {
+    const initialSubscription = acceptedSubscription();
+    const closedSubscription = acceptedSubscription({ status: 'CLOSED' });
+    const harness = await init(initialSubscription);
+    subscriptionService.get.mockReturnValue(of(closedSubscription));
+
+    await (await harness.getCloseButton())!.click();
+    const dialog = await rootLoader.getHarness(ConfirmDialogHarness);
+    await dialog.confirm();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(subscriptionService.close).toHaveBeenCalledWith(initialSubscription.id);
+    expect(await harness.getFeedbackText()).toContain('closed');
+    expect(await harness.getPauseButton()).toBeNull();
+    expect(await harness.getResumeButton()).toBeNull();
+    expect(await harness.getCloseButton()).toBeNull();
+  });
+
+  it('should keep the subscription open when close is cancelled', async () => {
+    const harness = await init();
+
+    await (await harness.getCloseButton())!.click();
+    const dialog = await rootLoader.getHarness(ConfirmDialogHarness);
+    await dialog.cancel();
+
+    expect(subscriptionService.close).not.toHaveBeenCalled();
+  });
+
+  it('should display an inline error when an action fails', async () => {
+    const harness = await init();
+    subscriptionService.changeConsumerStatus.mockReturnValue(throwError(() => new Error('Request failed')));
+
+    await (await harness.getPauseButton())!.click();
+    fixture.detectChanges();
+
+    expect(await harness.getFeedbackText()).toContain('could not be paused');
+    expect(await (await harness.getPauseButton())!.isDisabled()).toBe(false);
+  });
+
+  it('should distinguish a successful action followed by a refresh failure', async () => {
+    const harness = await init();
+    subscriptionService.get.mockReturnValue(throwError(() => new Error('Refresh failed')));
+
+    await (await harness.getPauseButton())!.click();
+    fixture.detectChanges();
+
+    expect(subscriptionService.changeConsumerStatus).toHaveBeenCalled();
+    expect(await harness.getFeedbackText()).toContain('updated, but its latest details could not be loaded');
   });
 });
