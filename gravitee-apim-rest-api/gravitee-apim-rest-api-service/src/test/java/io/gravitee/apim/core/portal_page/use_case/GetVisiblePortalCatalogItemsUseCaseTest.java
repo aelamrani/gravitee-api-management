@@ -402,7 +402,7 @@ class GetVisiblePortalCatalogItemsUseCaseTest {
     }
 
     @Test
-    void should_exclude_api_products_from_catalog_when_category_id_is_present() {
+    void should_filter_catalog_apis_and_api_products_by_category_id() {
         var folder = folder("folder-id", "Catalog", null);
         var apiInCategory = apiItem(
             "api-item-in-category-id",
@@ -411,15 +411,52 @@ class GetVisiblePortalCatalogItemsUseCaseTest {
             PortalVisibility.PUBLIC,
             List.of(PortalCategoryId.of(CATEGORY_ID_1))
         );
-        var apiProductItem = apiProductItem("product-item-id", "product-id", null, PortalVisibility.PUBLIC);
-        navigationItemsQueryService.initWith(List.of(folder, apiInCategory, apiProductItem));
+        var productInCategory = apiProductItem(
+            "product-item-in-category-id",
+            "product-in-category-id",
+            null,
+            PortalVisibility.PUBLIC,
+            List.of(PortalCategoryId.of(CATEGORY_ID_1))
+        );
+        var productOutsideCategory = apiProductItem(
+            "product-item-outside-category-id",
+            "product-outside-category-id",
+            null,
+            PortalVisibility.PUBLIC,
+            List.of(PortalCategoryId.of(UNKNOWN_CATEGORY_ID))
+        );
+        navigationItemsQueryService.initWith(List.of(folder, apiInCategory, productInCategory, productOutsideCategory));
         initApis(List.of(api("api-in-category-id", "In Category API", "1.0.0")));
-        apiProductQueryService.initWith(List.of(apiProduct("product-id", "Product", Set.of())));
+        apiProductQueryService.initWith(
+            List.of(
+                apiProduct("product-in-category-id", "Matching Product", Set.of()),
+                apiProduct("product-outside-category-id", "Outside Product", Set.of())
+            )
+        );
 
         var output = useCase.execute(input(Optional.empty(), Set.of(), 1, 10, Optional.of(CATEGORY_ID_1)));
 
-        assertThat(output.items().getContent()).containsExactly(apiInCategory);
+        assertThat(output.items().getContent()).containsExactly(apiInCategory, productInCategory);
         assertThat(output.includedApiProducts()).isEmpty();
+    }
+
+    @Test
+    void should_not_inherit_api_product_category_from_an_included_api() {
+        var productItem = apiProductItem("product-item-id", "product-id", null, PortalVisibility.PUBLIC);
+        var includedApi = apiItem(
+            "included-api-item-id",
+            "included-api-id",
+            productItem.getId(),
+            PortalVisibility.PUBLIC,
+            List.of(PortalCategoryId.of(CATEGORY_ID_1))
+        );
+        navigationItemsQueryService.initWith(List.of(productItem, includedApi));
+        initApis(List.of(api("included-api-id", "Included API", "1.0.0")));
+        apiProductQueryService.initWith(List.of(apiProduct("product-id", "Product", Set.of("included-api-id"))));
+
+        var output = useCase.execute(input(Optional.empty(), Set.of(), 1, 10, Optional.of(CATEGORY_ID_1)));
+
+        assertThat(output.items().getContent()).isEmpty();
     }
 
     @Test
@@ -541,6 +578,16 @@ class GetVisiblePortalCatalogItemsUseCaseTest {
         PortalNavigationItemId parentId,
         PortalVisibility visibility
     ) {
+        return apiProductItem(id, apiProductId, parentId, visibility, List.of());
+    }
+
+    private PortalNavigationApiProduct apiProductItem(
+        String id,
+        String apiProductId,
+        PortalNavigationItemId parentId,
+        PortalVisibility visibility,
+        List<PortalCategoryId> categoryIds
+    ) {
         return PortalNavigationApiProduct.builder()
             .id(navigationItemId(id))
             .organizationId(ORG_ID)
@@ -553,6 +600,7 @@ class GetVisiblePortalCatalogItemsUseCaseTest {
             .apiProductId(apiProductId)
             .published(true)
             .visibility(visibility)
+            .categoryIds(categoryIds)
             .build();
     }
 
