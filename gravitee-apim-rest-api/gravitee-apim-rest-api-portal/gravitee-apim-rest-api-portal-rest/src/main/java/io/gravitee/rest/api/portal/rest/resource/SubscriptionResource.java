@@ -18,12 +18,15 @@ package io.gravitee.rest.api.portal.rest.resource;
 import static io.gravitee.rest.api.model.permissions.RolePermission.APPLICATION_SUBSCRIPTION;
 import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE;
 
+import io.gravitee.apim.core.portal_page.model.PortalNavigationItemViewerContext;
 import io.gravitee.apim.core.subscription.use_case.CloseSubscriptionUseCase;
+import io.gravitee.apim.core.subscription.use_case.GetPortalApiProductSubscriptionDetailsUseCase;
 import io.gravitee.common.http.MediaType;
 import io.gravitee.definition.jackson.datatype.GraviteeMapper;
 import io.gravitee.rest.api.model.*;
 import io.gravitee.rest.api.model.permissions.RolePermission;
 import io.gravitee.rest.api.model.permissions.RolePermissionAction;
+import io.gravitee.rest.api.portal.rest.mapper.ApiProductSubscriptionDetailsMapper;
 import io.gravitee.rest.api.portal.rest.mapper.KeyMapper;
 import io.gravitee.rest.api.portal.rest.mapper.SubscriptionMapper;
 import io.gravitee.rest.api.portal.rest.model.Key;
@@ -35,6 +38,7 @@ import io.gravitee.rest.api.service.SubscriptionService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
 import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
+import io.gravitee.rest.api.service.exceptions.SubscriptionNotFoundException;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.inject.Inject;
@@ -45,6 +49,7 @@ import jakarta.ws.rs.container.ResourceContext;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * @author Florent CHAMFROY (florent.chamfroy at graviteesource.com)
@@ -57,6 +62,9 @@ public class SubscriptionResource extends AbstractResource {
 
     @Inject
     private CloseSubscriptionUseCase closeSubscriptionUsecase;
+
+    @Inject
+    private GetPortalApiProductSubscriptionDetailsUseCase getPortalApiProductSubscriptionDetailsUseCase;
 
     @Inject
     private SubscriptionService subscriptionService;
@@ -81,29 +89,58 @@ public class SubscriptionResource extends AbstractResource {
     ) {
         SubscriptionEntity subscriptionEntity = subscriptionService.findById(subscriptionId);
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        boolean apiProductSubscription = "API_PRODUCT".equals(subscriptionEntity.getReferenceType());
 
-        if (
-            hasPermission(executionContext, RolePermission.API_SUBSCRIPTION, subscriptionEntity.getApi(), RolePermissionAction.READ) ||
-            hasPermission(executionContext, APPLICATION_SUBSCRIPTION, subscriptionEntity.getApplication(), RolePermissionAction.READ)
-        ) {
-            Subscription subscription = SubscriptionMapper.INSTANCE.map(subscriptionEntity);
-            if (include.contains(INCLUDE_KEYS)) {
-                List<Key> keys = apiKeyService
-                    .findBySubscription(executionContext, subscriptionId)
-                    .stream()
-                    .sorted((o1, o2) -> o2.getCreatedAt().compareTo(o1.getCreatedAt()))
-                    .map(keyMapper::convert)
-                    .toList();
-                subscription.setKeys(keys);
-            }
-
-            if (include.contains(INCLUDE_CONSUMER_CONFIGURATION)) {
-                subscription.setConsumerConfiguration(SubscriptionMapper.INSTANCE.map(subscriptionEntity.getConfiguration()));
-            }
-
-            return Response.ok(subscription).build();
+        if (!hasReadPermission(executionContext, subscriptionEntity, apiProductSubscription)) {
+            throw new ForbiddenAccessException();
         }
-        throw new ForbiddenAccessException();
+        if (apiProductSubscription && !Objects.equals(executionContext.getEnvironmentId(), subscriptionEntity.getEnvironmentId())) {
+            throw new SubscriptionNotFoundException(subscriptionId);
+        }
+        Subscription subscription = SubscriptionMapper.INSTANCE.map(subscriptionEntity);
+        if (apiProductSubscription) {
+            var output = getPortalApiProductSubscriptionDetailsUseCase.execute(
+                new GetPortalApiProductSubscriptionDetailsUseCase.Input(
+                    executionContext.getOrganizationId(),
+                    executionContext.getEnvironmentId(),
+                    subscriptionEntity.getReferenceId(),
+                    subscriptionEntity.getPlan(),
+                    PortalNavigationItemViewerContext.forPortal(getAuthenticatedUserOrNull())
+                )
+            );
+            subscription.setApiProduct(ApiProductSubscriptionDetailsMapper.INSTANCE.map(output.apiProduct()));
+        }
+        if (include.contains(INCLUDE_KEYS)) {
+            List<Key> keys = apiKeyService
+                .findBySubscription(executionContext, subscriptionId)
+                .stream()
+                .sorted((o1, o2) -> o2.getCreatedAt().compareTo(o1.getCreatedAt()))
+                .map(keyMapper::convert)
+                .toList();
+            subscription.setKeys(keys);
+        }
+
+        if (include.contains(INCLUDE_CONSUMER_CONFIGURATION)) {
+            subscription.setConsumerConfiguration(SubscriptionMapper.INSTANCE.map(subscriptionEntity.getConfiguration()));
+        }
+
+        return Response.ok(subscription).build();
+    }
+
+    private boolean hasReadPermission(ExecutionContext executionContext, SubscriptionEntity subscription, boolean apiProductSubscription) {
+        boolean hasApplicationPermission = hasPermission(
+            executionContext,
+            APPLICATION_SUBSCRIPTION,
+            subscription.getApplication(),
+            RolePermissionAction.READ
+        );
+        if (apiProductSubscription) {
+            return hasApplicationPermission;
+        }
+        return (
+            hasApplicationPermission ||
+            hasPermission(executionContext, RolePermission.API_SUBSCRIPTION, subscription.getApi(), RolePermissionAction.READ)
+        );
     }
 
     @POST
