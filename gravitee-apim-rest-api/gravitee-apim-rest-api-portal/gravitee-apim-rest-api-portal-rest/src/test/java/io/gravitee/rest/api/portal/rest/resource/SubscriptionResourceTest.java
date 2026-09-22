@@ -34,6 +34,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import io.gravitee.apim.core.subscription.model.PortalApiProductSubscriptionDetails;
+import io.gravitee.apim.core.subscription.use_case.CloseSubscriptionUseCase;
 import io.gravitee.apim.core.subscription.use_case.GetPortalApiProductSubscriptionDetailsUseCase;
 import io.gravitee.apim.core.subscription.use_case.SearchPortalSubscriptionsUseCase;
 import io.gravitee.common.data.domain.Page;
@@ -90,12 +91,15 @@ class SubscriptionResourceTest extends AbstractResourceTest {
     @Autowired
     private GetPortalApiProductSubscriptionDetailsUseCase getPortalApiProductSubscriptionDetailsUseCase;
 
+    @Autowired
+    private CloseSubscriptionUseCase closeSubscriptionUseCase;
+
     private SubscriptionEntity subscriptionEntity;
 
     @BeforeEach
     void init() {
         resetAllMocks();
-        reset(getPortalApiProductSubscriptionDetailsUseCase);
+        reset(getPortalApiProductSubscriptionDetailsUseCase, closeSubscriptionUseCase);
 
         subscriptionEntity = new SubscriptionEntity();
         subscriptionEntity.setId(SUBSCRIPTION);
@@ -396,6 +400,38 @@ class SubscriptionResourceTest extends AbstractResourceTest {
     class CloseSubscription {
 
         @Test
+        void should_close_api_product_subscription() {
+            givenApiProductSubscription(SubscriptionStatus.ACCEPTED);
+
+            var response = target(SUBSCRIPTION).path("_close").request().post(null);
+
+            assertEquals(HttpStatusCode.NO_CONTENT_204, response.getStatus());
+            verify(closeSubscriptionUseCase).execute(any(CloseSubscriptionUseCase.Input.class));
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = SubscriptionStatus.class, names = { "PENDING", "CLOSED", "REJECTED" })
+        void should_reject_closing_api_product_subscription_with_invalid_status(SubscriptionStatus status) {
+            givenApiProductSubscription(status);
+
+            var response = target(SUBSCRIPTION).path("_close").request().post(null);
+
+            assertEquals(HttpStatusCode.BAD_REQUEST_400, response.getStatus());
+            verifyNoInteractions(closeSubscriptionUseCase);
+        }
+
+        @Test
+        void should_not_close_api_product_subscription_from_another_environment() {
+            givenApiProductSubscription(SubscriptionStatus.ACCEPTED);
+            subscriptionEntity.setEnvironmentId("other-environment");
+
+            var response = target(SUBSCRIPTION).path("_close").request().post(null);
+
+            assertEquals(HttpStatusCode.NOT_FOUND_404, response.getStatus());
+            verifyNoInteractions(closeSubscriptionUseCase);
+        }
+
+        @Test
         void testPermissionsForClosingASubscription() {
             reset(permissionService);
 
@@ -469,6 +505,52 @@ class SubscriptionResourceTest extends AbstractResourceTest {
 
     @Nested
     class ChangeSubscriptionConsumerStatus {
+
+        @Test
+        void should_pause_api_product_subscription_by_consumer() {
+            givenApiProductSubscription(SubscriptionStatus.ACCEPTED);
+            subscriptionEntity.setConsumerStatus(SubscriptionConsumerStatus.STARTED);
+
+            var response = target(SUBSCRIPTION).path("_changeConsumerStatus").queryParam("status", "STOPPED").request().post(null);
+
+            assertEquals(HttpStatusCode.OK_200, response.getStatus());
+            verify(subscriptionService).pauseConsumer(GraviteeContext.getExecutionContext(), SUBSCRIPTION);
+        }
+
+        @Test
+        void should_resume_api_product_subscription_by_consumer() {
+            givenApiProductSubscription(SubscriptionStatus.ACCEPTED);
+            subscriptionEntity.setConsumerStatus(SubscriptionConsumerStatus.STOPPED);
+
+            var response = target(SUBSCRIPTION).path("_changeConsumerStatus").queryParam("status", "STARTED").request().post(null);
+
+            assertEquals(HttpStatusCode.OK_200, response.getStatus());
+            verify(subscriptionService).resumeConsumer(GraviteeContext.getExecutionContext(), SUBSCRIPTION);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = SubscriptionStatus.class, names = { "PENDING", "PAUSED", "CLOSED", "REJECTED" })
+        void should_reject_consumer_status_change_for_api_product_subscription_with_invalid_status(SubscriptionStatus status) {
+            givenApiProductSubscription(status);
+
+            var response = target(SUBSCRIPTION).path("_changeConsumerStatus").queryParam("status", "STOPPED").request().post(null);
+
+            assertEquals(HttpStatusCode.BAD_REQUEST_400, response.getStatus());
+            verify(subscriptionService, times(0)).pauseConsumer(any(), any());
+            verify(subscriptionService, times(0)).resumeConsumer(any(), any());
+        }
+
+        @Test
+        void should_not_change_consumer_status_for_api_product_subscription_from_another_environment() {
+            givenApiProductSubscription(SubscriptionStatus.ACCEPTED);
+            subscriptionEntity.setEnvironmentId("other-environment");
+
+            var response = target(SUBSCRIPTION).path("_changeConsumerStatus").queryParam("status", "STOPPED").request().post(null);
+
+            assertEquals(HttpStatusCode.NOT_FOUND_404, response.getStatus());
+            verify(subscriptionService, times(0)).pauseConsumer(any(), any());
+            verify(subscriptionService, times(0)).resumeConsumer(any(), any());
+        }
 
         @Test
         void shouldPauseSubscriptionByConsumer() {
@@ -688,5 +770,12 @@ class SubscriptionResourceTest extends AbstractResourceTest {
 
             private String url;
         }
+    }
+
+    private void givenApiProductSubscription(SubscriptionStatus status) {
+        subscriptionEntity.setApi(null);
+        subscriptionEntity.setReferenceId(API_PRODUCT);
+        subscriptionEntity.setReferenceType("API_PRODUCT");
+        subscriptionEntity.setStatus(status);
     }
 }
