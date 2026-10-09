@@ -16,6 +16,9 @@
 import { Directive, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 
+// Any URL scheme (`https:`, `mailto:`, `tel:`…) or protocol-relative `//host` is not an app route.
+const HAS_SCHEME_OR_HOST = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
+
 @Directive({
   selector: '[appInnerLink]',
   standalone: true,
@@ -24,17 +27,32 @@ export class InnerLinkDirective {
   constructor(private router: Router) {}
 
   @HostListener('click', ['$event'])
-  public onClick(e: PointerEvent) {
-    if (e.target) {
-      const target: HTMLLinkElement = e.target as HTMLLinkElement;
-
-      const href = target.getAttribute('href');
-      if (target.tagName === 'A' && href) {
-        if (href && !href.startsWith('https:') && !href.startsWith('http:')) {
-          e.preventDefault();
-          this.router.navigateByUrl(href);
-        }
-      }
+  public onClick(e: MouseEvent) {
+    // Hosts rendered with ShadowDom retarget `e.target` to the host element: the real target is first in the composed path.
+    const target = (e.composedPath()[0] ?? e.target) as HTMLElement | null;
+    const anchor = target?.closest?.('a');
+    const href = anchor?.getAttribute('href');
+    if (!anchor || !href || HAS_SCHEME_OR_HOST.test(href)) {
+      return;
     }
+    // Let the browser honor `target` and modifier keys (open in a new tab/window).
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || (anchor.target && anchor.target !== '_self')) {
+      return;
+    }
+
+    e.preventDefault();
+    if (href.startsWith('#')) {
+      this.scrollToAnchor(anchor, href.substring(1));
+    } else {
+      this.router.navigateByUrl(href);
+    }
+  }
+
+  // The ids live in the same root (document or shadow root) as the link, and the <base href> would otherwise resolve `#id` to the homepage.
+  private scrollToAnchor(anchor: HTMLElement, id: string) {
+    const root = anchor.getRootNode() as Document | ShadowRoot;
+    root.getElementById?.(decodeURIComponent(id))?.scrollIntoView();
+    // preventDefault() keeps the fragment out of the address bar: put it back so the section can be copied or shared.
+    history.replaceState(history.state, '', `${location.pathname}${location.search}#${id}`);
   }
 }
