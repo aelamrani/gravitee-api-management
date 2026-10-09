@@ -26,6 +26,10 @@ import { InnerLinkDirective } from './inner-link.directive';
       <a id="anchor-link" href="#section-two">Go to Section Two</a>
       <a id="inner-link" href="/catalog/api/1/documentation/2">Doc</a>
       <a id="external-link" href="https://example.com">External</a>
+      <a id="mailto-link" href="mailto:support@example.com"><strong id="mailto-child">Mail</strong></a>
+      <a id="tel-link" href="tel:+123456789">Call</a>
+      <a id="protocol-relative-link" href="//cdn.example.com/file.pdf">CDN</a>
+      <a id="blank-link" href="/catalog" target="_blank">Blank</a>
       <h2 id="section-two">Section Two</h2>
     </div>
   `,
@@ -47,8 +51,8 @@ describe('InnerLinkDirective', () => {
     shadowRoot = fixture.nativeElement.shadowRoot;
   });
 
-  const click = (id: string) => {
-    const event = new MouseEvent('click', { bubbles: true, composed: true, cancelable: true });
+  const click = (id: string, init: MouseEventInit = {}) => {
+    const event = new MouseEvent('click', { bubbles: true, composed: true, cancelable: true, ...init });
     shadowRoot.getElementById(id)!.dispatchEvent(event);
     return event;
   };
@@ -64,6 +68,14 @@ describe('InnerLinkDirective', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it('should put the fragment in the URL when clicking an anchor link', () => {
+    shadowRoot.getElementById('section-two')!.scrollIntoView = jest.fn();
+
+    click('anchor-link');
+
+    expect(location.hash).toBe('#section-two');
+  });
+
   it('should navigate with the router for an internal link', () => {
     click('inner-link');
 
@@ -72,6 +84,27 @@ describe('InnerLinkDirective', () => {
 
   it('should leave external links to the browser', () => {
     const event = click('external-link');
+
+    expect(router.navigateByUrl).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it.each(['mailto-link', 'mailto-child', 'tel-link', 'protocol-relative-link'])('should leave %s to the browser', id => {
+    const event = click(id);
+
+    expect(router.navigateByUrl).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('should leave links with a non-self target to the browser', () => {
+    const event = click('blank-link');
+
+    expect(router.navigateByUrl).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it.each(['ctrlKey', 'metaKey', 'shiftKey', 'altKey'])('should leave a click with %s held to the browser', modifier => {
+    const event = click('inner-link', { [modifier]: true });
 
     expect(router.navigateByUrl).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
