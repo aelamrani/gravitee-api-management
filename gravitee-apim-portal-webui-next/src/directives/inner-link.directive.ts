@@ -24,17 +24,26 @@ export class InnerLinkDirective {
   constructor(private router: Router) {}
 
   @HostListener('click', ['$event'])
-  public onClick(e: PointerEvent) {
-    if (e.target) {
-      const target: HTMLLinkElement = e.target as HTMLLinkElement;
-
-      const href = target.getAttribute('href');
-      if (target.tagName === 'A' && href) {
-        if (href && !href.startsWith('https:') && !href.startsWith('http:')) {
-          e.preventDefault();
-          this.router.navigateByUrl(href);
-        }
-      }
+  public onClick(e: MouseEvent) {
+    // Hosts rendered with ShadowDom retarget `e.target` to the host element: the real target is first in the composed path.
+    const target = (e.composedPath()[0] ?? e.target) as HTMLElement | null;
+    const anchor = target?.closest?.('a');
+    const href = anchor?.getAttribute('href');
+    if (!anchor || !href || href.startsWith('https:') || href.startsWith('http:')) {
+      return;
     }
+
+    e.preventDefault();
+    if (href.startsWith('#')) {
+      this.scrollToAnchor(anchor, href.substring(1));
+    } else {
+      this.router.navigateByUrl(href);
+    }
+  }
+
+  // The ids live in the same root (document or shadow root) as the link, and the <base href> would otherwise resolve `#id` to the homepage.
+  private scrollToAnchor(anchor: HTMLElement, id: string) {
+    const root = anchor.getRootNode() as Document | ShadowRoot;
+    root.getElementById?.(decodeURIComponent(id))?.scrollIntoView();
   }
 }
