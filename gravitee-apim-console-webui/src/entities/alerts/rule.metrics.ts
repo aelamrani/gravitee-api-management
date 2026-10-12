@@ -171,7 +171,7 @@ export class Rule {
   static findCategoriesByScope(scope: Scope, cloudEnabled: boolean): RuleCategory[] {
     const baseCategories: Record<Scope, RuleCategory[]> = {
       [Scope.ENVIRONMENT]: ['Node', 'API metrics', 'Health-check'],
-      [Scope.API]: ['API metrics'],
+      [Scope.API]: ['API metrics', 'Health-check'],
       [Scope.APPLICATION]: ['Application'],
     };
     const categories = [...baseCategories[scope]];
