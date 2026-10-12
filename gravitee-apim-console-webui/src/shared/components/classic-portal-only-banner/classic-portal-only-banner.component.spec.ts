@@ -48,6 +48,8 @@ function buildTestBed(
   envHrid: string | null = 'test-env',
   apiId: string | null = null,
   navigationItems: PortalNavigationItem[] = [],
+  hasDocumentationReadPermission = true,
+  getNavigationItems = jest.fn(() => of({ items: navigationItems })),
 ) {
   return TestBed.configureTestingModule({
     imports: [TestHostComponent, MatIconTestingModule],
@@ -60,7 +62,10 @@ function buildTestBed(
       },
       {
         provide: GioPermissionService,
-        useValue: { hasAnyMatching: () => hasSettingsPermission },
+        useValue: {
+          hasAnyMatching: (permissions: string[]) =>
+            permissions.includes('environment-documentation-r') ? hasDocumentationReadPermission : hasSettingsPermission,
+        },
       },
       {
         provide: ActivatedRoute,
@@ -68,7 +73,7 @@ function buildTestBed(
       },
       {
         provide: PortalNavigationItemService,
-        useValue: { getNavigationItems: () => of({ items: navigationItems }) },
+        useValue: { getNavigationItems },
       },
     ],
   }).compileComponents();
@@ -236,6 +241,20 @@ describe('ClassicPortalOnlyBannerComponent — navId query param resolution', ()
     await fixture.whenStable();
     fixture.detectChanges();
 
+    expect(await harness.getSettingsActionHref()).not.toContain('navId=');
+  });
+
+  it('should not fetch navigation items and omit navId when user lacks environment-documentation-r', async () => {
+    const navItem = fakePortalNavigationApi({ id: 'nav-id-1', apiId: 'my-api-id' });
+    const getNavigationItems = jest.fn(() => of({ items: [navItem] }));
+    await buildTestBed(portalNextEnabled$, true, 'test-env', 'my-api-id', [navItem], false, getNavigationItems);
+    const fixture = TestBed.createComponent(TestHostComponent);
+    const harness = await TestbedHarnessEnvironment.loader(fixture).getHarness(ClassicPortalOnlyBannerHarness);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(getNavigationItems).not.toHaveBeenCalled();
     expect(await harness.getSettingsActionHref()).not.toContain('navId=');
   });
 });

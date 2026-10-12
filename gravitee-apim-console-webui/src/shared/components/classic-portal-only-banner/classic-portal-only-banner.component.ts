@@ -51,11 +51,13 @@ export class ClassicPortalOnlyBannerComponent {
     return envHrid ? ['/', envHrid, '_portal', 'navigation'] : null;
   })();
   private readonly apiId: string | null = this.activatedRoute.snapshot.params['apiId'] ?? null;
+  // The portal navigation items endpoint requires ENVIRONMENT_DOCUMENTATION[READ]; without it the lookup would 403.
+  private readonly canReadPortalNavigationItems: boolean = this.permissionService.hasAnyMatching(['environment-documentation-r']);
 
   protected readonly isPortalNextEnabled = toSignal(this.environmentSettingsService.isPortalNextEnabled(), { initialValue: false });
 
   protected readonly navItemResource = rxResource({
-    params: () => (this.isPortalNextEnabled() && this.apiId ? this.apiId : null),
+    params: () => (this.isPortalNextEnabled() && this.apiId && this.canReadPortalNavigationItems ? this.apiId : null),
     stream: ({ params: apiId }) =>
       apiId
         ? this.portalNavigationItemService.getNavigationItems('TOP_NAVBAR').pipe(
