@@ -173,6 +173,18 @@ describe('InnerLinkDirective', () => {
       expect(scrollIntoView.mock.contexts).toEqual([fixture.nativeElement.querySelector('#section-two')]);
     });
 
+    it('should not scroll to late content once the URL no longer carries the fragment', async () => {
+      await router.navigateByUrl('/#section-two');
+      const fixture = render(LateContentHostComponent);
+
+      await router.navigateByUrl('/');
+      fixture.componentInstance.rendered.set(true);
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
     it('should not scroll when the URL has no fragment', async () => {
       await router.navigateByUrl('/');
 

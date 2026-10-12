@@ -37,7 +37,7 @@ export class InnerLinkDirective implements AfterViewInit, OnDestroy {
     }
     // The content (innerHTML binding or gmd-viewer rendering) can arrive after the view is ready.
     this.fragmentObserver = new MutationObserver(() => {
-      if (this.scrollToId(this.contentRoot(), fragment)) {
+      if (this.router.parseUrl(this.router.url).fragment !== fragment || this.scrollToId(this.contentRoot(), fragment)) {
         this.fragmentObserver?.disconnect();
       }
     });
