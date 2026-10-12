@@ -54,7 +54,9 @@ export class InnerLinkDirective implements AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit(): void {
-    const fragment = this.router.parseUrl(this.router.url).fragment;
+    const path = this.location.path(true);
+    const hashIndex = path.indexOf('#');
+    const fragment = hashIndex >= 0 ? this.decodeFragment(path.substring(hashIndex + 1)) : '';
     if (!fragment || this.scrollToSection(fragment)) {
       return;
     }
