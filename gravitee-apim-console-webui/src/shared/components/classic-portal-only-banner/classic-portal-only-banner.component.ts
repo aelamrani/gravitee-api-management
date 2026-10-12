@@ -18,7 +18,7 @@ import { rxResource, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { GioBannerModule } from '@gravitee/ui-particles-angular';
-import { map, of } from 'rxjs';
+import { catchError, map, of } from 'rxjs';
 
 import { EnvironmentSettingsService } from '../../../services-ngx/environment-settings.service';
 import { GioPermissionService } from '../gio-permission/gio-permission.service';
@@ -65,6 +65,8 @@ export class ClassicPortalOnlyBannerComponent {
               const matchingItem = items.find((i): i is PortalNavigationApi => i.type === 'API' && i.apiId === apiId);
               return matchingItem?.id ?? null;
             }),
+            // The navId is optional: a failed lookup must not put the resource in error, as value() then throws while rendering.
+            catchError(() => of(null)),
           )
         : of(null),
   });

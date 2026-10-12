@@ -34,6 +34,7 @@ import { MatDialogHarness } from '@angular/material/dialog/testing';
 import { MatCheckboxHarness } from '@angular/material/checkbox/testing';
 import { ActivatedRoute, Router } from '@angular/router';
 import { of } from 'rxjs';
+import { Provider } from '@angular/core';
 
 import { ApiGeneralInfoModule } from './api-general-info.module';
 import { ApiGeneralInfoComponent } from './api-general-info.component';
@@ -46,6 +47,8 @@ import { Api, DefinitionVersion, fakeApiV2, fakeApiV4, fakeProxyTcpApiV4, fakeAp
 import { GioTestingPermissionProvider } from '../../../shared/components/gio-permission/gio-permission.service';
 import { Constants } from '../../../entities/Constants';
 import { Promotion, PromotionTarget } from '../../../entities/promotion';
+import { EnvironmentSettingsService } from '../../../services-ngx/environment-settings.service';
+import { ClassicPortalOnlyBannerHarness } from '../../../shared/components/classic-portal-only-banner/classic-portal-only-banner.component.harness';
 
 describe('ApiGeneralInfoComponent', () => {
   const API_ID = 'apiId';
@@ -67,7 +70,12 @@ describe('ApiGeneralInfoComponent', () => {
   const initComponent = (
     installationType = 'standalone',
     permissions = ['api-definition-u', 'api-definition-d', 'api-definition-c', 'api-definition-r'],
+    { portalNextEnabled = false }: { portalNextEnabled?: boolean } = {},
   ) => {
+    const portalNextProviders: Provider[] = portalNextEnabled
+      ? [{ provide: EnvironmentSettingsService, useValue: { isPortalNextEnabled: () => of(true) } }]
+      : [];
+
     TestBed.configureTestingModule({
       imports: [NoopAnimationsModule, GioTestingModule, ApiGeneralInfoModule, MatIconTestingModule],
       providers: [
@@ -75,9 +83,10 @@ describe('ApiGeneralInfoComponent', () => {
           provide: ActivatedRoute,
           useValue: {
             params: of({ apiId: API_ID }),
-            snapshot: { params: { apiId: 'apiId' } },
+            snapshot: { params: { apiId: 'apiId', ...(portalNextEnabled ? { envHrid: 'DEFAULT' } : {}) } },
           },
         },
+        ...portalNextProviders,
         {
           provide: GioTestingPermissionProvider,
           useValue: permissions,
@@ -1027,6 +1036,59 @@ describe('ApiGeneralInfoComponent', () => {
       await promoteDialogButton.click();
 
       expectPromoteRequest();
+    });
+  });
+
+  describe('with Next Gen Portal enabled', () => {
+    const api = fakeApiV2({ id: API_ID, name: '🐶 API', lifecycleState: 'CREATED' });
+
+    const loadApi = async () => {
+      expectApiGetRequest(api);
+      expectCategoriesGetRequest();
+      await waitImageCheck();
+      fixture.detectChanges();
+    };
+
+    const expectSaveBarOnEdit = async () => {
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(await loader.getHarness(ClassicPortalOnlyBannerHarness).then(banner => banner.isBannerContentVisible())).toBe(true);
+
+      const saveBar = await loader.getHarness(GioSaveBarHarness);
+      expect(await saveBar.isVisible()).toBe(false);
+
+      const nameInput = await loader.getHarness(MatInputHarness.with({ selector: '[formControlName="name"]' }));
+      await nameInput.setValue('🦊 API');
+
+      expect(await saveBar.isVisible()).toBe(true);
+    };
+
+    it('should show the save bar for an environment user without settings or documentation read permissions', async () => {
+      initComponent('standalone', ['api-definition-u', 'api-definition-r'], { portalNextEnabled: true });
+      await loadApi();
+
+      await expectSaveBarOnEdit();
+    });
+
+    it('should show the save bar for a user with settings but without documentation read permission', async () => {
+      initComponent('standalone', ['api-definition-u', 'api-definition-r', 'environment-settings-r'], { portalNextEnabled: true });
+      await loadApi();
+
+      await expectSaveBarOnEdit();
+    });
+
+    it('should show the save bar when the portal navigation items lookup is refused', async () => {
+      initComponent('standalone', ['api-definition-u', 'api-definition-r', 'environment-settings-r', 'environment-documentation-r'], {
+        portalNextEnabled: true,
+      });
+      await loadApi();
+
+      httpTestingController
+        .expectOne({ url: `${CONSTANTS_TESTING.env.v2BaseURL}/portal-navigation-items?area=TOP_NAVBAR`, method: 'GET' })
+        .flush({ message: 'You do not have sufficient rights to access this resource' }, { status: 403, statusText: 'Forbidden' });
+
+      await expectSaveBarOnEdit();
     });
   });
 
