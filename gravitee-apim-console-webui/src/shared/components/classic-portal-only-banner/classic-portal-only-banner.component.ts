@@ -18,7 +18,7 @@ import { rxResource, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { GioBannerModule } from '@gravitee/ui-particles-angular';
-import { map, of } from 'rxjs';
+import { catchError, map, of } from 'rxjs';
 
 import { EnvironmentSettingsService } from '../../../services-ngx/environment-settings.service';
 import { GioPermissionService } from '../gio-permission/gio-permission.service';
@@ -51,11 +51,13 @@ export class ClassicPortalOnlyBannerComponent {
     return envHrid ? ['/', envHrid, '_portal', 'navigation'] : null;
   })();
   private readonly apiId: string | null = this.activatedRoute.snapshot.params['apiId'] ?? null;
+  // The portal navigation items endpoint requires ENVIRONMENT_DOCUMENTATION[READ]; without it the lookup would 403.
+  private readonly canReadPortalNavigationItems: boolean = this.permissionService.hasAnyMatching(['environment-documentation-r']);
 
   protected readonly isPortalNextEnabled = toSignal(this.environmentSettingsService.isPortalNextEnabled(), { initialValue: false });
 
   protected readonly navItemResource = rxResource({
-    params: () => (this.isPortalNextEnabled() && this.apiId ? this.apiId : null),
+    params: () => (this.isPortalNextEnabled() && this.apiId && this.canReadPortalNavigationItems ? this.apiId : null),
     stream: ({ params: apiId }) =>
       apiId
         ? this.portalNavigationItemService.getNavigationItems('TOP_NAVBAR').pipe(
@@ -63,6 +65,8 @@ export class ClassicPortalOnlyBannerComponent {
               const matchingItem = items.find((i): i is PortalNavigationApi => i.type === 'API' && i.apiId === apiId);
               return matchingItem?.id ?? null;
             }),
+            // The navId is optional: a failed lookup must not put the resource in error, as value() then throws while rendering.
+            catchError(() => of(null)),
           )
         : of(null),
   });

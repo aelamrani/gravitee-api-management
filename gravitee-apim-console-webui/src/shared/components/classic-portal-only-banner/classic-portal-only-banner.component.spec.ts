@@ -20,7 +20,8 @@ import { TestbedHarnessEnvironment } from '@angular/cdk/testing/testbed';
 import { ActivatedRoute, provideRouter } from '@angular/router';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { MatIconTestingModule } from '@angular/material/icon/testing';
-import { BehaviorSubject, of } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { BehaviorSubject, of, throwError } from 'rxjs';
 
 import { ClassicPortalOnlyBannerComponent } from './classic-portal-only-banner.component';
 import { ClassicPortalOnlyBannerHarness } from './classic-portal-only-banner.component.harness';
@@ -48,6 +49,8 @@ function buildTestBed(
   envHrid: string | null = 'test-env',
   apiId: string | null = null,
   navigationItems: PortalNavigationItem[] = [],
+  hasDocumentationReadPermission = true,
+  getNavigationItems = jest.fn(() => of({ items: navigationItems })),
 ) {
   return TestBed.configureTestingModule({
     imports: [TestHostComponent, MatIconTestingModule],
@@ -60,7 +63,10 @@ function buildTestBed(
       },
       {
         provide: GioPermissionService,
-        useValue: { hasAnyMatching: () => hasSettingsPermission },
+        useValue: {
+          hasAnyMatching: (permissions: string[]) =>
+            permissions.includes('environment-documentation-r') ? hasDocumentationReadPermission : hasSettingsPermission,
+        },
       },
       {
         provide: ActivatedRoute,
@@ -68,7 +74,7 @@ function buildTestBed(
       },
       {
         provide: PortalNavigationItemService,
-        useValue: { getNavigationItems: () => of({ items: navigationItems }) },
+        useValue: { getNavigationItems },
       },
     ],
   }).compileComponents();
@@ -236,6 +242,34 @@ describe('ClassicPortalOnlyBannerComponent — navId query param resolution', ()
     await fixture.whenStable();
     fixture.detectChanges();
 
+    expect(await harness.getSettingsActionHref()).not.toContain('navId=');
+  });
+
+  it('should not fetch navigation items and omit navId when user lacks environment-documentation-r', async () => {
+    const navItem = fakePortalNavigationApi({ id: 'nav-id-1', apiId: 'my-api-id' });
+    const getNavigationItems = jest.fn(() => of({ items: [navItem] }));
+    await buildTestBed(portalNextEnabled$, true, 'test-env', 'my-api-id', [navItem], false, getNavigationItems);
+    const fixture = TestBed.createComponent(TestHostComponent);
+    const harness = await TestbedHarnessEnvironment.loader(fixture).getHarness(ClassicPortalOnlyBannerHarness);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(getNavigationItems).not.toHaveBeenCalled();
+    expect(await harness.getSettingsActionHref()).not.toContain('navId=');
+  });
+
+  it('should still render the settings link, without navId, when the navigation items lookup fails', async () => {
+    const getNavigationItems = jest.fn(() => throwError(() => new HttpErrorResponse({ status: 403 })));
+    await buildTestBed(portalNextEnabled$, true, 'test-env', 'my-api-id', [], true, getNavigationItems);
+    const fixture = TestBed.createComponent(TestHostComponent);
+    const harness = await TestbedHarnessEnvironment.loader(fixture).getHarness(ClassicPortalOnlyBannerHarness);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(getNavigationItems).toHaveBeenCalled();
+    expect(await harness.isSettingsActionVisible()).toBe(true);
     expect(await harness.getSettingsActionHref()).not.toContain('navId=');
   });
 });
