@@ -13,28 +13,88 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Directive, HostListener } from '@angular/core';
+import { Location } from '@angular/common';
+import { AfterViewInit, Directive, ElementRef, HostListener, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
 
 @Directive({
   selector: '[appInnerLink]',
   standalone: true,
 })
-export class InnerLinkDirective {
-  constructor(private router: Router) {}
+export class InnerLinkDirective implements AfterViewInit, OnDestroy {
+  private fragmentObserver?: MutationObserver;
+
+  constructor(
+    private readonly router: Router,
+    private readonly location: Location,
+    private readonly elementRef: ElementRef<HTMLElement>,
+  ) {}
 
   @HostListener('click', ['$event'])
   public onClick(e: PointerEvent) {
-    if (e.target) {
-      const target: HTMLLinkElement = e.target as HTMLLinkElement;
+    // The rendered Markdown may live in a shadow root (gmd-viewer), where e.target is retargeted to the host.
+    const anchor = e.composedPath().find((node): node is HTMLAnchorElement => (node as Element).tagName === 'A');
+    const href = anchor?.getAttribute('href');
+    if (!anchor || !href) {
+      return;
+    }
 
-      const href = target.getAttribute('href');
-      if (target.tagName === 'A' && href) {
-        if (href && !href.startsWith('https:') && !href.startsWith('http:')) {
-          e.preventDefault();
-          this.router.navigateByUrl(href);
-        }
+    if (href.startsWith('#')) {
+      e.preventDefault();
+      if (this.scrollToSection(this.decodeFragment(href.substring(1)))) {
+        this.location.go(this.location.path() + href);
       }
+      return;
+    }
+
+    if (anchor === e.target && !href.startsWith('https:') && !href.startsWith('http:')) {
+      e.preventDefault();
+      this.router.navigateByUrl(href);
+    }
+  }
+
+  ngAfterViewInit(): void {
+    const fragment = this.router.parseUrl(this.router.url).fragment;
+    if (!fragment || this.scrollToSection(fragment)) {
+      return;
+    }
+
+    // The Markdown is usually rendered after the view is initialized, once the page content has loaded.
+    this.fragmentObserver = new MutationObserver(() => {
+      if (this.scrollToSection(fragment)) {
+        this.fragmentObserver?.disconnect();
+      }
+    });
+    const host = this.elementRef.nativeElement;
+    for (const root of [host, host.shadowRoot]) {
+      if (root) {
+        this.fragmentObserver.observe(root, { childList: true, subtree: true });
+      }
+    }
+  }
+
+  ngOnDestroy(): void {
+    this.fragmentObserver?.disconnect();
+  }
+
+  private scrollToSection(id: string): boolean {
+    const section = this.findSection(id);
+    section?.scrollIntoView();
+    return !!section;
+  }
+
+  private findSection(id: string): HTMLElement | null {
+    const host = this.elementRef.nativeElement;
+    const shadowRoot = host.shadowRoot;
+    const candidates = [shadowRoot?.getElementById(id), (host.getRootNode() as Document | ShadowRoot).getElementById(id)];
+    return candidates.find(element => !!element && (host.contains(element) || !!shadowRoot?.contains(element))) ?? null;
+  }
+
+  private decodeFragment(fragment: string): string {
+    try {
+      return decodeURIComponent(fragment);
+    } catch {
+      return fragment;
     }
   }
 }
