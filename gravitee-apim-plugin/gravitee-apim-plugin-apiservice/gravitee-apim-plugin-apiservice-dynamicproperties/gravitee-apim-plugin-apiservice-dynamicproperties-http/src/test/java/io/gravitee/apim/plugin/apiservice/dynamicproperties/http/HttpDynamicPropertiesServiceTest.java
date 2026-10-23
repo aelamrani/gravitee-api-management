@@ -55,6 +55,8 @@ import io.gravitee.gateway.reactive.api.helper.PluginConfigurationHelper;
 import io.gravitee.node.api.cluster.ClusterManager;
 import io.gravitee.node.api.cluster.Member;
 import io.gravitee.node.plugin.cluster.standalone.StandaloneMember;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.TestScheduler;
@@ -65,6 +67,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
@@ -116,6 +119,8 @@ class HttpDynamicPropertiesServiceTest {
     private EventManager eventManager;
     private ObjectMapper objectMapper;
     private TestScheduler testScheduler;
+    private TimerCountingScheduler countingScheduler;
+    private final AtomicLong timersConsumed = new AtomicLong();
 
     @Mock
     private ClusterManager clusterManager;
@@ -139,7 +144,9 @@ class HttpDynamicPropertiesServiceTest {
 
         TimeProvider.overrideClock(Clock.fixed(INSTANT_NOW, ZoneId.systemDefault()));
         testScheduler = new TestScheduler(INSTANT_NOW.toEpochMilli(), TimeUnit.MILLISECONDS);
-        RxJavaPlugins.setComputationSchedulerHandler(s -> testScheduler);
+        countingScheduler = new TimerCountingScheduler(testScheduler);
+        timersConsumed.set(0);
+        RxJavaPlugins.setComputationSchedulerHandler(s -> countingScheduler);
     }
 
     @AfterEach
@@ -301,6 +308,50 @@ class HttpDynamicPropertiesServiceTest {
                 .assertComplete();
 
             wiremock.verify(getRequestedFor(urlPathEqualTo("/propertiesBackend")).withHeader(X_HEADER, equalTo(HEADER_VALUE)));
+
+            cut.stop().test().awaitDone(10, TimeUnit.SECONDS).assertComplete();
+
+            ScheduledJobAssertions.assertScheduledJobIsDisposed(cut.scheduledJob);
+        }
+
+        @Test
+        void should_publish_the_encrypt_on_fetch_flag_from_configuration() {
+            Api api = Fixtures.apiWithDynamicPropertiesEnabled();
+            final HttpDynamicPropertiesServiceConfiguration configuration = HttpDynamicPropertiesServiceConfiguration.builder()
+                .schedule("*/5 * * * * *")
+                .url(String.format("http://localhost:%d/propertiesBackend", wiremock.getPort()))
+                .transformation(EXTRACT_JSON_KEYS_TRANSFORMATION)
+                .method(HttpMethod.GET)
+                .headers(List.of(new HttpHeader(X_HEADER, HEADER_VALUE)))
+                .encryption(DynamicPropertiesEncryptionPolicy.builder().encryptOnFetch(true).build())
+                .build();
+            Fixtures.configureDynamicPropertiesForApi(configuration, api, objectMapper);
+            final HttpDynamicPropertiesService cut = buildServiceFor(api);
+
+            wiremock.stubFor(
+                get("/propertiesBackend").willReturn(
+                    ok(Fixtures.backendResponseForProperties(List.of(new Fixtures.BackendProperty("key1", "initial val 1")), objectMapper))
+                )
+            );
+
+            var eventObs = TestEventListener.with(eventManager).completeAfter(1).test();
+
+            // Start the service
+            cut.start().test().assertComplete().assertNoErrors();
+
+            // Wait for the first http call
+            testScheduler.advanceTimeBy(5_000, TimeUnit.MILLISECONDS);
+
+            ScheduledJobAssertions.assertScheduledJobIsRunning(cut.scheduledJob);
+
+            eventObs
+                .awaitDone(30, TimeUnit.SECONDS)
+                .assertValueCount(1)
+                .assertValue(propertyEvent -> {
+                    assertThat(propertyEvent.content().encryptOnFetch()).isTrue();
+                    return true;
+                })
+                .assertComplete();
 
             cut.stop().test().awaitDone(10, TimeUnit.SECONDS).assertComplete();
 
@@ -491,22 +542,22 @@ class HttpDynamicPropertiesServiceTest {
             advanceTimeBy(5_000, cut, configuration);
 
             // Ensure first event has been published
-            eventObs.awaitCount(1);
+            awaitEventCount(eventObs, 1);
 
             // Wait for the second http call
             advanceTimeBy(5_000, cut, configuration);
             // Ensure second event has been published
-            eventObs.awaitCount(2);
+            awaitEventCount(eventObs, 2);
 
             // Wait for the third http call
             advanceTimeBy(5_000, cut, configuration);
             // Ensure third event has been published
-            eventObs.awaitCount(3);
+            awaitEventCount(eventObs, 3);
 
             // Wait for the fourth http call
             advanceTimeBy(5_000, cut, configuration);
             // Ensure fourth event has been published
-            eventObs.awaitCount(4);
+            awaitEventCount(eventObs, 4);
 
             ScheduledJobAssertions.assertScheduledJobIsRunning(cut.scheduledJob);
 
@@ -736,7 +787,7 @@ class HttpDynamicPropertiesServiceTest {
             advanceTimeBy(5_000, cut, configuration);
 
             // Ensure first event has been published
-            eventObs.awaitCount(1);
+            awaitEventCount(eventObs, 1);
 
             final HttpDynamicPropertiesServiceConfiguration updatedConfiguration = configuration
                 .toBuilder()
@@ -750,7 +801,7 @@ class HttpDynamicPropertiesServiceTest {
             // Wait for the second http call
             advanceTimeBy(5_000, cut, configuration);
             // Ensure second event has been published
-            eventObs.awaitCount(2);
+            awaitEventCount(eventObs, 2);
 
             ScheduledJobAssertions.assertScheduledJobIsRunning(cut.scheduledJob);
 
@@ -827,7 +878,7 @@ class HttpDynamicPropertiesServiceTest {
             advanceTimeBy(5_000, cut, configuration);
 
             // Ensure first event has been published
-            eventObs.awaitCount(1);
+            awaitEventCount(eventObs, 1);
 
             // create new api to not share same object references
             final Api updatedApi = apiWithDynamicPropertiesEnabled();
@@ -856,6 +907,22 @@ class HttpDynamicPropertiesServiceTest {
     }
 
     /**
+     * Blocks until the given number of events has been published, and fails the test if they never are.
+     * <p>
+     * {@link TestObserver#awaitCount(int)} cannot be used for this: it gives up after a hardcoded 5 seconds
+     * and returns silently, letting the test move on to a step that disposes the scheduled job, so the awaited
+     * event never gets published and a later, unrelated assertion is the one that fails.
+     *
+     * @param eventObs the observer collecting the published events
+     * @param count    the number of events to wait for
+     */
+    private static void awaitEventCount(TestObserver<Event<ManagementApiServiceEvent, DynamicPropertiesEvent>> eventObs, int count) {
+        await()
+            .atMost(10, TimeUnit.SECONDS)
+            .untilAsserted(() -> eventObs.assertValueCount(count));
+    }
+
+    /**
      * This method simulates an advance in time by a specific delay.
      * First, it uses the {@link TestScheduler#advanceTimeBy(long, TimeUnit)} to change the time for the reactive chain
      * Then, it overrides the Clock to synchronize it with the current {@link TestScheduler}
@@ -866,21 +933,58 @@ class HttpDynamicPropertiesServiceTest {
      * @param configuration the configuration needed to build the {@link CronTrigger}
      */
     private void advanceTimeBy(final int delay, HttpDynamicPropertiesService cut, HttpDynamicPropertiesServiceConfiguration configuration) {
-        // Allow I/O threads to complete any pending repeat re-subscriptions and schedule
-        // the next timer on the test scheduler before advancing virtual time.
-        // Without this, a race condition exists: the test scheduler can advance past the
-        // next timer's scheduled time before the I/O thread has had a chance to schedule it.
-        // Increased from 50ms to 200ms to reduce flakiness on slower CI environments.
-        try {
-            Thread.sleep(200);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        awaitNextTimerScheduled();
         TimeProvider.overrideClock(
             Clock.fixed(Instant.ofEpochMilli(testScheduler.now(TimeUnit.MILLISECONDS) + delay), ZoneId.systemDefault())
         );
         cut.cronTrigger = new CronTrigger(configuration.getSchedule());
         testScheduler.advanceTimeBy(delay, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Blocks until the reactive chain has armed the timer for the cycle about to be triggered.
+     * <p>
+     * {@code repeat()} re-subscribes on an I/O thread once a cycle ends, so the timer for the next one
+     * is scheduled slightly after the event is published. Advancing virtual time before that happens
+     * drops the tick and the cycle never runs.
+     */
+    private void awaitNextTimerScheduled() {
+        final long expected = timersConsumed.incrementAndGet();
+        await()
+            .atMost(10, TimeUnit.SECONDS)
+            .until(() -> countingScheduler.scheduledTimers.get() >= expected);
+    }
+
+    /**
+     * Delegates to the {@link TestScheduler} and counts the delayed tasks scheduled on it, so the test
+     * can tell when the next cycle is armed instead of guessing with a fixed sleep.
+     */
+    private static final class TimerCountingScheduler extends Scheduler {
+
+        private final TestScheduler delegate;
+        private final AtomicLong scheduledTimers = new AtomicLong();
+
+        private TimerCountingScheduler(TestScheduler delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Worker createWorker() {
+            return delegate.createWorker();
+        }
+
+        @Override
+        public long now(TimeUnit unit) {
+            return delegate.now(unit);
+        }
+
+        @Override
+        public Disposable scheduleDirect(Runnable run, long delay, TimeUnit unit) {
+            if (delay > 0) {
+                scheduledTimers.incrementAndGet();
+            }
+            return delegate.scheduleDirect(run, delay, unit);
+        }
     }
 
     private HttpDynamicPropertiesService buildServiceFor(AbstractApi api) {

@@ -18,6 +18,7 @@ package io.gravitee.apim.infra.query_service.analytics_engine;
 import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
 import io.gravitee.apim.core.analytics_engine.model.FilterValue;
 import io.gravitee.apim.core.analytics_engine.model.FilterValuesPage;
+import io.gravitee.apim.core.analytics_engine.model.TrafficScope;
 import io.gravitee.apim.core.analytics_engine.query_service.FilterValuesQueryService;
 import io.gravitee.repository.common.query.QueryContext;
 import io.gravitee.repository.log.v4.api.AnalyticsRepository;
@@ -25,7 +26,10 @@ import io.gravitee.repository.log.v4.model.analytics.FilterValuesQuery;
 import io.gravitee.repository.log.v4.model.analytics.FilterValuesResult;
 import io.gravitee.repository.log.v4.model.connection.NativeApiMetricKeys;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.context.annotation.Lazy;
@@ -33,6 +37,9 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class FilterValuesQueryServiceImpl implements FilterValuesQueryService {
+
+    /** Keeps each query's terms clause and composite size far below Elasticsearch's max_terms_count and max_buckets. */
+    private static final int MAX_VALUES_PER_QUERY = 1_000;
 
     private final AnalyticsRepository analyticsRepository;
 
@@ -51,7 +58,9 @@ public class FilterValuesQueryServiceImpl implements FilterValuesQueryService {
         int size,
         Map<String, Object> afterKey,
         String searchPattern,
-        Set<String> authorizedApiIds
+        Set<String> authorizedApiIds,
+        TrafficScope trafficScope,
+        String apiProductId
     ) {
         var esFieldName = resolveEsFieldName(filterName);
         var queryContext = new QueryContext(organizationId, environmentId);
@@ -68,6 +77,15 @@ public class FilterValuesQueryServiceImpl implements FilterValuesQueryService {
                 .afterKey(currentAfterKey)
                 .searchPattern(searchPattern)
                 .apiIds(authorizedApiIds)
+                .trafficScope(
+                    trafficScope == null
+                        ? null
+                        : new io.gravitee.repository.analytics.engine.api.query.TrafficScope(
+                            trafficScope.apiIds(),
+                            trafficScope.entrypointIds()
+                        )
+                )
+                .apiProductId(apiProductId)
                 .build();
 
             result = analyticsRepository.searchFilterValues(queryContext, query);
@@ -80,6 +98,47 @@ public class FilterValuesQueryServiceImpl implements FilterValuesQueryService {
 
         var values = result.values().stream().map(FilterValue::new).toList();
         return new FilterValuesPage(values, result.afterKey(), result.totalCount());
+    }
+
+    @Override
+    public Set<String> findValuesInCalls(
+        String organizationId,
+        String environmentId,
+        FilterSpec.Name filterName,
+        Instant from,
+        Instant to,
+        Set<String> values,
+        Set<String> authorizedApiIds,
+        String apiProductId
+    ) {
+        if (values.isEmpty() || authorizedApiIds.isEmpty()) {
+            return Set.of();
+        }
+        var queryContext = new QueryContext(organizationId, environmentId);
+        var inCalls = new HashSet<String>();
+        for (var chunk : chunks(values)) {
+            var query = FilterValuesQuery.builder()
+                .esFieldName(resolveEsFieldName(filterName))
+                .from(from != null ? from.toEpochMilli() : null)
+                .to(to != null ? to.toEpochMilli() : null)
+                .size(chunk.size())
+                .apiIds(authorizedApiIds)
+                .values(chunk)
+                .apiProductId(apiProductId)
+                .build();
+            inCalls.addAll(analyticsRepository.searchFilterValues(queryContext, query).values());
+        }
+        return Set.copyOf(inCalls);
+    }
+
+    private static List<Set<String>> chunks(Set<String> values) {
+        var ordered = List.copyOf(values);
+        var chunks = new ArrayList<Set<String>>();
+        for (int start = 0; start < ordered.size(); start += MAX_VALUES_PER_QUERY) {
+            var end = Math.min(start + MAX_VALUES_PER_QUERY, ordered.size());
+            chunks.add(Set.copyOf(ordered.subList(start, end)));
+        }
+        return chunks;
     }
 
     private static final String ADDITIONAL_METRICS_PREFIX = "additional-metrics.";
@@ -99,7 +158,7 @@ public class FilterValuesQueryServiceImpl implements FilterValuesQueryService {
             case ZONE -> "zone";
             case HTTP_METHOD -> "http-method";
             case HTTP_STATUS_CODE_GROUP, HTTP_STATUS -> "status";
-            case HTTP_PATH -> "path";
+            case HTTP_PATH -> "path-info.keyword";
             case HTTP_PATH_MAPPING -> "mapped-path";
             case GEO_IP_COUNTRY -> "geoip.country_iso_code";
             case GEO_IP_REGION -> "geoip.region_name";

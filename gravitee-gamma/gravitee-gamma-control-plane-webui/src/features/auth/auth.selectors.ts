@@ -18,7 +18,11 @@ import { useBootstrapStore } from '../../shared/config/bootstrap.store';
 
 export const useUser = () => useAuthStore(s => s.user);
 export const useIsAuthenticated = () => useAuthStore(s => !!s.user);
+export const useSessionCheckFailed = () => useAuthStore(s => s.sessionCheckFailed);
 export const useLogin = () => useAuthStore(s => s.login);
 export const useLogout = () => useAuthStore(s => s.logout);
+export const useRefreshCurrentUser = () => useAuthStore(s => s.refreshCurrentUser);
+export const useAvatarCacheBust = () => useAuthStore(s => s.avatarCacheBust);
 export const useIdentityProviders = () => useBootstrapStore(s => s.config?.identityProviders ?? []);
 export const useLocalLoginEnabled = () => useBootstrapStore(s => s.config?.localLoginEnabled ?? true);
+export const useRegistrationEnabled = () => useBootstrapStore(s => s.config?.registrationEnabled ?? false);

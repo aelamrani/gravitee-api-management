@@ -114,7 +114,7 @@ spec:
         {{- $plugins = concat $plugins .Values.cluster.plugins -}}
       {{- end -}}
 
-      {{- $pluginParams := dict "plugins" $plugins "appName" "graviteeio-management-api" "initContainers" $initContainers "context" . -}}
+      {{- $pluginParams := dict "plugins" $plugins "image" (printf "%s:%s" .Values.api.image.repository $dockerImageTag) "imagePullPolicy" .Values.api.image.pullPolicy "appName" "graviteeio-management-api" "initContainers" $initContainers "context" . -}}
       {{- $shouldDownloadJdbcDriver := eq (include "apim.shouldDownloadJdbcDriver" .) "true" -}}
       {{- $shouldCopyJdbcDriverFromImage := eq (include "apim.shouldCopyJdbcDriverFromImage" .) "true" -}}
       {{- $shouldProvisionJdbcDriver := eq (include "apim.shouldProvisionJdbcDriver" .) "true" -}}
@@ -214,6 +214,11 @@ spec:
             {{- if $portalUrl }}
             - name: portal.entrypoint
               value: {{ $portalUrl | quote }}
+            {{- end }}
+            {{- $edgeReactorUrl := include "gateway.route.edgeReactorUrl" . -}}
+            {{- if $edgeReactorUrl }}
+            - name: installation.edge.reactorUrl
+              value: {{ $edgeReactorUrl | quote }}
             {{- end }}
             {{- end }}
             {{- with .Values.kafkaConsole.jwt.secret }}

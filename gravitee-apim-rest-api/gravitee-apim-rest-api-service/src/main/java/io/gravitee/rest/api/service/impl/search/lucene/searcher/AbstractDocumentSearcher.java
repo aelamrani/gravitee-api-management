@@ -37,6 +37,7 @@ import org.apache.lucene.queryparser.classic.QueryParserBase;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
@@ -80,6 +81,10 @@ public abstract class AbstractDocumentSearcher implements DocumentSearcher {
         return search(query, sortable, null, FIELD_ID);
     }
 
+    protected SearchResult search(Query query, Sortable sortable, Sort defaultSort) throws TechnicalException {
+        return search(query, sortable, null, FIELD_ID, defaultSort);
+    }
+
     public SearchResult searchReference(Query query) throws TechnicalException {
         return search(query, null, null, FIELD_REFERENCE_ID);
     }
@@ -89,6 +94,11 @@ public abstract class AbstractDocumentSearcher implements DocumentSearcher {
     }
 
     protected SearchResult search(Query query, Sortable sort, Pageable pageable, String fieldReference) throws TechnicalException {
+        return search(query, sort, pageable, fieldReference, null);
+    }
+
+    private SearchResult search(Query query, Sortable sort, Pageable pageable, String fieldReference, Sort defaultSort)
+        throws TechnicalException {
         log.debug("Searching for: {}", query.toString());
 
         try {
@@ -103,10 +113,11 @@ public abstract class AbstractDocumentSearcher implements DocumentSearcher {
                 topDocs = collectorManager
                     .newCollector()
                     .topDocs((pageable.getPageNumber() - 1) * pageable.getPageSize(), pageable.getPageSize());
-            } else if (sort != null) {
-                topDocs = searcher.search(query, Integer.MAX_VALUE, convert(sort));
             } else {
-                topDocs = searcher.search(query, Integer.MAX_VALUE);
+                var luceneSort = sort == null ? defaultSort : convert(sort);
+                topDocs = luceneSort == null
+                    ? searcher.search(query, Integer.MAX_VALUE)
+                    : searcher.search(query, Integer.MAX_VALUE, luceneSort);
             }
 
             final Set<String> results = new LinkedHashSet<>();
@@ -166,6 +177,10 @@ public abstract class AbstractDocumentSearcher implements DocumentSearcher {
     private Stream<Query> prepareQuery(String field, Object values, Map<String, String> remapFields) {
         if (Collection.class.isAssignableFrom(values.getClass())) {
             Collection<?> valuesAsCollection = (Collection<?>) values;
+            if (valuesAsCollection.isEmpty()) {
+                // No allowed value: dropping the filter would widen the search to every document
+                return Stream.of(new MatchNoDocsQuery());
+            }
             increaseMaxClauseCountIfNecessary(valuesAsCollection.size());
 
             BooleanQuery.Builder filterApisQuery = new BooleanQuery.Builder();
@@ -175,9 +190,7 @@ public abstract class AbstractDocumentSearcher implements DocumentSearcher {
                     BooleanClause.Occur.SHOULD
                 )
             );
-            if (!valuesAsCollection.isEmpty()) {
-                return Stream.of(filterApisQuery.build());
-            }
+            return Stream.of(filterApisQuery.build());
         } else if (values instanceof String value) {
             return Stream.of(new TermQuery(new Term(remapFields.getOrDefault(field, field), QueryParserBase.escape(value))));
         } else if (values instanceof Boolean bool) {

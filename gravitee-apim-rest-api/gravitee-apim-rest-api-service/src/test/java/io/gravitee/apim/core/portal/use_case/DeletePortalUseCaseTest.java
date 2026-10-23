@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.mock;
 
 import fixtures.core.model.PortalFixtures;
+import inmemory.ApiCrudServiceInMemory;
 import inmemory.ApiProductQueryServiceInMemory;
 import inmemory.PortalCrudServiceInMemory;
 import inmemory.PortalListingCrudServiceInMemory;
@@ -89,13 +90,14 @@ class DeletePortalUseCaseTest {
     void setUp() {
         var navSync = new PortalNavigationSyncDomainService(
             navQueryService,
-            new AutomationManagedNavigationItemsQueryService(portalListingCrudService, pageContentQueryService, navQueryService),
+            new AutomationManagedNavigationItemsQueryService(portalListingCrudService, navQueryService),
             new NavigationSyncPlanExecutor(navCrudService, navQueryService, pageContentCrudService),
             new PortalNavigationItemValidatorService(
                 navQueryService,
                 pageContentQueryService,
                 new ApiProductQueryServiceInMemory(),
-                new PortalNavigationItemSourceDomainServiceInMemory()
+                new PortalNavigationItemSourceDomainServiceInMemory(),
+                new ApiCrudServiceInMemory()
             )
         );
         var scopeEnforcer = new PortalAutomationScopeDomainService(portalCrudService, () -> false);
@@ -255,6 +257,40 @@ class DeletePortalUseCaseTest {
             .singleElement()
             .extracting(Theme::isEnabled)
             .isEqualTo(false);
+    }
+
+    @Test
+    void should_reactivate_another_existing_theme_when_deleted_portals_active_theme_was_enabled() {
+        var activeThemeId = "22222222-2222-2222-2222-222222222222";
+        var otherThemeId = "33333333-3333-3333-3333-333333333333";
+        var portal = PortalFixtures.aPortal().withActiveThemeId(activeThemeId);
+        portalCrudService.initWith(List.of(portal));
+        themeCrudService.initWith(
+            List.of(
+                Theme.builder()
+                    .id(activeThemeId)
+                    .type(ThemeType.PORTAL_NEXT)
+                    .referenceType(Theme.ReferenceType.ENVIRONMENT)
+                    .referenceId(AUDIT_INFO.environmentId())
+                    .enabled(true)
+                    .build(),
+                Theme.builder()
+                    .id(otherThemeId)
+                    .type(ThemeType.PORTAL_NEXT)
+                    .referenceType(Theme.ReferenceType.ENVIRONMENT)
+                    .referenceId(AUDIT_INFO.environmentId())
+                    .enabled(false)
+                    .build()
+            )
+        );
+
+        useCase.execute(new DeletePortalUseCase.Input(AUDIT_INFO, portal.getId()));
+
+        assertThat(themeCrudService.storage())
+            .filteredOn(t -> t.getId().equals(otherThemeId))
+            .singleElement()
+            .extracting(Theme::isEnabled)
+            .isEqualTo(true);
     }
 
     @Test

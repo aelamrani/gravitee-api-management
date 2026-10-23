@@ -22,7 +22,7 @@ import {
   HttpListener,
   PlanSecurityType,
 } from '@gravitee/management-v2-webclient-sdk/src/lib';
-import { forManagementAsAppUser, forManagementV2AsApiUser } from '@gravitee/utils/configuration';
+import { forManagementAsApiUser, forManagementV2AsApiUser } from '@gravitee/utils/configuration';
 import { afterAll, beforeEach, describe, expect, test } from '@jest/globals';
 import { describeIfV4EmulationEngine, created, noContent, succeed } from '@lib/jest-utils';
 import { MAPIV2ApisFaker } from '@gravitee/fixtures/management/MAPIV2ApisFaker';
@@ -36,7 +36,7 @@ const envId = 'DEFAULT';
 const orgId = 'DEFAULT';
 const v2ApisResourceAsApiPublisher = new APIsApi(forManagementV2AsApiUser());
 const v2ApiLogsResourceAsApiPublisher = new APIAnalyticsApi(forManagementV2AsApiUser());
-const applicationManagementApiAsAppUser = new ApplicationsApi(forManagementAsAppUser());
+const applicationManagementApiAsApiUser = new ApplicationsApi(forManagementAsApiUser());
 const v2ApiSubscriptionApiAsApiUser = new APISubscriptionsApi(forManagementV2AsApiUser());
 const v2ApiPlanApiAsApiUser = new APIPlansApi(forManagementV2AsApiUser());
 
@@ -141,9 +141,9 @@ describeIfV4EmulationEngine('API - V4 - Connection Logs', () => {
     };
 
     const createApplicationsAndSubscribeToPlan = async () => {
-      // create applications for subscription
+      // create applications for subscription, owned by the API user so that it can subscribe them through the v2 API
       testContext.createdApplication1 = await created(
-        applicationManagementApiAsAppUser.createApplicationRaw({
+        applicationManagementApiAsApiUser.createApplicationRaw({
           orgId,
           envId,
           newApplicationEntity: ApplicationsFaker.newApplication(),
@@ -171,7 +171,7 @@ describeIfV4EmulationEngine('API - V4 - Connection Logs', () => {
       ).then((response) => response.data[0]);
 
       testContext.createdApplication2 = await created(
-        applicationManagementApiAsAppUser.createApplicationRaw({
+        applicationManagementApiAsApiUser.createApplicationRaw({
           orgId,
           envId,
           newApplicationEntity: ApplicationsFaker.newApplication(),
@@ -225,9 +225,18 @@ describeIfV4EmulationEngine('API - V4 - Connection Logs', () => {
             requestId: apiLog.requestId,
           }),
         maxRetries: 10,
+        // the log is indexed in several steps: wait for every field asserted below, not only for the document
         expectedResponseValidator: async (response) => {
           const body = response.value;
-          return body?.apiId === testContext.importedApi.id;
+          return (
+            body?.apiId === testContext.importedApi.id &&
+            body.clientIdentifier === apiLog.clientIdentifier &&
+            body.requestEnded === apiLog.requestEnded &&
+            !!body.entrypointRequest &&
+            !!body.endpointRequest &&
+            !!body.endpointResponse &&
+            !!body.entrypointResponse
+          );
         },
       });
 
@@ -363,7 +372,7 @@ describeIfV4EmulationEngine('API - V4 - Connection Logs', () => {
 
       const deletePromises = [testContext.createdApplication1, testContext.createdApplication2].map(({ id }) =>
         noContent(
-          applicationManagementApiAsAppUser.deleteApplicationRaw({
+          applicationManagementApiAsApiUser.deleteApplicationRaw({
             orgId,
             envId,
             application: id,

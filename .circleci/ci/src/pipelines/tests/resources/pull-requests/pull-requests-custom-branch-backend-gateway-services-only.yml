@@ -12,10 +12,6 @@ parameters:
     type: boolean
     default: true
     description: Run in dry run mode?
-  docker_tag_as_latest:
-    type: boolean
-    default: false
-    description: Is this version the latest version available?
   graviteeio_version:
     type: string
     default: ""
@@ -84,6 +80,10 @@ commands:
               -u "bot:${AZURE_ARTIFACTS_PAT}" \
               "https://pkgs.dev.azure.com/graviteeio/packages/_packaging/gravitee/maven/v1/io/gravitee/canary/feed-canary/1.0.0/feed-canary-1.0.0.pom") || CODE=000
 
+            # job-setup's Maven check reads this to tell an outage here from its own settings wiring, and
+            # print only the cause that applies. A status code, so nothing the shell can expand.
+            echo "export AZURE_FEED_HTTP_CODE='${CODE}'" >> "$BASH_ENV"
+
             case "$CODE" in
               200) echo "The feed resolves the canary." ;;
               401) echo "401 — the feed rejected the token." >&2; exit 1 ;;
@@ -104,9 +104,9 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
-            - gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}
-            - gravitee-api-management-v15-<< parameters.jobName >>-master
+            - gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
+            - gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}
+            - gravitee-api-management-v16-<< parameters.jobName >>-master-
     description: Restore Maven cache for a dedicated job
   cmd-save-maven-job-cache:
     parameters:
@@ -118,11 +118,13 @@ commands:
       - run:
           name: Exclude all APIM artefacts from cache.
           command: rm -rf ~/.m2/repository/io/gravitee/apim
+          when: always
       - run:
           name: Drop failed resolution markers from cache.
           command: find ~/.m2 -name '*.lastUpdated' -delete
+          when: always
       - save_cache:
-          key: gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
+          key: gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
           paths:
             - ~/.m2
           when: always
@@ -173,15 +175,23 @@ jobs:
       - run:
           name: Check Maven resolves from the feed
           command: |-
-            if ! mvn -B -q -s .gravitee.settings.xml \
+            if ! mvn -B -q -N -s .gravitee.settings.xml \
               org.apache.maven.plugins:maven-dependency-plugin:3.8.1:get \
               -Dartifact=io.gravitee.canary:feed-canary:1.0.0:pom; then
               echo "Maven could not resolve the canary from the feed." >&2
-              echo "The token itself was accepted over HTTPS a step earlier, so what is left is the" >&2
-              echo "settings wiring: a <server> id that does not match the repository id, or" >&2
-              # Single quotes: the shell would try to expand this one, and a dot is not a valid
-              # variable name — the message would come out as a bad substitution instead.
-              echo '${env.AZURE_ARTIFACTS_PAT} not being interpolated.' >&2
+              # The HTTPS check one step above exported what the feed answered, so this prints the one
+              # cause that applies instead of leaving the reader to match two messages against each other.
+              if [ "${AZURE_FEED_HTTP_CODE}" = "200" ]; then
+                echo "The feed answered 200 to that check, so the token is accepted and what is left is the" >&2
+                echo "settings wiring: a <server> id that does not match the repository id, or" >&2
+                # Single quotes: the shell would try to expand this one, and a dot is not a valid
+                # variable name — the message would come out as a bad substitution instead.
+                echo '${env.AZURE_ARTIFACTS_PAT} not being interpolated.' >&2
+              else
+                echo "The feed answered HTTP ${AZURE_FEED_HTTP_CODE} to that check: this is that outage." >&2
+                echo "Artifactory takes over for the rest of the build, which is why that step carried on;" >&2
+                echo "the canary exists on the feed and nowhere else, so nothing can serve it here." >&2
+              fi
               exit 1
             fi
 
@@ -223,7 +233,7 @@ jobs:
       - cmd-install-yarn
       - cmd-azure-artifacts-token
       - run:
-          name: Build engine
+          name: Build core
           command: mvn -s .gravitee.settings.xml clean install --no-transfer-progress --update-snapshots -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=false -T 8 -P all-modules -DwithJavadoc
           environment:
             BUILD_ID: "1234"
@@ -240,7 +250,7 @@ jobs:
           paths:
             - ~/.m2/repository/io/gravitee/apim
             - ~/.m2/repository/io/gravitee/gamma
-          key: gravitee-api-management-v15-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+          key: gravitee-api-management-v16-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
           when: on_success
       - run:
           name: Archive the compiled rest-api classes
@@ -248,7 +258,7 @@ jobs:
       - save_cache:
           paths:
             - /tmp/rest-api-classes.tar
-          key: gravitee-api-management-v15-rest-api-classes-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+          key: gravitee-api-management-v16-rest-api-classes-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
           when: on_success
       - cmd-save-maven-job-cache:
           jobName: job-build
@@ -268,7 +278,7 @@ jobs:
           at: .
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
+            - gravitee-api-management-v16-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
       - run:
           name: Install CI project dependencies
           command: npm ci --prefer-offline --no-audit --no-fund
@@ -276,7 +286,7 @@ jobs:
       - save_cache:
           paths:
             - .circleci/ci/node_modules
-          key: gravitee-api-management-v15-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
+          key: gravitee-api-management-v16-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
       - run:
           name: Check graphene versions across bundled Gamma modules
           command: npx ts-node src/graphene-versions/check.ts
@@ -293,11 +303,11 @@ jobs:
           jobName: job-test-gateway
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+            - gravitee-api-management-v16-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
       - cmd-azure-artifacts-token
       - run:
           name: Run gateway tests
-          command: mvn --fail-fast -s .gravitee.settings.xml test --no-transfer-progress -Dgateway-modules -Dskip.validation=true -Dgravitee.archrules.skip=true -T 8
+          command: mvn --fail-fast -s .gravitee.settings.xml test --no-transfer-progress -Dgateway-modules -pl '!gravitee-apim-gateway/gravitee-apim-gateway-integration-tests' -Dskip.validation=true -Dgravitee.archrules.skip=true -T 8
       - run:
           name: Save test results
           command: |-
@@ -336,7 +346,7 @@ jobs:
           at: .
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-sonarcloud-analysis-<< parameters.cache_type >>
+            - gravitee-api-management-v16-sonarcloud-analysis-<< parameters.cache_type >>
       - keeper/env-export:
           secret-url: keeper://9x9YgyU6DWzux4DPoHAzDQ/field/password
           var-name: SONAR_TOKEN
@@ -349,8 +359,36 @@ jobs:
       - save_cache:
           paths:
             - /opt/sonar-scanner/.sonar/cache
-          key: gravitee-api-management-v15-sonarcloud-analysis-<< parameters.cache_type >>
+          key: gravitee-api-management-v16-sonarcloud-analysis-<< parameters.cache_type >>
           when: always
+  job-test-gateway-integration:
+    docker:
+      - image: cimg/openjdk:25.0.3
+    resource_class: large
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - cmd-restore-maven-job-cache:
+          jobName: job-test-gateway-integration
+      - restore_cache:
+          keys:
+            - gravitee-api-management-v16-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+      - cmd-azure-artifacts-token
+      - run:
+          name: Run gateway integration tests
+          command: mvn --fail-fast -s .gravitee.settings.xml test --no-transfer-progress -nsu -pl gravitee-apim-gateway/gravitee-apim-gateway-integration-tests -Dskip.validation=true -Dgravitee.archrules.skip=true -Dsurefire.rerunFailingTestsCount=3 -Dsurefire.exitTimeout=300 -T 8
+      - run:
+          name: Save test results
+          command: |-
+            mkdir -p ~/test-results/junit/
+            find . -type f -regex ".*/target/surefire-reports/.*xml" -exec cp {} ~/test-results/junit/ \;
+          when: always
+      - cmd-notify-on-failure
+      - cmd-save-maven-job-cache:
+          jobName: job-test-gateway-integration
+      - store_test_results:
+          path: ~/test-results
   job-validate-workflow-status:
     docker:
       - image: cimg/base:stable
@@ -402,12 +440,19 @@ workflows:
             - Test gateway
           working_directory: gravitee-apim-gateway
           cache_type: backend
+      - job-test-gateway-integration:
+          name: Test gateway integration
+          context:
+            - cicd-orchestrator
+          requires:
+            - Build backend
       - job-validate-workflow-status:
           name: Validate workflow status
           requires:
             - Build backend
             - Check graphene versions
             - Test gateway
+            - Test gateway integration
 orbs:
   keeper: gravitee-io/keeper@0.7.1
   slack: circleci/slack@4.12.5

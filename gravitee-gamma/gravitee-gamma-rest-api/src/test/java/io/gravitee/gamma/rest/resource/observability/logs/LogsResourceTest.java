@@ -16,6 +16,7 @@
 package io.gravitee.gamma.rest.resource.observability.logs;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -48,13 +49,19 @@ import jakarta.ws.rs.client.Entity;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.context.annotation.Bean;
@@ -65,6 +72,7 @@ import org.springframework.test.context.ContextConfiguration;
 class LogsResourceTest extends AbstractResourceTest {
 
     private static final String ENVIRONMENT = "fake-env";
+    private static final String OTHER_ENVIRONMENT = "other-env";
 
     @Inject
     private SearchObservabilityLogsUseCase searchLogsUseCase;
@@ -179,14 +187,127 @@ class LogsResourceTest extends AbstractResourceTest {
         }
 
         @Test
-        void should_return_403_when_caller_cannot_read_observability() {
+        void should_return_400_when_a_filter_value_is_not_a_scalar_or_an_array_of_scalars() {
+            var body = Map.of("filters", List.of(Map.of("name", "API", "operator", "IN", "value", List.of(Map.of("id", "api-1")))));
+
+            Response response = rootTarget("search").request().post(Entity.entity(body, MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("technicalCode").asText()).isEqualTo(
+                "observability.filter.invalid_value_shape"
+            );
+            verifyNoInteractions(searchLogsUseCase);
+        }
+
+        @Test
+        void should_return_400_rather_than_500_when_the_filters_hold_a_null() {
+            var body = new HashMap<String, Object>();
+            body.put("filters", Arrays.asList((Object) null));
+
+            Response response = rootTarget("search").request().post(Entity.entity(body, MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("technicalCode").asText()).isEqualTo("observability.query.null_entry");
+            verifyNoInteractions(searchLogsUseCase);
+        }
+
+        @Test
+        void should_return_200_to_the_library_search_payload() {
+            when(searchLogsUseCase.execute(any())).thenReturn(new SearchObservabilityLogsUseCase.Output(LogsPage.EMPTY, 1, 20));
+            var body = Map.of(
+                "timeRange",
+                Map.of("from", "2026-10-11T12:00:00.000Z", "to", "2026-10-12T12:00:00.000Z"),
+                "filters",
+                List.of(
+                    Map.of("name", "API", "operator", "IN", "value", List.of("api-1", "api-2")),
+                    Map.of("name", "HTTP_STATUS", "operator", "EQ", "value", "500")
+                )
+            );
+
+            Response response = rootTarget("search")
+                .queryParam("page", 1)
+                .queryParam("perPage", 20)
+                .request()
+                .post(Entity.entity(body, MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+        }
+
+        @ParameterizedTest
+        @MethodSource("io.gravitee.gamma.rest.resource.observability.logs.LogsResourceTest#bodiesWithAnUnknownKey")
+        void should_return_400_naming_an_unknown_key(Map<String, Object> body, String unknownKey) {
+            Response response = rootTarget("search").request().post(Entity.entity(body, MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("message").asText()).isEqualTo(
+                "Property [" + unknownKey + "] is not recognized as a valid property"
+            );
+            verifyNoInteractions(searchLogsUseCase);
+        }
+
+        /** The rows a caller reads decide what the search answers: no environment permission is required. */
+        @Test
+        void should_search_without_any_environment_permission() {
             when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(false);
+            when(searchLogsUseCase.execute(any())).thenReturn(new SearchObservabilityLogsUseCase.Output(LogsPage.EMPTY, 1, 20));
 
             Response response = rootTarget("search").request().post(Entity.entity(Map.of(), MediaType.APPLICATION_JSON_TYPE));
 
-            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.FORBIDDEN_403);
-            verifyNoInteractions(searchLogsUseCase);
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            verify(searchLogsUseCase).execute(any());
         }
+
+        @Test
+        void should_search_the_rows_when_caller_only_holds_environment_api_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_API, ENVIRONMENT);
+            when(searchLogsUseCase.execute(any())).thenReturn(new SearchObservabilityLogsUseCase.Output(LogsPage.EMPTY, 1, 20));
+
+            Response response = rootTarget("search").request().post(Entity.entity(Map.of(), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            verify(searchLogsUseCase).execute(any());
+        }
+
+        @Test
+        void should_search_the_rows_when_environment_platform_read_is_held_on_another_environment() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_PLATFORM, OTHER_ENVIRONMENT);
+            when(searchLogsUseCase.execute(any())).thenReturn(new SearchObservabilityLogsUseCase.Output(LogsPage.EMPTY, 1, 20));
+
+            Response response = rootTarget("search").request().post(Entity.entity(Map.of(), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            verify(searchLogsUseCase).execute(any());
+        }
+
+        @Test
+        void should_search_the_rows_when_caller_only_holds_environment_dashboard_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_DASHBOARD, ENVIRONMENT);
+            when(searchLogsUseCase.execute(any())).thenReturn(new SearchObservabilityLogsUseCase.Output(LogsPage.EMPTY, 1, 20));
+
+            Response response = rootTarget("search").request().post(Entity.entity(Map.of(), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            verify(searchLogsUseCase).execute(any());
+        }
+
+        @Test
+        void should_search_when_caller_holds_environment_platform_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_PLATFORM, ENVIRONMENT);
+            when(searchLogsUseCase.execute(any())).thenReturn(new SearchObservabilityLogsUseCase.Output(new LogsPage(List.of(), 0), 1, 20));
+
+            Response response = rootTarget("search").request().post(Entity.entity(Map.of(), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+        }
+    }
+
+    static Stream<Arguments> bodiesWithAnUnknownKey() {
+        var timeRange = Map.of("from", "2026-10-11T12:00:00Z", "to", "2026-10-12T12:00:00Z");
+        return Stream.of(
+            arguments(Map.of("timeRange", timeRange, "apiId", "api-1"), "apiId"),
+            arguments(Map.of("timeRange", Map.of("form", "2026-10-11T12:00:00Z", "to", "2026-10-12T12:00:00Z")), "form"),
+            arguments(Map.of("filters", List.of(Map.of("name", "API", "operator", "IN", "values", List.of("api-1")))), "values")
+        );
     }
 
     @Nested
@@ -285,7 +406,17 @@ class LogsResourceTest extends AbstractResourceTest {
                 .apiId(API_ID)
                 .requestId(REQUEST_ID)
                 .timestamp(Instant.parse("2026-06-10T14:32:01Z"))
-                .authz(AuthzDecision.builder().eventId(EVENT_ID).decision("FORBID").subjectId("alice").policyGeneration(3L).build())
+                .authz(
+                    AuthzDecision.builder()
+                        .eventId(EVENT_ID)
+                        .decision("FORBID")
+                        .outcome("DENY")
+                        .enforced("DENY")
+                        .subjectId("alice")
+                        .policyGeneration("3")
+                        .matchedRules(List.of(new AuthzDecision.MatchedRule("p1", "orders", "2026-09-23T10:00:00Z", "FORBID")))
+                        .build()
+                )
                 .build();
             when(getAuthzDecisionUseCase.execute(any())).thenReturn(new GetAuthzDecisionUseCase.Output(Optional.of(decision)));
 
@@ -296,7 +427,12 @@ class LogsResourceTest extends AbstractResourceTest {
             assertThat(body.get("apiId").asText()).isEqualTo(API_ID);
             assertThat(body.get("authz").get("eventId").asText()).isEqualTo(EVENT_ID);
             assertThat(body.get("authz").get("decision").asText()).isEqualTo("FORBID");
-            assertThat(body.get("authz").get("policyGeneration").asLong()).isEqualTo(3L);
+            assertThat(body.get("authz").get("policyGeneration").asText()).isEqualTo("3");
+            assertThat(body.get("authz").get("outcome").asText()).isEqualTo("DENY");
+            assertThat(body.get("authz").get("enforced").asText()).isEqualTo("DENY");
+            assertThat(body.get("authz").get("matchedRules").get(0).get("version").asText()).isEqualTo("2026-09-23T10:00:00Z");
+            assertThat(body.get("authz").has("operation")).isFalse();
+            assertThat(body.get("authz").has("matchedPolicyNames")).isFalse();
         }
 
         @Test

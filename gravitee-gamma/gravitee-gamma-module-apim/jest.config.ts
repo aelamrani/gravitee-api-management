@@ -13,14 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { fileURLToPath } from 'node:url';
-
 export default {
     displayName: 'gravitee-gamma-module-apim',
     testEnvironment: 'jest-fixed-jsdom',
     setupFilesAfterEnv: ['<rootDir>/src/main/ui/test-setup.ts'],
     transformIgnorePatterns: [
-        '/node_modules/(?!(until-async|@gravitee/(graphene-core|graphene-charts|gamma-lib-observability)|d3-[a-z-]+|internmap)/)',
+        '/node_modules/(?!(until-async|@gravitee/(graphene-core|graphene-charts|gamma-lib-observability|gamma-modules-sdk)|d3-[a-z-]+|internmap)/)',
     ],
     moduleNameMapper: {
         '^react$': '<rootDir>/../../node_modules/react/index.js',
@@ -38,6 +36,10 @@ export default {
         '^@gravitee/gamma-modules-sdk$': '<rootDir>/src/main/ui/shared/gamma-modules-sdk.ts',
         '^@gravitee/gamma-modules-sdk/routing$': '<rootDir>/../../node_modules/@gravitee/gamma-modules-sdk/dist/routing.js',
         '^@gravitee/gamma-ui-shared/api$': '<rootDir>/../gamma-ui-shared/src/api/index.ts',
+        '^@gravitee/gamma-ui-shared/chip-input$': '<rootDir>/../gamma-ui-shared/src/chip-input/index.ts',
+        '^@gravitee/gamma-ui-shared/cors$': '<rootDir>/../gamma-ui-shared/src/cors/index.ts',
+        '^@gravitee/gamma-ui-shared/federation$': '<rootDir>/../gamma-ui-shared/src/federation/index.ts',
+        '^@gravitee/gravitee-markdown-element$': '<rootDir>/src/main/ui/testing/gmd-viewer-element.stub.ts',
     },
     transform: {
         '^(?!.*\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest',
@@ -50,7 +52,7 @@ export default {
         [
             'jest-junit',
             {
-                outputDirectory: fileURLToPath(new URL('./coverage', import.meta.url)),
+                outputDirectory: '<rootDir>/coverage',
                 outputName: 'junit.xml',
                 addFileAttribute: 'true',
             },

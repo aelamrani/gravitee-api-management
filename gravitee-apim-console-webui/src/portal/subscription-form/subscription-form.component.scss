@@ -3,6 +3,8 @@
 @use '@gravitee/ui-particles-angular' as gio;
 @use '@gravitee/gravitee-markdown' as gmd;
 
+$outline-color: mat.m2-get-color-from-palette(gio.$mat-space-palette, lighter80);
+
 :host {
   @include gio-layout.gio-responsive-content-container;
 
@@ -13,18 +15,159 @@
   }
 }
 
-.actions {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
-
-gmd-form-editor {
-  @include gmd.editor-overrides(
-    (
-      container-outline-color: mat.m2-get-color-from-palette(gio.$mat-dove-palette, 'darker20'),
-    )
-  );
+.page-layout {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 0;
   flex-grow: 1;
   min-height: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background-color: mat.m2-get-color-from-palette(gio.$mat-basic-palette, white);
+  min-height: 0;
+  min-width: 0;
+}
+
+.panel-header {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  // The actions carry the only way to save: they wrap onto a second line rather than overflow the panel.
+  flex-wrap: wrap;
+  gap: 8px;
+
+  &__title {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    align-items: center;
+    // Narrows down to 120px before the actions wrap: the header gives the name field away, not its second line.
+    flex: 1 1 120px;
+    min-width: 0;
+
+    &__field {
+      width: 100%;
+      max-width: 280px;
+    }
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+}
+
+.sections-panel {
+  padding: 16px;
+  width: 500px;
+  min-width: 280px;
+  max-width: 600px;
+  resize: none;
+  overflow: hidden;
+
+  &__header {
+    padding-bottom: 16px;
+
+    h3 {
+      margin: 0;
+    }
+  }
+
+  &__tree__container {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    width: 100%;
+  }
+}
+
+.editor-panel {
+  @include mat.card-overrides(
+    (
+      outlined-outline-color: $outline-color,
+    )
+  );
+
+  // The editor keeps a minimum height: the panel scrolls rather than crushing it on a short viewport.
+  overflow-y: auto;
+
+  gmd-form-editor {
+    flex-grow: 1;
+    flex-shrink: 0;
+    min-height: 560px;
+  }
+
+  &__header {
+    padding: 8px 16px 0 16px;
+
+    // The name field is a title bar rather than a form: kept at density -3 so it leaves the editor its height.
+    @include mat.form-field-overrides(
+      (
+        container-height: 44px,
+        container-vertical-padding: 10px,
+      )
+    );
+  }
+}
+
+.empty-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.empty-editor {
+  display: flex;
+  padding: 16px;
+  height: 100%;
+  flex-grow: 1;
+
+  mat-card {
+    flex: 1;
+  }
+}
+
+.resize-handle-container {
+  position: relative;
+  width: 2px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  .resize-handle {
+    width: 2px;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background-color: mat.m2-get-color-from-palette(gio.$mat-space-palette, lighter80);
+    cursor: col-resize;
+    transition: background-color 0.2s ease;
+
+    &:hover {
+      background-color: mat.m2-get-color-from-palette(gio.$mat-space-palette, lighter70);
+    }
+  }
+
+  mat-icon {
+    position: absolute;
+    color: mat.m2-get-color-from-palette(gio.$mat-space-palette, lighter60);
+    width: 20px;
+    height: 20px;
+    background-color: mat.m2-get-color-from-palette(gio.$mat-basic-palette, white);
+    cursor: grab;
+
+    &:active {
+      cursor: grabbing;
+    }
+  }
 }

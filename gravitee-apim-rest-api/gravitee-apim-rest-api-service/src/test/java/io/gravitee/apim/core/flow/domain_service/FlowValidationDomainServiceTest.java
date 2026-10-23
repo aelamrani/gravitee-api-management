@@ -51,7 +51,6 @@ import java.util.Set;
 import java.util.stream.Stream;
 import org.assertj.core.api.Condition;
 import org.assertj.core.api.InstanceOfAssertFactories;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -533,11 +532,80 @@ public class FlowValidationDomainServiceTest {
             );
         }
 
-        @NotNull
         private static Stream<Flow> getPlanFlows(Api api) {
             return Objects.requireNonNull(api.getPlans())
                 .stream()
                 .flatMap(plan -> plan.getFlows() == null ? Stream.empty() : plan.getFlows().stream());
+        }
+    }
+
+    @Nested
+    class XmlValidationRegistryStructuralChecks {
+
+        @Test
+        void should_reject_registry_source_on_message_api() {
+            var step = Step.builder()
+                .policy("xml-validation")
+                .configuration(
+                    """
+                    {"schemaSource":"registry","registryResource":"sr","groupId":"g","artifactId":"a","version":"1"}
+                    """
+                )
+                .build();
+            var flow = Flow.builder().name("msg-flow").request(List.of(step)).build();
+
+            assertThatThrownBy(() -> service.validateAndSanitizeHttpV4(ApiType.MESSAGE, List.of(flow)))
+                .isInstanceOf(ValidationDomainException.class)
+                .hasMessageContaining("only supported on HTTP proxy APIs");
+        }
+
+        @Test
+        void should_reject_missing_coordinates_on_proxy_api() {
+            var step = Step.builder()
+                .policy("xml-validation")
+                .configuration(
+                    """
+                    {"schemaSource":"registry","registryResource":"sr"}
+                    """
+                )
+                .build();
+            var flow = Flow.builder().name("proxy-flow").request(List.of(step)).build();
+
+            assertThatThrownBy(() -> service.validateAndSanitizeHttpV4(ApiType.PROXY, List.of(flow)))
+                .isInstanceOf(ValidationDomainException.class)
+                .hasMessageContaining("requires registryResource, groupId, artifactId, and version");
+        }
+
+        @Test
+        void should_reject_inline_and_registry_combined() {
+            var step = Step.builder()
+                .policy("xml-validation")
+                .configuration(
+                    """
+                    {"schemaSource":"registry","registryResource":"sr","groupId":"g","artifactId":"a","version":"1","xsdSchema":"<xs:schema/>"}
+                    """
+                )
+                .build();
+            var flow = Flow.builder().name("proxy-flow").request(List.of(step)).build();
+
+            assertThatThrownBy(() -> service.validateAndSanitizeHttpV4(ApiType.PROXY, List.of(flow)))
+                .isInstanceOf(ValidationDomainException.class)
+                .hasMessageContaining("cannot be combined with inline xsdSchema");
+        }
+
+        @Test
+        void should_accept_valid_registry_config_on_proxy_api() {
+            var step = Step.builder()
+                .policy("xml-validation")
+                .configuration(
+                    """
+                    {"schemaSource":"registry","registryResource":"sr","groupId":"g","artifactId":"a","version":"1"}
+                    """
+                )
+                .build();
+            var flow = Flow.builder().name("proxy-flow").request(List.of(step)).build();
+
+            assertThatNoException().isThrownBy(() -> service.validateAndSanitizeHttpV4(ApiType.PROXY, List.of(flow)));
         }
     }
 }

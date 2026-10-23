@@ -15,33 +15,60 @@
  */
 import { Navigate, Route, Routes } from 'react-router-dom';
 
-import { LoginPage, ProtectedRoute, PublicOnlyRoute, ResetPasswordPage } from '../features/auth';
-import { EnvironmentGuard, RootRedirect } from '../features/environment';
-import { type GammaModule, RemoteModuleRoute, useGammaModules } from '../features/modules';
+import {
+    ActivationPage,
+    LoginPage,
+    ProtectedRoute,
+    PublicOnlyRoute,
+    RegistrationEnabledRoute,
+    ResetPasswordPage,
+    SignUpPage,
+} from '../features/auth';
+import { AccountGuard, EnvironmentGuard, RootRedirect } from '../features/environment';
+import {
+    PORTALS_MODULE_ID,
+    PortalNextEditorRedirect,
+    type GammaModule,
+    ModulesLoadFailed,
+    RemoteModuleRoute,
+    isAccountModule,
+    useGammaModules,
+} from '../features/modules';
 import { HomePage } from '../pages/home';
+import { MyAccountPage } from '../pages/my-account';
 import { TasksPage } from '../pages/tasks';
 import { ContentSkeleton } from '../shared/components/ContentSkeleton';
 import { RouteLayout } from '../shared/components/RouteLayout';
 import { ShellLayout } from '../shared/components/ShellLayout';
+import { ENVIRONMENT_ROUTE } from '../shared/config/routes';
 
 export function AppRoutes() {
     const { modules, loading, error, retry } = useGammaModules();
+    // The list of modules could not be loaded. It stays so while a retry runs, until one succeeds.
+    const loadFailed = error !== null && modules.length === 0;
+    const accountModules = modules.filter(isAccountModule);
+    const environmentModules = modules.filter(m => !isAccountModule(m));
 
-    if (loading && modules.length === 0) {
+    if (loading && modules.length === 0 && !loadFailed) {
         return (
             <Routes>
                 <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+                <Route path="/registration/:token" element={<ActivationPage />} />
                 <Route element={<PublicOnlyRoute />}>
                     <Route path="/login" element={<LoginPage />} />
+                    <Route element={<RegistrationEnabledRoute />}>
+                        <Route path="/sign-up" element={<SignUpPage />} />
+                    </Route>
                 </Route>
                 <Route element={<ProtectedRoute />}>
-                    <Route path="/environments/:envHrid" element={<ShellLayout modules={[]} />}>
-                        <Route element={<EnvironmentGuard />}>
+                    <Route element={<ShellLayout modules={[]} />}>
+                        <Route path={ENVIRONMENT_ROUTE} element={<EnvironmentGuard />}>
                             <Route path="*" element={<ContentSkeleton />} />
                         </Route>
+                        {/* Which modules sit above the environments is only known with the list: any other address waits for it. */}
+                        <Route path="*" element={<ContentSkeleton />} />
                     </Route>
                     <Route path="/" element={<RootRedirect />} />
-                    <Route path="*" element={<RootRedirect />} />
                 </Route>
             </Routes>
         );
@@ -50,21 +77,52 @@ export function AppRoutes() {
     return (
         <Routes>
             <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+            {/* Outside every guard: the link is the only way in, whether or not someone is signed in or
+                registration is still on, and the server has the only explanation worth giving. */}
+            <Route path="/registration/:token" element={<ActivationPage />} />
             <Route element={<PublicOnlyRoute />}>
                 <Route path="/login" element={<LoginPage />} />
+                <Route element={<RegistrationEnabledRoute />}>
+                    <Route path="/sign-up" element={<SignUpPage />} />
+                </Route>
             </Route>
             <Route element={<ProtectedRoute />}>
-                <Route path="/environments/:envHrid" element={<ShellLayout modules={modules} />}>
-                    <Route element={<EnvironmentGuard />}>
+                <Route element={<ShellLayout modules={modules} />}>
+                    <Route path={ENVIRONMENT_ROUTE} element={<EnvironmentGuard />}>
                         <Route element={<RouteLayout />}>
-                            <Route path="home" element={<HomePage modules={modules} loading={loading} error={error} onRetry={retry} />} />
+                            {/* Without the list, Home has nothing left to show: its sections come from the modules. */}
+                            <Route
+                                path="home"
+                                element={
+                                    loadFailed ? (
+                                        <ModulesLoadFailed retrying={loading} onRetry={retry} />
+                                    ) : (
+                                        <HomePage modules={modules} loading={loading} />
+                                    )
+                                }
+                            />
                             <Route path="tasks" element={<TasksPage />} />
+                            <Route path="my-account" element={<MyAccountPage />} />
                         </Route>
-                        {modules.map((m: GammaModule) => (
-                            <Route key={m.id} path={`${m.id}/*`} element={<RemoteModuleRoute module={m} />} />
+                        {environmentModules.map((m: GammaModule) => (
+                            <Route
+                                key={m.id}
+                                path={`${m.id}/*`}
+                                element={m.id === PORTALS_MODULE_ID ? <PortalNextEditorRedirect /> : <RemoteModuleRoute module={m} />}
+                            />
                         ))}
+                        {/* Without the list, any other address may be a module's: it is kept, and opens once the list is there. */}
+                        {loadFailed && <Route path="*" element={<ModulesLoadFailed retrying={loading} onRetry={retry} />} />}
                         <Route index element={<Navigate to="home" replace />} />
                     </Route>
+                    {(accountModules.length > 0 || loadFailed) && (
+                        <Route element={<AccountGuard />}>
+                            {accountModules.map((m: GammaModule) => (
+                                <Route key={m.id} path={`${m.id}/*`} element={<RemoteModuleRoute module={m} />} />
+                            ))}
+                            {loadFailed && <Route path="*" element={<ModulesLoadFailed retrying={loading} onRetry={retry} />} />}
+                        </Route>
+                    )}
                 </Route>
                 <Route path="/" element={<RootRedirect />} />
                 <Route path="*" element={<RootRedirect />} />

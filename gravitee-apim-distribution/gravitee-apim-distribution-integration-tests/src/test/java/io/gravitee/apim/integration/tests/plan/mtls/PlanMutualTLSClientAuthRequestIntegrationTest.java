@@ -70,7 +70,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
-import javax.net.ssl.SSLException;
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
@@ -201,6 +200,10 @@ public class PlanMutualTLSClientAuthRequestIntegrationTest extends AbstractGatew
         }
     }
 
+    /**
+     * Presenting a certificate is optional on this listener, so an unknown one is not the TLS layer's business: the
+     * request reaches the plan, which is the only thing that knows the subscriptions, and is refused there.
+     */
     @ParameterizedTest
     @MethodSource("provideApis")
     @Timeout(value = 30, timeUnit = TimeUnit.SECONDS)
@@ -215,10 +218,15 @@ public class PlanMutualTLSClientAuthRequestIntegrationTest extends AbstractGatew
         client
             .rxRequest(GET, PlanHelper.getApiPath(apiId))
             .flatMap(HttpClientRequest::rxSend)
+            .flatMap(response -> {
+                assertThat(response.statusCode()).isEqualTo(UNAUTHORIZED_401);
+                return response.rxBody();
+            })
             .test()
             .awaitDone(30, TimeUnit.SECONDS)
-            .assertError(t -> {
-                assertThat(t.getCause()).isInstanceOf(SSLException.class);
+            .assertComplete()
+            .assertValue(body -> {
+                assertThat(body.toString()).contains(MtlsPolicy.FAILURE_MESSAGE);
                 return true;
             });
         if (requireWiremock) {

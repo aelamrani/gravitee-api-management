@@ -15,12 +15,15 @@
  */
 package io.gravitee.apim.core.analytics_engine.model;
 
+import io.gravitee.apim.core.analytics.model.ApiDataKind;
 import io.gravitee.apim.core.observability.model.FilterOperator;
 import io.gravitee.apim.core.observability.model.FilterType;
 import io.gravitee.apim.core.observability.model.NumberRange;
 import io.gravitee.apim.core.observability.model.Signal;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Stream;
 
 public record FilterSpec(
     Name name,
@@ -123,5 +126,27 @@ public record FilterSpec(
         AUTHZ_ACTION,
         AUTHZ_RESOURCE_ID,
         AUTHZ_REASON,
+        AUTHZ_PDP,
+        AUTHZ_SEARCH_TYPE,
+        /** Internal: carries a {@link TrafficScope}, built by the back end and absent from the catalog. */
+        TRAFFIC_SCOPE;
+
+        /** Built by the back end itself: never in the catalog, never offered to nor accepted from a caller. */
+        public boolean isInternal() {
+            return this == TRAFFIC_SCOPE;
+        }
+
+        /** Holds a person or a client identifier: a query using it, as condition or facet, reads the requests themselves. */
+        public boolean isIdentifying() {
+            return this == CONSUMER_IP || this == NATIVE_CLIENT_ID || this == AUTHZ_SUBJECT_ID;
+        }
+    }
+
+    /** The data a query reads: the requests themselves as soon as one condition or facet identifies a caller. */
+    static ApiDataKind dataKindOf(List<Filter> filters, Stream<List<Filter>> metricFilters, List<FacetSpec.Name> facets) {
+        var conditions = Stream.concat(Stream.ofNullable(filters), metricFilters).filter(Objects::nonNull).flatMap(List::stream);
+        var identifyingCondition = conditions.map(Filter::name).filter(Objects::nonNull).anyMatch(Name::isIdentifying);
+        var identifyingFacet = Stream.ofNullable(facets).flatMap(List::stream).anyMatch(FacetSpec.Name::isIdentifying);
+        return identifyingCondition || identifyingFacet ? ApiDataKind.PER_REQUEST : ApiDataKind.AGGREGATES;
     }
 }

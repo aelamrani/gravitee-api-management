@@ -16,6 +16,7 @@
 package io.gravitee.apim.core.logs_engine.use_case;
 
 import io.gravitee.apim.core.UseCase;
+import io.gravitee.apim.core.analytics.model.ApiDataKind;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api_product.model.ApiProduct;
 import io.gravitee.apim.core.api_product.query_service.ApiProductQueryService;
@@ -27,6 +28,7 @@ import io.gravitee.apim.core.gateway.query_service.InstanceQueryService;
 import io.gravitee.apim.core.log.crud_service.ConnectionLogsCrudService;
 import io.gravitee.apim.core.logs_engine.domain_service.FilterContext;
 import io.gravitee.apim.core.logs_engine.domain_service.LogNamesPostProcessor;
+import io.gravitee.apim.core.logs_engine.exception.UnsupportedFilterOperatorException;
 import io.gravitee.apim.core.logs_engine.model.ApiLog;
 import io.gravitee.apim.core.logs_engine.model.ApiLogDiagnostic;
 import io.gravitee.apim.core.logs_engine.model.ArrayFilter;
@@ -110,7 +112,7 @@ public class SearchEnvironmentLogsUseCase {
         var executionContext = new ExecutionContext(input.auditInfo.organizationId(), input.auditInfo.environmentId());
         var pageable = buildPageable(input.request);
 
-        var userContext = userContextLoader.loadApis(new UserContext(input.auditInfo));
+        var userContext = userContextLoader.loadApis(new UserContext(input.auditInfo), ApiDataKind.PER_REQUEST);
 
         var searchFilters = buildFilters(userContext, input.request);
 
@@ -281,16 +283,15 @@ public class SearchEnvironmentLogsUseCase {
             return;
         }
 
-        if (filter.operator() == Operator.EQ) {
+        boolean isEquality = filter.operator() == Operator.EQ;
+        // URI is matched by prefix whatever the operator: STARTS_WITH says so, EQ stays its deprecated spelling.
+        boolean isUriPrefix = filter.operator() == Operator.STARTS_WITH && filter.name() == FilterName.URI;
+        if (isEquality || isUriPrefix) {
             updateFilterIds(filter.name(), filterContext, Set.of(filter.value()));
             return;
         }
 
-        clearFilterIds(filter, filterContext);
-    }
-
-    private void clearFilterIds(StringFilter filter, FilterContext filterContext) {
-        updateFilterIds(filter.name(), filterContext, Collections.emptySet());
+        throw new UnsupportedFilterOperatorException(filter.name().name(), String.valueOf(filter.operator()));
     }
 
     /**
@@ -304,7 +305,7 @@ public class SearchEnvironmentLogsUseCase {
         // Say so instead of returning early: silently ignoring it is what made the catalog and the search
         // disagree (APIM-14817).
         if (SINGLE_VALUED_FILTERS.contains(filter.name())) {
-            throw new ValidationDomainException("Filter " + filter.name() + " does not support operator " + filter.operator() + ".");
+            throw new UnsupportedFilterOperatorException(filter.name().name(), String.valueOf(filter.operator()));
         }
 
         if (filter.operator() == Operator.IN) {
@@ -312,7 +313,7 @@ public class SearchEnvironmentLogsUseCase {
             return;
         }
 
-        updateFilterIds(filter.name(), filterContext, Collections.emptySet());
+        throw new UnsupportedFilterOperatorException(filter.name().name(), String.valueOf(filter.operator()));
     }
 
     private void applyNumericFilter(NumericFilter filter, FilterContext filterContext) {
@@ -327,8 +328,9 @@ public class SearchEnvironmentLogsUseCase {
                         filterContext.limitByResponseTimeFrom(value.longValue());
                         filterContext.limitByResponseTimeTo(value.longValue());
                     }
-                    default -> throw new ValidationDomainException(
-                        "Filter RESPONSE_TIME does not support operator " + filter.operator() + "."
+                    default -> throw new UnsupportedFilterOperatorException(
+                        FilterName.RESPONSE_TIME.name(),
+                        String.valueOf(filter.operator())
                     );
                 }
             }
@@ -340,8 +342,9 @@ public class SearchEnvironmentLogsUseCase {
                     // EQ on a status arrives as a StringFilter/ArrayFilter and lands in `statuses`; a numeric EQ
                     // means the same thing, so route it there rather than building a degenerate range.
                     case EQ -> filterContext.limitByHttpStatuses(Set.of(value));
-                    default -> throw new ValidationDomainException(
-                        "Filter HTTP_STATUS does not support operator " + filter.operator() + "."
+                    default -> throw new UnsupportedFilterOperatorException(
+                        FilterName.HTTP_STATUS.name(),
+                        String.valueOf(filter.operator())
                     );
                 }
             }
@@ -529,8 +532,13 @@ public class SearchEnvironmentLogsUseCase {
 
     private static List<String> apiTypeValues(Object instance) {
         return switch (instance) {
-            case StringFilter s -> s.value() == null ? List.of() : List.of(s.value());
-            case ArrayFilter a -> a.value() == null ? List.of() : a.value().stream().map(String::valueOf).toList();
+            case StringFilter s when s.operator() == Operator.EQ -> s.value() == null ? List.of() : List.of(s.value());
+            case ArrayFilter a when a.operator() == Operator.IN -> a.value() == null
+                ? List.of()
+                : a.value().stream().map(String::valueOf).toList();
+            case StringFilter s -> throw new UnsupportedFilterOperatorException(FilterName.API_TYPE.name(), String.valueOf(s.operator()));
+            case ArrayFilter a -> throw new UnsupportedFilterOperatorException(FilterName.API_TYPE.name(), String.valueOf(a.operator()));
+            case NumericFilter n -> throw new UnsupportedFilterOperatorException(FilterName.API_TYPE.name(), String.valueOf(n.operator()));
             case null, default -> List.of();
         };
     }

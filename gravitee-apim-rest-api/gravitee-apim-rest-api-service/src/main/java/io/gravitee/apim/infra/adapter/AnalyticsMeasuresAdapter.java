@@ -18,6 +18,7 @@ package io.gravitee.apim.infra.adapter;
 import io.gravitee.apim.core.analytics_engine.model.FacetMetricMeasuresRequest;
 import io.gravitee.apim.core.analytics_engine.model.FacetsRequest;
 import io.gravitee.apim.core.analytics_engine.model.FacetsResponse;
+import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
 import io.gravitee.apim.core.analytics_engine.model.Measure;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresRequest;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresResponse;
@@ -33,6 +34,7 @@ import io.gravitee.repository.analytics.engine.api.query.Filter;
 import io.gravitee.repository.analytics.engine.api.query.MeasuresQuery;
 import io.gravitee.repository.analytics.engine.api.query.MetricMeasuresQuery;
 import io.gravitee.repository.analytics.engine.api.query.TimeSeriesQuery;
+import io.gravitee.repository.analytics.engine.api.query.TrafficScope;
 import io.gravitee.repository.analytics.engine.api.result.FacetsResult;
 import io.gravitee.repository.analytics.engine.api.result.MeasuresResult;
 import io.gravitee.repository.analytics.engine.api.result.MetricMeasuresResult;
@@ -82,7 +84,7 @@ public interface AnalyticsMeasuresAdapter {
 
     default MetricMeasuresResponse fromResult(MetricMeasuresResult result) {
         // The unit is set to null here, because it is populated later by a post processor according to the definition model.
-        return new MetricMeasuresResponse(fromResult(result.metric()), null, fromResult(result.measures()));
+        return new MetricMeasuresResponse(fromResult(result.metric()), null, fromResult(result.measures()), List.of());
     }
 
     default List<Measure> fromResult(Map<io.gravitee.repository.analytics.engine.api.metric.Measure, Number> result) {
@@ -95,6 +97,9 @@ public interface AnalyticsMeasuresAdapter {
             .map(entry -> new Measure(fromResult(entry.getKey()), entry.getValue()))
             .toList();
     }
+
+    /** Every engine filter has a catalog name; MapStruct fails the build if one is added without. */
+    FilterSpec.Name fromFilterName(Filter.Name name);
 
     default MetricSpec.Name fromResult(Metric result) {
         return MetricSpec.Name.valueOf(result.name());
@@ -118,5 +123,21 @@ public interface AnalyticsMeasuresAdapter {
     Filter.Name toFilterName(io.gravitee.apim.core.analytics_engine.model.FilterSpec.Name name);
 
     @ValueMapping(source = "CONTAINS", target = MappingConstants.THROW_EXCEPTION)
+    @ValueMapping(source = "STARTS_WITH", target = MappingConstants.THROW_EXCEPTION)
     Filter.Operator toFilterOperator(io.gravitee.apim.core.observability.model.FilterOperator operator);
+
+    /** Written by hand for the value, which MapStruct would pass through as is: a traffic scope changes model. */
+    default Filter toFilter(io.gravitee.apim.core.analytics_engine.model.Filter filter) {
+        if (filter == null) {
+            return null;
+        }
+        return new Filter(toFilterName(filter.name()), toFilterOperator(filter.operator()), toFilterValue(filter.value()));
+    }
+
+    private static Object toFilterValue(Object value) {
+        if (value instanceof io.gravitee.apim.core.analytics_engine.model.TrafficScope scope) {
+            return new TrafficScope(scope.apiIds(), scope.entrypointIds());
+        }
+        return value;
+    }
 }

@@ -35,12 +35,15 @@ import { useParams } from 'react-router-dom';
 import { CircuitBreakerDialog } from './CircuitBreakerDialog';
 import { NumberField } from './NumberField';
 import { ToggleSetting } from './ToggleSetting';
+import { ConfirmDialog } from '../../../../../shared/components/ConfirmDialog';
 import { notify } from '../../../../../shared/notify';
 import { useApiDetailContext } from '../../../context/ApiDetailContext';
 import { updateApiFailover } from '../../../services/apis';
 import type { Failover } from '../../../types';
+import { hasTcpListeners } from '../../../utils/apiHttpProxy';
 import { apiDetailKeys } from '../../../utils/queryKeys';
 import { InfoTooltip } from '../cors/InfoTooltip';
+import { TcpProxyUnavailableNotice } from '../response-templates/TcpProxyUnavailableNotice';
 
 // ─── Defaults (match backend Failover.java constants) ────────────────────────
 
@@ -108,6 +111,14 @@ export function ApiFailoverPage() {
     });
 
     const handleSave = () => {
+        if (enabled && !perSubscription) {
+            setConfirmGlobalOpen(true);
+            return;
+        }
+        saveFailover();
+    };
+
+    const saveFailover = () => {
         mutation.mutate({
             enabled,
             maxRetries,
@@ -121,6 +132,7 @@ export function ApiFailoverPage() {
     };
 
     const [dialogOpen, setDialogOpen] = useState(false);
+    const [confirmGlobalOpen, setConfirmGlobalOpen] = useState(false);
 
     const fieldsDisabled = !enabled || isReadOnly;
 
@@ -140,6 +152,10 @@ export function ApiFailoverPage() {
                 <Skeleton className="h-48 w-full rounded-lg" />
             </div>
         );
+    }
+
+    if (hasTcpListeners(api)) {
+        return <TcpProxyUnavailableNotice feature="Failover settings" />;
     }
 
     return (
@@ -318,7 +334,7 @@ export function ApiFailoverPage() {
                                 disabled={fieldsDisabled}
                                 onChange={setMaxFailures}
                             />
-                            <div className="pt-7">
+                            <div className="pt-7 space-y-3">
                                 <ToggleSetting
                                     id="failover-per-subscription"
                                     label="Per subscription circuit breaker"
@@ -327,6 +343,15 @@ export function ApiFailoverPage() {
                                     disabled={fieldsDisabled}
                                     onCheckedChange={setPerSubscription}
                                 />
+                                {!perSubscription && (
+                                    <Alert variant="warning">
+                                        <AlertDescription>
+                                            The circuit breaker will be configured for the whole API. It implies that a subscriber doing
+                                            slow requests might change the state of the circuit breaker to open, and make the API
+                                            unavailable for other consumers.
+                                        </AlertDescription>
+                                    </Alert>
+                                )}
                             </div>
                         </div>
                     </CardContent>
@@ -334,6 +359,18 @@ export function ApiFailoverPage() {
             </div>
 
             <CircuitBreakerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+            <ConfirmDialog
+                open={confirmGlobalOpen}
+                onOpenChange={setConfirmGlobalOpen}
+                title="Update failover"
+                description="Are you sure you want to use a global circuit breaker? It may impact your consumers."
+                confirmLabel="Yes, update it"
+                isPending={mutation.isPending}
+                onConfirm={() => {
+                    setConfirmGlobalOpen(false);
+                    saveFailover();
+                }}
+            />
         </TooltipProvider>
     );
 }

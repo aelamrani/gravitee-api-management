@@ -23,5 +23,5 @@ import java.util.List;
  * @author GraviteeSource Team
  */
 public interface PropertiesService {
-    List<PropertyEntity> encryptProperties(List<PropertyEntity> properties);
+    List<PropertyEntity> encryptProperties(List<PropertyEntity> storedProperties, List<PropertyEntity> properties);
 }

@@ -15,7 +15,7 @@
  */
 import type { SideLine, UnifiedLine } from './types';
 import { diffLines } from '../../../../../shared/utils/lineDiff';
-import type { ApiEvent } from '../../../types';
+import type { ApiDetailDto, ApiEvent } from '../../../types';
 
 export function formatDate(iso: string): string {
     return new Date(iso).toLocaleString(undefined, {
@@ -25,6 +25,38 @@ export function formatDate(iso: string): string {
         hour: '2-digit',
         minute: '2-digit',
     });
+}
+
+/** Synthetic event for the unpublished definition. Not a real event id, so rollback must stay hidden. */
+export const PENDING_DEPLOYMENT_EVENT_ID = 'to-be-deployed';
+
+export function pendingDeploymentEvent(definition: unknown): ApiEvent {
+    return {
+        id: PENDING_DEPLOYMENT_EVENT_ID,
+        createdAt: new Date().toISOString(),
+        payload: JSON.stringify(definition ?? {}),
+        initiator: { id: '', displayName: 'Pending changes' },
+        properties: { DEPLOYMENT_NUMBER: 'to be deployed' },
+    };
+}
+
+/**
+ * Classic hides compare-dialog rollback for the live deployment when the API is in sync,
+ * and for every side of a V4 native API (`hideRollback` in `api-history-v4.component.ts`).
+ */
+export function hideCompareRollback(
+    event: ApiEvent,
+    options: { liveEventId: string | null; needsRedeploy: boolean; isNative: boolean },
+): boolean {
+    if (event.id === PENDING_DEPLOYMENT_EVENT_ID) return true;
+    if (options.isNative) return true;
+    return !options.needsRedeploy && options.liveEventId !== null && event.id === options.liveEventId;
+}
+
+export function chronologicalEvents(events: readonly ApiEvent[]): [ApiEvent, ApiEvent] | null {
+    if (events.length !== 2) return null;
+    const [first, second] = events;
+    return first.createdAt <= second.createdAt ? [first, second] : [second, first];
 }
 
 export function extractDefinition(event: ApiEvent): string {
@@ -81,4 +113,21 @@ export function computeSideBySideDiff(left: string, right: string): SideLine[] {
 
 export function hasDiffChanges(lines: UnifiedLine[]): boolean {
     return lines.some(l => l.type !== ' ');
+}
+
+/** The management API returns a native API as a V4 API of type NATIVE. */
+export function isNativeApi(api: ApiDetailDto | null): boolean {
+    return api?.definitionVersion === 'V4' && api.type === 'NATIVE';
+}
+
+type RollbackContext = { liveEventId: string | undefined; isNative: boolean; needsRedeploy: boolean };
+
+/**
+ * The live version is already deployed, so rolling back to it only makes sense to discard pending
+ * changes. Native APIs cannot be rolled back.
+ */
+export function canRollbackTo(event: ApiEvent, { liveEventId, isNative, needsRedeploy }: RollbackContext): boolean {
+    if (isNative) return false;
+    const isLiveVersion = event.id === liveEventId;
+    return !isLiveVersion || needsRedeploy;
 }

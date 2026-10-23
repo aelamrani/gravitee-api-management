@@ -15,6 +15,7 @@
  */
 package io.gravitee.rest.api.service.impl;
 
+import static io.gravitee.apim.core.utils.EncryptedValueMask.ENCRYPTED_VALUE_MASK;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_CREATED;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_DELETED;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_ROLLBACKED;
@@ -49,7 +50,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.base.Strings;
 import io.gravitee.apim.core.api.domain_service.VerifyApiPathDomainService;
 import io.gravitee.apim.core.api.exception.InvalidPathsException;
+import io.gravitee.apim.core.api.exception.MaskedApiPropertyValueException;
 import io.gravitee.apim.core.api.model.Path;
+import io.gravitee.apim.core.flow.domain_service.XmlValidationPolicyChecker;
+import io.gravitee.apim.core.portal_page.domain_service.ApiDocumentationCleanupDomainService;
+import io.gravitee.apim.core.subscription_form.domain_service.RemoveApiFromSubscriptionFormDomainService;
 import io.gravitee.apim.core.utils.CollectionUtils;
 import io.gravitee.common.data.domain.Page;
 import io.gravitee.common.util.DataEncryptor;
@@ -60,6 +65,7 @@ import io.gravitee.definition.model.EndpointGroup;
 import io.gravitee.definition.model.Logging;
 import io.gravitee.definition.model.LoggingMode;
 import io.gravitee.definition.model.Origin;
+import io.gravitee.definition.model.Property;
 import io.gravitee.definition.model.Proxy;
 import io.gravitee.definition.model.RequestValidation;
 import io.gravitee.definition.model.VirtualHost;
@@ -234,6 +240,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -242,7 +249,6 @@ import java.util.stream.Stream;
 import lombok.CustomLog;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
@@ -358,6 +364,12 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
 
     @Autowired
     private ApiCategoryService apiCategoryService;
+
+    @Autowired
+    private RemoveApiFromSubscriptionFormDomainService removeApiFromSubscriptionFormDomainService;
+
+    @Autowired
+    private ApiDocumentationCleanupDomainService apiDocumentationCleanupDomainService;
 
     @Autowired
     private PolicyService policyService;
@@ -1280,7 +1292,7 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
             }
 
             // encrypt API properties
-            encryptProperties(updateApiEntity.getPropertyList());
+            encryptProperties(apiToCheck.getPropertyList(), updateApiEntity.getPropertyList());
 
             if (io.gravitee.rest.api.model.api.ApiLifecycleState.DEPRECATED.equals(updateApiEntity.getLifecycleState())) {
                 planService
@@ -1559,7 +1571,10 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
                         .getPre()
                         .stream()
                         .filter(Step::isEnabled)
-                        .forEach(step -> policyService.validatePolicyConfiguration(step))
+                        .forEach(step -> {
+                            rejectRegistryXmlValidationOnV2(step);
+                            policyService.validatePolicyConfiguration(step);
+                        })
                 );
 
             flows
@@ -1570,8 +1585,21 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
                         .getPost()
                         .stream()
                         .filter(Step::isEnabled)
-                        .forEach(step -> policyService.validatePolicyConfiguration(step))
+                        .forEach(step -> {
+                            rejectRegistryXmlValidationOnV2(step);
+                            policyService.validatePolicyConfiguration(step);
+                        })
                 );
+        }
+    }
+
+    private void rejectRegistryXmlValidationOnV2(Step step) {
+        if (step == null || step.getPolicy() == null) {
+            return;
+        }
+        String error = XmlValidationPolicyChecker.rejectRegistryOnUnsupportedDefinition(step.getPolicy(), step.getConfiguration());
+        if (error != null) {
+            throw new InvalidDataException(error);
         }
     }
 
@@ -1681,9 +1709,12 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
 
             // Delete pages
             pageService.deleteAllByApi(executionContext, apiId);
+            apiDocumentationCleanupDomainService.cleanupForApi(api.getEnvironmentId(), apiId);
 
             // Delete top API
             topApiService.delete(executionContext, apiId);
+            // Remove API from the subscription form dedicated to it, while the API still exists to retry on failure
+            removeApiFromSubscriptionFormDomainService.removeApi(api.getEnvironmentId(), apiId);
             // Delete API
             apiRepository.delete(apiId);
             // Delete memberships
@@ -2772,15 +2803,33 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         return pageable;
     }
 
-    protected void encryptProperties(List<PropertyEntity> properties) {
+    protected void encryptProperties(List<Property> storedProperties, List<PropertyEntity> properties) {
+        Map<String, Property> storedByKey = storedProperties == null
+            ? Map.of()
+            : storedProperties
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(Property::getKey, Function.identity(), (first, second) -> first));
         for (PropertyEntity property : properties) {
-            if (property.isEncryptable() && !property.isEncrypted()) {
-                try {
-                    property.setValue(dataEncryptor.encrypt(property.getValue()));
-                    property.setEncrypted(true);
-                } catch (GeneralSecurityException e) {
-                    log.error("Error encrypting property value", e);
-                }
+            encryptProperty(storedByKey, property);
+        }
+    }
+
+    private void encryptProperty(Map<String, Property> storedByKey, PropertyEntity property) {
+        if (ENCRYPTED_VALUE_MASK.equals(property.getValue())) {
+            Property stored = Optional.ofNullable(storedByKey.get(property.getKey()))
+                .filter(Property::isEncrypted)
+                .orElseThrow(() -> new MaskedApiPropertyValueException(property.getKey()));
+            property.setValue(stored.getValue());
+            property.setEncrypted(true);
+            return;
+        }
+        if (property.isEncryptable() && !property.isEncrypted()) {
+            try {
+                property.setValue(dataEncryptor.encrypt(property.getValue()));
+                property.setEncrypted(true);
+            } catch (GeneralSecurityException e) {
+                log.error("Error encrypting property value", e);
             }
         }
     }
@@ -2804,13 +2853,11 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         return apiIds == null ? 0 : apiIds.size();
     }
 
-    @NotNull
     private ApiCriteria.Builder getDefaultApiCriteriaBuilder() {
         // By default, in this service, we do not care for V4 APIs.
         return new ApiCriteria.Builder().definitionVersion(getAllowedDefinitionVersion());
     }
 
-    @NotNull
     private static List<DefinitionVersion> getAllowedDefinitionVersion() {
         List<DefinitionVersion> allowedDefinitionVersion = new ArrayList<>();
         allowedDefinitionVersion.add(null);

@@ -15,23 +15,34 @@
     limitations under the License.
 
 -->
-<md-dialog aria-label="New property">
+<md-dialog aria-label="New property" class="dictionary-add-property-dialog">
   <form name="formDictionaryProperty" ng-submit="dialogDictionaryAddPropertyCtrl.save()" novalidate>
     <md-dialog-content layout-padding>
       <h4>New property</h4>
       <md-input-container>
         <label>Name</label>
         <input ng-model="property.name" id="key" required />
+        <div class="hint" ng-if="dialogDictionaryAddPropertyCtrl.isDuplicate(property.name)">Name already exists.</div>
       </md-input-container>
       <md-input-container>
         <label>Value</label>
         <input ng-model="property.value" id="value" required />
       </md-input-container>
+      <md-input-container class="md-block dictionary-encrypt-field">
+        <md-switch ng-model="property.encryptable" aria-label="Encrypt on save toggle" id="encryptable">Encrypt</md-switch>
+        <div class="hint">The value will be encrypted on save, and cannot be retrieved later on.</div>
+      </md-input-container>
     </md-dialog-content>
 
     <md-dialog-actions layout="row">
       <md-button ng-click="dialogDictionaryAddPropertyCtrl.hide()"> Cancel </md-button>
-      <md-button type="submit" class="md-raised md-primary" ng-disabled="formDictionaryProperty.$invalid"> Add </md-button>
+      <md-button
+        type="submit"
+        class="md-raised md-primary"
+        ng-disabled="formDictionaryProperty.$invalid || dialogDictionaryAddPropertyCtrl.isDuplicate(property.name)"
+      >
+        Add
+      </md-button>
     </md-dialog-actions>
   </form>
 </md-dialog>

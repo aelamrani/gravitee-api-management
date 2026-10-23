@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-import { useHasPermission } from '@gravitee/gamma-modules-sdk';
 import { Button } from '@gravitee/graphene-core';
 import { PlusIcon } from '@gravitee/graphene-core/icons';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+
+import { useHasPermission } from '@gravitee/gamma-modules-sdk';
 
 import { GroupDeleteDialog } from '../features/groups/components/GroupDeleteDialog';
 import { GroupSheet, type GroupFormValues } from '../features/groups/components/GroupSheet';
@@ -26,7 +27,7 @@ import { GroupsRequireGroupSetting } from '../features/groups/components/GroupsR
 import { GroupsTable } from '../features/groups/components/GroupsTable';
 import { useCreateGroup, useDeleteGroup, useUpdateGroup } from '../features/groups/hooks/useGroupMutations';
 import { useGroupRoles } from '../features/groups/hooks/useGroupRoles';
-import { useGroupsPaged } from '../features/groups/hooks/useGroups';
+import { useAllGroupNames, useGroupsPaged } from '../features/groups/hooks/useGroups';
 import type { Group, UpdateGroupPayload } from '../features/groups/types/group';
 import { buildEventRules, buildRolesMap, parseMaxInvitation } from '../features/groups/utils/groupPayload';
 import {
@@ -59,6 +60,8 @@ export function GroupsPage() {
     }, [search]);
 
     const { data, isLoading, isError } = useGroupsPaged({ query: debouncedSearch, page, size: pageSize });
+    const sheetOpen = sheet.type === 'create' || sheet.type === 'edit';
+    const { names: existingGroupNames } = useAllGroupNames(sheetOpen);
     const { apiRoles, apiRolesLoading, applicationRoles, applicationRolesLoading, apiProductRoles, apiProductRolesLoading } =
         useGroupRoles();
 
@@ -231,6 +234,7 @@ export function GroupsPage() {
                 applicationRoles={applicationRoles}
                 apiProductRoles={apiProductRoles}
                 rolesLoading={apiRolesLoading || applicationRolesLoading || apiProductRolesLoading}
+                existingGroupNames={existingGroupNames}
                 onClose={closeSheet}
                 onSubmit={sheet.type === 'edit' ? handleUpdate : handleCreate}
                 isSaving={createMutation.isPending || updateMutation.isPending}

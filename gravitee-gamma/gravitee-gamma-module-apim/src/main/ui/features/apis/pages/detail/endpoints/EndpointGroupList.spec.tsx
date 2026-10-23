@@ -97,6 +97,66 @@ describe('EndpointGroupList', () => {
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     describe('rendering', () => {
+        it('renders Secondary badge for secondary endpoints', () => {
+            const secondaryEp = {
+                name: 'fallback',
+                type: 'http-proxy',
+                weight: 1,
+                secondary: true,
+                configuration: { target: 'https://fallback.example.com' },
+            };
+            render(
+                <EndpointGroupList
+                    {...makeProps({
+                        groups: [
+                            {
+                                name: 'default-group',
+                                type: 'http-proxy',
+                                loadBalancer: { type: 'ROUND_ROBIN' },
+                                endpoints: [EP_A, secondaryEp],
+                            },
+                        ],
+                    })}
+                />,
+            );
+
+            expect(screen.getByText('Options')).toBeInTheDocument();
+            expect(screen.getByText('Secondary')).toBeInTheDocument();
+        });
+
+        it('hides Secondary badge for non-http-proxy endpoints even when secondary is true', () => {
+            render(
+                <EndpointGroupList
+                    {...makeProps({
+                        groups: [
+                            {
+                                name: 'kafka-group',
+                                type: 'kafka',
+                                loadBalancer: { type: 'ROUND_ROBIN' },
+                                endpoints: [
+                                    {
+                                        name: 'kafka-ep',
+                                        type: 'kafka',
+                                        weight: 1,
+                                        secondary: true,
+                                        configuration: { bootstrapServers: 'localhost:9092' },
+                                    },
+                                ],
+                            },
+                        ],
+                    })}
+                />,
+            );
+
+            expect(screen.queryByText('Options')).not.toBeInTheDocument();
+            expect(screen.queryByText('Secondary')).not.toBeInTheDocument();
+        });
+
+        it('hides Options column when no endpoint has options badges', () => {
+            render(<EndpointGroupList {...makeProps()} />);
+            expect(screen.queryByText('Options')).not.toBeInTheDocument();
+        });
+
         it('renders each group name', () => {
             render(<EndpointGroupList {...makeProps()} />);
             expect(screen.getByText('default-group')).toBeInTheDocument();
@@ -152,15 +212,15 @@ describe('EndpointGroupList', () => {
             endpoints: [TCP_EP],
         };
 
-        it('shows the "TCP proxy" type label', () => {
+        it('shows the "TCP Proxy" type label', () => {
             render(<EndpointGroupList {...makeProps({ groups: [TCP_GROUP] })} />);
-            expect(screen.getByText('TCP proxy')).toBeInTheDocument();
+            expect(screen.getByText('TCP Proxy')).toBeInTheDocument();
         });
 
-        it('does not render a Target URL column or value for tcp-proxy groups', () => {
+        it('renders a Target column and host/port value for tcp-proxy groups', () => {
             render(<EndpointGroupList {...makeProps({ groups: [TCP_GROUP] })} />);
-            expect(screen.queryByText('Target URL')).not.toBeInTheDocument();
-            expect(screen.queryByText('backend.example.com:9090')).not.toBeInTheDocument();
+            expect(screen.getByText('Target')).toBeInTheDocument();
+            expect(screen.getByText('backend.example.com:9090')).toBeInTheDocument();
         });
 
         it('still renders the endpoint name and weight for tcp-proxy groups', () => {

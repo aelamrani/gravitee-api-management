@@ -85,7 +85,15 @@ public class Audit {
         AUTHORIZATION_ENTITY,
         AUTHORIZATION_SCIM_CONNECTION,
         AUTHORIZATION_SCIM_SYNC_RUN,
+        AUTHORIZATION_PDP,
+        AUTHORIZATION_SCHEMA,
         AI_WORKSPACE_COMPONENT,
+        /**
+         * Classifies the change instead of naming an entity it was made against, so it is not a target:
+         * any audit entry, whatever its type, can carry it.
+         */
+        ENCRYPTED,
+        MCP_SERVER,
     }
 
     private String id;

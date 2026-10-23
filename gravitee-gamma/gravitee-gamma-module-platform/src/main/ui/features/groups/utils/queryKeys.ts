@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-import { organizationUserSearchKeys } from '../../../shared/utils/queryKeys';
+import { environmentPortalKeys, organizationUserSearchKeys } from '../../../shared/utils/queryKeys';
 import type { GroupMembershipType } from '../types/group';
 
 export const groupKeys = {
     all: ['environment-groups'] as const,
     list: (envId: string, query: string, page: number, size: number) => [...groupKeys.all, 'list', envId, query, page, size] as const,
+    allNames: (envId: string) => [...groupKeys.all, 'all-names', envId] as const,
     detail: (envId: string, groupId: string) => [...groupKeys.all, 'detail', envId, groupId] as const,
     members: (envId: string, groupId: string) => [...groupKeys.all, 'members', envId, groupId] as const,
     invitations: (envId: string, groupId: string) => [...groupKeys.all, 'invitations', envId, groupId] as const,
@@ -27,5 +28,5 @@ export const groupKeys = {
         [...groupKeys.all, 'memberships', envId, groupId, type] as const,
     roles: (scope: 'API' | 'APPLICATION' | 'API_PRODUCT' | 'INTEGRATION' | 'CLUSTER' | 'EXPLORER') => ['org-roles', scope] as const,
     userSearch: organizationUserSearchKeys.search,
-    settings: (envId: string) => ['environment-portal', envId] as const,
+    settings: environmentPortalKeys.detail,
 } as const;

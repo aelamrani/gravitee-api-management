@@ -12,10 +12,6 @@ parameters:
     type: boolean
     default: true
     description: Run in dry run mode?
-  docker_tag_as_latest:
-    type: boolean
-    default: false
-    description: Is this version the latest version available?
   graviteeio_version:
     type: string
     default: ""
@@ -77,6 +73,10 @@ commands:
               -u "bot:${AZURE_ARTIFACTS_PAT}" \
               "https://pkgs.dev.azure.com/graviteeio/packages/_packaging/gravitee/maven/v1/io/gravitee/canary/feed-canary/1.0.0/feed-canary-1.0.0.pom") || CODE=000
 
+            # job-setup's Maven check reads this to tell an outage here from its own settings wiring, and
+            # print only the cause that applies. A status code, so nothing the shell can expand.
+            echo "export AZURE_FEED_HTTP_CODE='${CODE}'" >> "$BASH_ENV"
+
             case "$CODE" in
               200) echo "The feed resolves the canary." ;;
               401) echo "401 — the feed rejected the token." >&2; exit 1 ;;
@@ -97,9 +97,9 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
-            - gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}
-            - gravitee-api-management-v15-<< parameters.jobName >>-master
+            - gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
+            - gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}
+            - gravitee-api-management-v16-<< parameters.jobName >>-master-
     description: Restore Maven cache for a dedicated job
   cmd-prepare-gpg:
     steps:
@@ -123,15 +123,24 @@ commands:
       - run:
           name: Exclude all APIM artefacts from cache.
           command: rm -rf ~/.m2/repository/io/gravitee/apim
+          when: always
       - run:
           name: Drop failed resolution markers from cache.
           command: find ~/.m2 -name '*.lastUpdated' -delete
+          when: always
       - save_cache:
-          key: gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
+          key: gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
           paths:
             - ~/.m2
           when: always
     description: Save Maven cache for a dedicated job
+  cmd-install-yarn:
+    steps:
+      - run:
+          name: Enable Corepack and Set Yarn Version
+          command: |-
+            corepack enable || sudo corepack enable
+                    yarn set version 4.1.1
 jobs:
   job-setup:
     docker:
@@ -155,15 +164,23 @@ jobs:
       - run:
           name: Check Maven resolves from the feed
           command: |-
-            if ! mvn -B -q -s .gravitee.settings.xml \
+            if ! mvn -B -q -N -s .gravitee.settings.xml \
               org.apache.maven.plugins:maven-dependency-plugin:3.8.1:get \
               -Dartifact=io.gravitee.canary:feed-canary:1.0.0:pom; then
               echo "Maven could not resolve the canary from the feed." >&2
-              echo "The token itself was accepted over HTTPS a step earlier, so what is left is the" >&2
-              echo "settings wiring: a <server> id that does not match the repository id, or" >&2
-              # Single quotes: the shell would try to expand this one, and a dot is not a valid
-              # variable name — the message would come out as a bad substitution instead.
-              echo '${env.AZURE_ARTIFACTS_PAT} not being interpolated.' >&2
+              # The HTTPS check one step above exported what the feed answered, so this prints the one
+              # cause that applies instead of leaving the reader to match two messages against each other.
+              if [ "${AZURE_FEED_HTTP_CODE}" = "200" ]; then
+                echo "The feed answered 200 to that check, so the token is accepted and what is left is the" >&2
+                echo "settings wiring: a <server> id that does not match the repository id, or" >&2
+                # Single quotes: the shell would try to expand this one, and a dot is not a valid
+                # variable name — the message would come out as a bad substitution instead.
+                echo '${env.AZURE_ARTIFACTS_PAT} not being interpolated.' >&2
+              else
+                echo "The feed answered HTTP ${AZURE_FEED_HTTP_CODE} to that check: this is that outage." >&2
+                echo "Artifactory takes over for the rest of the build, which is why that step carried on;" >&2
+                echo "the canary exists on the feed and nowhere else, so nothing can serve it here." >&2
+              fi
               exit 1
             fi
 
@@ -172,7 +189,7 @@ jobs:
           root: .
           paths:
             - .gravitee.settings.xml
-  job-nexus-staging:
+  job-publish-release:
     docker:
       - image: cimg/openjdk:25.0.3-node
     resource_class: xlarge
@@ -182,16 +199,17 @@ jobs:
           name: Checkout tag core_4.13.0
           command: git checkout core_4.13.0
       - cmd-restore-maven-job-cache:
-          jobName: job-nexus-staging
+          jobName: job-publish-release
       - attach_workspace:
           at: .
       - cmd-prepare-gpg
+      - cmd-install-yarn
       - cmd-azure-artifacts-token
       - run:
-          name: Release on Nexus
-          command: mvn clean deploy --activate-profiles gravitee-release --batch-mode -T 4 -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=true --settings .gravitee.settings.xml --update-snapshots
+          name: Maven deploy to the Azure feed (releases)
+          command: mvn clean deploy --activate-profiles gio-release --batch-mode -T 4 -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=true --settings .gravitee.settings.xml --update-snapshots -DaltDeploymentRepository=azure-artifacts-gravitee::https://pkgs.dev.azure.com/graviteeio/packages/_packaging/gravitee/maven/v1
       - cmd-save-maven-job-cache:
-          jobName: job-nexus-staging
+          jobName: job-publish-release
   job-pin-core:
     docker:
       - image: cimg/base:stable
@@ -201,10 +219,6 @@ jobs:
       - add_ssh_keys:
           fingerprints:
             - ac:88:23:8f:c6:0f:7d:f0:fc:df:73:20:34:56:02:6c
-      - keeper/env-export:
-          secret-url: keeper://TIlcGPFq4rN5GvgnZb9hng/field/password
-          var-name: GITHUB_TOKEN
-      - gh/setup
       - keeper/env-export:
           secret-url: keeper://IZd-yvsMopfQEa_0j1SDvg/field/login
           var-name: GIT_USER_NAME
@@ -221,10 +235,10 @@ jobs:
           command: |-
             # The lane checked out the tag, and the branch has moved on since — it carries the commit
             # reopening the next development version. The pin has to be advanced there, not on the tag.
-            # --no-track: a remote starting point sets an upstream on its own, and this branch is pushed
+            # --no-track: a remote starting point sets an upstream on its own, and the branch is pushed
             # explicitly below.
             git fetch origin 4.13.x
-            git checkout -B chore/pin-core-4.13.x --no-track origin/4.13.x
+            git checkout -B 4.13.x --no-track origin/4.13.x
 
             sed -i "s#<apim.core.version>.*</apim.core.version>#<apim.core.version>4.13.0</apim.core.version>#" gravitee-apim-distribution/pom.xml
 
@@ -242,25 +256,10 @@ jobs:
             fi
 
             git add --update
-            git commit -m "chore(distribution): pin core 4.13.0"
-            # Rebuilt from the base branch every time, so the push replaces whatever was there. A release that
-            # lands before the previous pin was merged updates that pull request instead of opening a rival —
-            # only the newest core is worth reviewing. Anything pushed onto this branch by hand goes with it.
-            git push --force origin chore/pin-core-4.13.x
-
-            TITLE="chore(distribution): pin core 4.13.0"
-            BODY="Core 4.13.0 has been published. Merging this makes the distribution assemble it.
-
-            Its integration tests run against the pinned core, so a green build here is the evidence that this core is ready to ship. Until it is merged, 4.13.x keeps releasing on the core it already pins.
-
-            This branch is rebuilt on every core release: a newer core replaces this one rather than opening a second pull request."
-
-            if [ "$(gh pr list --head chore/pin-core-4.13.x --state open --json number --jq 'length')" = "0" ]; then
-              gh pr create --base 4.13.x --head chore/pin-core-4.13.x --title "$TITLE" --body "$BODY"
-            else
-              echo "A pin pull request is already open on chore/pin-core-4.13.x, bringing it up to core 4.13.0."
-              gh pr edit chore/pin-core-4.13.x --title "$TITLE" --body "$BODY"
-            fi
+            git commit -m 'chore(distribution): pin core 4.13.0 [skip ci]'
+            # No --force, unlike the pull request branch this replaced: a commit that landed on 4.13.x since
+            # the fetch above fails this push instead of being overwritten by the pin.
+            git push origin 4.13.x
 workflows:
   core_release:
     jobs:
@@ -275,10 +274,10 @@ workflows:
             tags:
               only:
                 - /^core_(\d+\.\d+\.\d+(-[a-z]+\.\d+)?)$/
-      - job-nexus-staging:
+      - job-publish-release:
           context:
             - cicd-orchestrator
-          name: Nexus staging
+          name: Publish release
           requires:
             - Setup
           filters:
@@ -291,9 +290,9 @@ workflows:
       - job-pin-core:
           context:
             - cicd-orchestrator
-          name: Open the pinning pull request
+          name: Pin the core
           requires:
-            - Nexus staging
+            - Publish release
           filters:
             branches:
               ignore:
@@ -303,4 +302,3 @@ workflows:
                 - /^core_(\d+\.\d+\.\d+(-[a-z]+\.\d+)?)$/
 orbs:
   keeper: gravitee-io/keeper@0.7.1
-  gh: circleci/github-cli@1.0.5

@@ -46,56 +46,17 @@ const checks = [
     },
     {
         name: "gravitee-node-version-consistency",
-        location: "pom.xml",
-        why: "Gravitee node plugins defined in Helm values.yaml needs to be consistent with the version defined in the pom.xml.",
+        location: "gravitee-apim-distribution/pom.xml",
+        why: "gravitee-node.version must be the same in pom.xml and gravitee-apim-distribution/pom.xml: the distribution ships the Hazelcast cache and cluster plugins of gravitee-node at its own copy of that version.",
         checkFn: async (check) => {
-            const pomFile = git.modified_files
-                .filter((file) => file === check.location)
-                .map((file) => `../../${file}`)
-                .shift();
+            const poms = ["pom.xml", check.location];
+            if (!git.modified_files.some((file) => poms.includes(file))) {
+                return;
+            }
 
-            const extractGraviteeNodeVersionFromPom = (file) => {
-                const versionRegex = /<gravitee-node\.version>(.*?)<\/gravitee-node\.version>/;
-                const match = fs.readFileSync(file, "utf8").match(versionRegex);
-
-                if (match && match[1]) {
-                    return match[1];
-                }
-
-                return undefined;
-            };
-
-            const checkGraviteeNodePluginVersion = (pluginRegEx, version) => {
-                const helmValues = fs.readFileSync("../../helm/values.yaml", "utf8");
-                for (const pluginRegex of pluginRegEx) {
-                    const match = helmValues.match(pluginRegex);
-                    if (match && match[1] !== version) {
-                        return false;
-                    }
-                }
-
-                return true;
-            };
-
-            if (pomFile) {
-                try {
-                    const versionNumber = extractGraviteeNodeVersionFromPom(pomFile);
-                    if (versionNumber) {
-                        if (
-                            !checkGraviteeNodePluginVersion(
-                                [
-                                    /https:\/\/download.gravitee.io\/plugins\/node-cache\/gravitee-node-cache-plugin-hazelcast\/gravitee-node-cache-plugin-hazelcast-(.*?).zip/,
-                                    /https:\/\/download.gravitee.io\/plugins\/node-cluster\/gravitee-node-cluster-plugin-hazelcast\/gravitee-node-cluster-plugin-hazelcast-(.*?).zip/,
-                                ],
-                                versionNumber
-                            )
-                        ) {
-                            fail(check.why, check.location);
-                        }
-                    }
-                } catch (err) {
-                    console.error("Error reading the file:", err);
-                }
+            const [engineVersion, distributionVersion] = poms.map((pom) => readGraviteeNodeVersion(`../../${pom}`));
+            if (engineVersion !== distributionVersion) {
+                fail(`${check.why} Found ${engineVersion} in pom.xml and ${distributionVersion} in ${check.location}.`, check.location);
             }
         },
     },
@@ -127,6 +88,11 @@ async function addPrComment(message) {
         path: message.file,
         position: 1,
     });
+}
+
+function readGraviteeNodeVersion(pom) {
+    const match = fs.readFileSync(pom, "utf8").match(/<gravitee-node\.version>(.*?)<\/gravitee-node\.version>/);
+    return match ? match[1] : undefined;
 }
 
 function getModifiedFiles(path) {

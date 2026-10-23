@@ -26,6 +26,7 @@ import io.gravitee.apim.core.analytics_engine.exception.InvalidQueryException;
 import io.gravitee.apim.core.analytics_engine.model.*;
 import io.gravitee.apim.core.analytics_engine.query_service.AnalyticsDefinitionQueryService;
 import io.gravitee.apim.core.observability.model.FilterOperator;
+import io.gravitee.apim.infra.adapter.AnalyticsMeasuresAdapter;
 import io.gravitee.apim.infra.domain_service.analytics_engine.definition.AnalyticsDefinitionYAMLQueryService;
 import java.time.Instant;
 import java.util.Arrays;
@@ -36,6 +37,8 @@ import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * @author GraviteeSource Team
@@ -214,8 +217,8 @@ class AnalyticsQueryValidatorTest {
                 // A version detached from its library is not a readable grouping — several clients share
                 // version numbers — so it narrows a library on the logs screen and has no analytics dimension.
                 FilterSpec.Name.NATIVE_CLIENT_SOFTWARE_VERSION,
-                // The path filter is split by signal: URI reads uri, the only path a log document carries,
-                // and HTTP_PATH reads the templated path-info an analytics query groups by.
+                // The path filter is split by signal: URI reads uri, the whole request target, and
+                // HTTP_PATH reads path-info, the path an analytics query groups by.
                 FilterSpec.Name.URI
             );
         }
@@ -244,8 +247,56 @@ class AnalyticsQueryValidatorTest {
         }
     }
 
+    @Nested
+    class UnsupportedAnalyticsOperators {
+
+        @Test
+        void should_reject_an_operator_the_analytics_engine_cannot_evaluate() {
+            var request = measuresRequestWith(new Filter(FilterSpec.Name.HTTP_METHOD, FilterOperator.CONTAINS, "GET"));
+
+            assertThatThrownBy(() -> validator.validateMeasuresRequest(request))
+                .isInstanceOf(InvalidQueryException.class)
+                .hasMessage("Operator 'CONTAINS' is not supported for analytics queries on filter 'HTTP_METHOD'");
+        }
+
+        @ParameterizedTest
+        @EnumSource(FilterOperator.class)
+        void should_accept_exactly_the_operators_the_engine_translates(FilterOperator operator) {
+            Object value = operator == FilterOperator.IN ? List.of("GET") : "GET";
+            var request = measuresRequestWith(new Filter(FilterSpec.Name.HTTP_METHOD, operator, value));
+
+            assertThat(accepts(request)).isEqualTo(translates(operator));
+        }
+
+        private boolean accepts(MeasuresRequest request) {
+            try {
+                validator.validateMeasuresRequest(request);
+                return true;
+            } catch (InvalidQueryException e) {
+                return false;
+            }
+        }
+
+        private static boolean translates(FilterOperator operator) {
+            try {
+                AnalyticsMeasuresAdapter.INSTANCE.toFilterOperator(operator);
+                return true;
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
+        }
+
+        private static MeasuresRequest measuresRequestWith(Filter filter) {
+            return new MeasuresRequest(
+                VALID_TIME_RANGE,
+                List.of(filter),
+                List.of(new MetricMeasuresRequest(MetricSpec.Name.HTTP_REQUESTS, List.of(MetricSpec.Measure.COUNT)))
+            );
+        }
+    }
+
     @Test
-    void should_accept_an_authz_decision_facet_on_the_authz_decisions_metric() {
+    void should_accept_an_authz_decision_facet_on_the_decisions_metric() {
         var request = new FacetsRequest(
             VALID_TIME_RANGE,
             List.of(),
@@ -256,6 +307,30 @@ class AnalyticsQueryValidatorTest {
         );
 
         assertThatCode(() -> validator.validateFacetsRequest(request)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void should_accept_the_pdp_facet_on_every_metric_read_from_decisions() {
+        for (var metric : List.of(
+            MetricSpec.Name.AUTHZ_DECISIONS,
+            MetricSpec.Name.AUTHZ_PERMITS,
+            MetricSpec.Name.AUTHZ_FORBIDS,
+            MetricSpec.Name.AUTHZ_NOT_APPLICABLE,
+            MetricSpec.Name.AUTHZ_FAILURES
+        )) {
+            var request = new FacetsRequest(
+                VALID_TIME_RANGE,
+                List.of(new Filter(FilterSpec.Name.AUTHZ_PDP, FilterOperator.IN, List.of("pdp-b"))),
+                List.of(new FacetMetricMeasuresRequest(metric, List.of(MetricSpec.Measure.COUNT), List.of())),
+                List.of(FacetSpec.Name.AUTHZ_PDP),
+                null,
+                List.of()
+            );
+
+            assertThatCode(() -> validator.validateFacetsRequest(request))
+                .as("%s by AUTHZ_PDP", metric)
+                .doesNotThrowAnyException();
+        }
     }
 
     @Test

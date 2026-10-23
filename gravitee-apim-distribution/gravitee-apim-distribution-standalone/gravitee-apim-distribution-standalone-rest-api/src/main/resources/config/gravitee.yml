@@ -13,6 +13,10 @@
 
 # Console settings
 #console:
+#  authentication:
+#    expose:
+#      accessToken: true
+#      idToken: true
 ## Pendo Analysis Tool
 # To make our SaaS offering easier to use, we now have the ability to track activity in Pendo. This is disabled by
 # default, but if you'd like to help us in this journey, don't hesitate to reach us to get our key ;)
@@ -504,8 +508,9 @@ security:
   # trustAll: false
   providers:  # authentication providers
     - type: memory
-      # allow search results to display the user email. Be careful, It may be contrary to the user privacy.
-#      allow-email-in-search-results: true
+      # The user search (used to add members) never returns the user email unless this is set to true.
+      # Be careful, it may be contrary to the user privacy.
+      allow-email-in-search-results: false
       # password encoding/hashing algorithm. One of:
       # - bcrypt : passwords are hashed with bcrypt (supports only $2a$ algorithm)
       # - none : passwords are not hashed/encrypted
@@ -549,8 +554,9 @@ security:
           #email:
     # Enable authentication using internal repository
     - type: gravitee
-      # allow search results to display the user email. Be careful, It may be contrary to the user privacy.
-#      allow-email-in-search-results: true
+      # The user search (used to add members) never returns the user email unless this is set to true.
+      # Be careful, it may be contrary to the user privacy.
+      allow-email-in-search-results: false
     # Enable authentication using an LDAP/Active Directory
 #    - type: ldap
       # This is default LDAP configuration for ApacheDS
@@ -583,8 +589,19 @@ security:
 #              GRAVITEE-USERS: USER
 #            }
 #      lookup:
-         # allow search results to display the user email. Be careful, It may be contrary to the user privacy.
-#         allow-email-in-search-results: true
+         # The user search (used to add members) never returns the user email unless this is set to true.
+         # Be careful, it may be contrary to the user privacy.
+#        allow-email-in-search-results: false
+         # Restrict the user search to the listed organizations and environments, by request scope: an organization id
+         # for organization-level requests (the console user search of that organization), or
+         # <organization id>:<environment id> for environment-level requests (the portal user search of that
+         # environment). Ids, not hrids. An organization entry does not cover the portals of its environments: list
+         # both forms when both are needed. Without this list the directory is searchable from every organization and
+         # portal. Unknown ids never match. Authentication is not affected. A comma-separated string is accepted as
+         # well, for example through an environment variable.
+#        activations:
+#          - DEFAULT
+#          - DEFAULT:DEFAULT
 #        user:
           # Search base for user searches. Defaults to "". Only used with user filter.
           # It should be relative to the Base DN. If the whole DN is o=user accounts,c=io,o=gravitee then the base should be like this:
@@ -628,6 +645,10 @@ email:
 #  path: ${gravitee.home}/templates
 
 #portal:
+#  authentication:
+#    expose:
+#      accessToken: true
+#      idToken: true
 #  themes:
 #    path: ${gravitee.home}/themes
   # Allows domains to be used while generating some emails from the portal. ie. registration, forget password
@@ -858,6 +879,10 @@ notifiers:
 #      management: ${http.api.management.entrypoint}
 #      portal: ${http.api.portal.entrypoint}
 #      gamma: ${http.api.gamma.entrypoint}
+#  edge:
+#    # URL of the Edge reactor, proposed to the Edge module when an environment is set up (the per-environment value stays authoritative).
+#    # The Helm chart sets it from gateway.services.edge.ingress
+#    reactorUrl: https://edge-reactor.example.com
 #  standalone:
 #    console:
 #      url: http://localhost:3000
@@ -884,6 +909,15 @@ notifiers:
 #           url: http://localhost:4200
 #         - orgId: example
 #           url: http:/localhost:4201
+#    # URL of the Edge reactor per environment, proposed to the Edge module when an environment is set up (the per-environment value stays authoritative).
+#    # Resolution for an environment: the urls entry whose envId matches, then url (DEFAULT environment only), then installation.edge.reactorUrl (any environment).
+#    edge-reactor:
+#      url: https://edge-reactor.example.com
+#      urls:
+#         - envId: DEFAULT
+#           url: https://edge-reactor.example.com
+#         - envId: example
+#           url: https://edge-reactor-example.example.com
 #  multi-tenant:
 #    # Specify the access points of your installation, mandatory if you want to connect it to Cockpit with a multi-tenant installation
 #    # You can use template variable such as {account}, {organization} or {environment}

@@ -35,6 +35,7 @@ import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.model.permissions.RoleScope;
 import io.gravitee.rest.api.model.permissions.SystemRole;
 import io.gravitee.rest.api.model.v4.api.GenericApiEntity;
+import io.gravitee.rest.api.rest.security.CreateOrUpdateAuthorization;
 import io.gravitee.rest.api.service.ApiService;
 import io.gravitee.rest.api.service.MembershipService;
 import io.gravitee.rest.api.service.PermissionService;
@@ -146,6 +147,31 @@ public abstract class AbstractResource {
         return isAuthenticated() && permissionService.hasPermission(executionContext, permission, referenceId, acls);
     }
 
+    /**
+     * @param existingId the id of the object the import targets, or {@code null} when it does not exist yet
+     * @see CreateOrUpdateAuthorization#require
+     */
+    protected void requireCreateOrUpdate(RolePermission createPermission, RolePermission updatePermission, String existingId) {
+        CreateOrUpdateAuthorization.require(
+            permissionService,
+            GraviteeContext.getExecutionContext(),
+            createPermission,
+            updatePermission,
+            existingId
+        );
+    }
+
+    /**
+     * Authorizes a create-or-update import of an object held by another one, such as an API subscription: {@code permission}
+     * CREATE on {@code referenceId} when the object is absent, UPDATE when it is present.
+     */
+    protected void requireCreateOrUpdate(RolePermission permission, String referenceId, boolean exists) {
+        var action = exists ? RolePermissionAction.UPDATE : RolePermissionAction.CREATE;
+        if (!hasPermission(GraviteeContext.getExecutionContext(), permission, referenceId, action)) {
+            throw new ForbiddenAccessException();
+        }
+    }
+
     protected boolean canReadAPIConfiguration() {
         if (!isAdmin()) {
             return retrieveApiMembership().findFirst().isPresent();
@@ -153,6 +179,7 @@ public abstract class AbstractResource {
         return true;
     }
 
+    /** Dashboard definitions only: analytics and filter endpoints answer from the rows the caller reads. */
     protected boolean canReadDashboards() {
         var executionContext = GraviteeContext.getExecutionContext();
         return (
@@ -280,6 +307,22 @@ public abstract class AbstractResource {
             requestUriBuilder.path(path);
         }
         return requestUriBuilder.build();
+    }
+
+    /**
+     * The location of an item created by an action served next to its collection, at {@code …/collection/_action}:
+     * the item is named under the collection, where it is served, while {@link #getLocationHeader} would name it under
+     * the action.
+     */
+    protected URI getCollectionLocationHeader(String... paths) {
+        var requestUri = this.uriInfo.getRequestUri();
+        var actionPath = requestUri.getPath().replaceFirst("/+$", "");
+        var collectionPath = actionPath.substring(0, actionPath.lastIndexOf('/'));
+        var locationBuilder = UriBuilder.fromUri(requestUri).replacePath(collectionPath).replaceQuery(null);
+        for (String path : paths) {
+            locationBuilder.path(path);
+        }
+        return locationBuilder.build();
     }
 
     protected Response.ResponseBuilder applyCacheHeaders(Response.ResponseBuilder builder, Date updatedAt) {

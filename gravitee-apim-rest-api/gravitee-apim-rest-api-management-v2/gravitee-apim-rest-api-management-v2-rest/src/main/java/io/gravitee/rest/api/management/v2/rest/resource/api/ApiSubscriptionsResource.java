@@ -22,6 +22,7 @@ import io.gravitee.apim.core.audit.model.AuditActor;
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.subscription.model.SubscriptionReferenceType;
 import io.gravitee.apim.core.subscription.model.crd.SubscriptionCRDSpec;
+import io.gravitee.apim.core.subscription.query_service.SubscriptionQueryService;
 import io.gravitee.apim.core.subscription.use_case.AcceptSubscriptionUseCase;
 import io.gravitee.apim.core.subscription.use_case.CloseSubscriptionUseCase;
 import io.gravitee.apim.core.subscription.use_case.DeleteSubscriptionSpecUseCase;
@@ -56,7 +57,9 @@ import io.gravitee.rest.api.service.SubscriptionService;
 import io.gravitee.rest.api.service.UserService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.gravitee.rest.api.service.exceptions.InvalidApplicationApiKeyModeException;
+import io.gravitee.rest.api.service.exceptions.PlanNotFoundException;
 import io.gravitee.rest.api.service.v4.PlanSearchService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -141,6 +144,9 @@ public class ApiSubscriptionsResource extends AbstractResource {
 
     @Inject
     private ImportSubscriptionCRDUseCase importSubscriptionCRDUseCase;
+
+    @Inject
+    private SubscriptionQueryService subscriptionQueryService;
 
     @Inject
     private DeleteSubscriptionSpecUseCase deleteSubscriptionSpecUseCase;
@@ -243,6 +249,12 @@ public class ApiSubscriptionsResource extends AbstractResource {
     @Permissions({ @Permission(value = RolePermission.API_SUBSCRIPTION, acls = { RolePermissionAction.UPDATE }) })
     public Response resumeFailedSubscription(@PathParam("subscriptionId") String subscriptionId) {
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        SubscriptionEntity subscriptionEntity = subscriptionService.findById(subscriptionId);
+
+        if (!isSubscriptionOfApi(subscriptionEntity)) {
+            return Response.status(Response.Status.NOT_FOUND).entity(subscriptionNotFoundError(subscriptionId)).build();
+        }
+
         SubscriptionEntity updatedSubscriptionEntity = subscriptionService.resumeFailed(executionContext, subscriptionId);
         return Response.ok(subscriptionMapper.map(updatedSubscriptionEntity)).build();
     }
@@ -261,6 +273,20 @@ public class ApiSubscriptionsResource extends AbstractResource {
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(subscriptionInvalid("You are not allowed to provide a custom API Key"))
                 .build();
+        }
+
+        if (!apiId.equals(planSearchService.findById(executionContext, createSubscription.getPlanId()).getReferenceId())) {
+            throw new PlanNotFoundException(createSubscription.getPlanId());
+        }
+        if (
+            !hasPermission(
+                executionContext,
+                RolePermission.APPLICATION_SUBSCRIPTION,
+                createSubscription.getApplicationId(),
+                RolePermissionAction.CREATE
+            )
+        ) {
+            throw new ForbiddenAccessException();
         }
 
         final NewSubscriptionEntity newSubscriptionEntity = subscriptionMapper.map(createSubscription);
@@ -343,16 +369,34 @@ public class ApiSubscriptionsResource extends AbstractResource {
     @Path("/spec/_import")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
+    @Permissions(
+        { @Permission(value = RolePermission.API_SUBSCRIPTION, acls = { RolePermissionAction.CREATE, RolePermissionAction.UPDATE }) }
+    )
     public Response importSubscriptionSpec(@Valid SubscriptionCRDSpec spec) {
+        var existing = subscriptionQueryService.findByIdAndReferenceIdAndReferenceType(spec.getId(), apiId, SubscriptionReferenceType.API);
+        requireCreateOrUpdate(RolePermission.API_SUBSCRIPTION, apiId, existing.isPresent());
+        // Creating or restoring a subscription gives the application access, so the caller must be allowed to subscribe it
+        if (
+            existing.map(subscription -> subscription.isClosed()).orElse(true) &&
+            !hasPermission(
+                GraviteeContext.getExecutionContext(),
+                RolePermission.APPLICATION_SUBSCRIPTION,
+                spec.getApplicationId(),
+                RolePermissionAction.CREATE
+            )
+        ) {
+            throw new ForbiddenAccessException();
+        }
         return Response.ok(
-            importSubscriptionCRDUseCase.execute(new ImportSubscriptionCRDUseCase.Input(getAuditInfo(), spec)).status()
+            importSubscriptionCRDUseCase.execute(new ImportSubscriptionCRDUseCase.Input(getAuditInfo(), apiId, spec)).status()
         ).build();
     }
 
     @DELETE
     @Path("/spec/{id}")
+    @Permissions({ @Permission(value = RolePermission.API_SUBSCRIPTION, acls = { RolePermissionAction.DELETE }) })
     public Response deleteSubscriptionSpec(@PathParam("id") String id) {
-        deleteSubscriptionSpecUseCase.execute(new DeleteSubscriptionSpecUseCase.Input(getAuditInfo(), id));
+        deleteSubscriptionSpecUseCase.execute(new DeleteSubscriptionSpecUseCase.Input(getAuditInfo(), apiId, id));
         return Response.noContent().build();
     }
 
@@ -459,7 +503,7 @@ public class ApiSubscriptionsResource extends AbstractResource {
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
         SubscriptionEntity subscriptionEntity = subscriptionService.findById(subscriptionId);
 
-        if (!apiId.equals(subscriptionEntity.getReferenceId())) {
+        if (!isSubscriptionOfApi(subscriptionEntity)) {
             return Response.status(Response.Status.NOT_FOUND).entity(subscriptionNotFoundError(subscriptionId)).build();
         }
 
@@ -474,7 +518,7 @@ public class ApiSubscriptionsResource extends AbstractResource {
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
         SubscriptionEntity subscriptionEntity = subscriptionService.findById(subscriptionId);
 
-        if (!apiId.equals(subscriptionEntity.getReferenceId())) {
+        if (!isSubscriptionOfApi(subscriptionEntity)) {
             return Response.status(Response.Status.NOT_FOUND).entity(subscriptionNotFoundError(subscriptionId)).build();
         }
 
@@ -709,6 +753,13 @@ public class ApiSubscriptionsResource extends AbstractResource {
         apiKeyEntity = apiKeyService.reactivate(executionContext, apiKeyEntity);
 
         return Response.ok(subscriptionMapper.mapToApiKey(apiKeyEntity)).build();
+    }
+
+    private boolean isSubscriptionOfApi(SubscriptionEntity subscriptionEntity) {
+        return (
+            apiId.equals(subscriptionEntity.getReferenceId()) &&
+            SubscriptionReferenceType.API.name().equals(subscriptionEntity.getReferenceType())
+        );
     }
 
     private Error subscriptionNotFoundError(String subscriptionId) {

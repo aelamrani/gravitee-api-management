@@ -15,6 +15,9 @@
  */
 package io.gravitee.apim.infra.domain_service.member;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 import io.gravitee.apim.core.audit.model.AuditActor;
@@ -26,10 +29,14 @@ import io.gravitee.rest.api.model.MemberEntity;
 import io.gravitee.rest.api.model.MembershipMemberType;
 import io.gravitee.rest.api.model.MembershipReferenceType;
 import io.gravitee.rest.api.model.RoleEntity;
+import io.gravitee.rest.api.model.permissions.RolePermission;
+import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.model.permissions.RoleScope;
 import io.gravitee.rest.api.service.MembershipService;
+import io.gravitee.rest.api.service.PermissionService;
 import io.gravitee.rest.api.service.RoleService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.gravitee.rest.api.service.exceptions.RoleNotFoundException;
 import java.util.List;
 import java.util.Optional;
@@ -64,11 +71,14 @@ class CRDMembersDomainServiceImplTest {
     @Mock
     RoleService roleService;
 
+    @Mock
+    PermissionService permissionService;
+
     CRDMembersDomainService cut;
 
     @BeforeEach
     void setUp() {
-        cut = new CRDMembersDomainServiceImpl(membershipService, roleService);
+        cut = new CRDMembersDomainServiceImpl(membershipService, roleService, permissionService);
     }
 
     @Nested
@@ -79,6 +89,15 @@ class CRDMembersDomainServiceImplTest {
         @BeforeEach
         void setUp() {
             when(roleService.findDefaultRoleByScopes(AUDIT_INFO.organizationId(), RoleScope.API)).thenReturn(null);
+            when(
+                permissionService.hasPermission(
+                    any(ExecutionContext.class),
+                    eq(AUDIT_INFO.actor().userId()),
+                    eq(RolePermission.API_MEMBER),
+                    eq(API_ID),
+                    eq(RolePermissionAction.UPDATE)
+                )
+            ).thenReturn(true);
         }
 
         @Test
@@ -117,6 +136,17 @@ class CRDMembersDomainServiceImplTest {
             when(roleService.findDefaultRoleByScopes(AUDIT_INFO.organizationId(), RoleScope.API)).thenReturn(
                 List.of(RoleEntity.builder().id("default-api-role").build())
             );
+            lenient()
+                .when(
+                    permissionService.hasPermission(
+                        any(ExecutionContext.class),
+                        eq(AUDIT_INFO.actor().userId()),
+                        eq(RolePermission.API_MEMBER),
+                        eq(API_ID),
+                        eq(RolePermissionAction.UPDATE)
+                    )
+                )
+                .thenReturn(true);
         }
 
         @Test
@@ -389,6 +419,154 @@ class CRDMembersDomainServiceImplTest {
     }
 
     @Nested
+    class NewApi {
+
+        private static final String API_ID = "new-api-id";
+
+        @Test
+        void should_set_members_and_transfer_ownership_to_the_creator_without_checking_the_member_permission() {
+            when(roleService.findDefaultRoleByScopes(AUDIT_INFO.organizationId(), RoleScope.API)).thenReturn(
+                List.of(RoleEntity.builder().id("default-api-role").build())
+            );
+            when(roleService.findByScopeAndName(RoleScope.API, "role-1", AUDIT_INFO.organizationId())).thenReturn(
+                Optional.of(RoleEntity.builder().id("role-1").build())
+            );
+            when(roleService.findPrimaryOwnerRoleByOrganization(AUDIT_INFO.organizationId(), RoleScope.API)).thenReturn(
+                RoleEntity.builder().id("po-role-id").build()
+            );
+
+            cut.createApiMembers(
+                AUDIT_INFO,
+                API_ID,
+                Set.of(MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build())
+            );
+
+            verify(membershipService).addRoleToMemberOnReference(
+                new ExecutionContext(AUDIT_INFO.organizationId(), AUDIT_INFO.environmentId()),
+                MembershipReferenceType.API,
+                API_ID,
+                MembershipMemberType.USER,
+                "id-1",
+                "role-1"
+            );
+            verify(membershipService).transferApiOwnership(
+                new ExecutionContext(AUDIT_INFO.organizationId(), AUDIT_INFO.environmentId()),
+                API_ID,
+                new MembershipService.MembershipMember(AUDIT_INFO.actor().userId(), null, MembershipMemberType.USER),
+                List.of()
+            );
+            verifyNoInteractions(permissionService);
+        }
+    }
+
+    @Nested
+    class ApiWithoutMemberPermission {
+
+        private static final String API_ID = "api-id";
+        private static final ExecutionContext EXECUTION_CONTEXT = new ExecutionContext(
+            AUDIT_INFO.organizationId(),
+            AUDIT_INFO.environmentId()
+        );
+
+        @BeforeEach
+        void setUp() {
+            when(
+                permissionService.hasPermission(
+                    any(ExecutionContext.class),
+                    eq(AUDIT_INFO.actor().userId()),
+                    eq(RolePermission.API_MEMBER),
+                    eq(API_ID),
+                    eq(RolePermissionAction.UPDATE)
+                )
+            ).thenReturn(false);
+            lenient()
+                .when(roleService.findDefaultRoleByScopes(AUDIT_INFO.organizationId(), RoleScope.API))
+                .thenReturn(List.of(RoleEntity.builder().id("default-api-role").build()));
+            lenient()
+                .when(roleService.findPrimaryOwnerRoleByOrganization(AUDIT_INFO.organizationId(), RoleScope.API))
+                .thenReturn(RoleEntity.builder().id("po-role-id").build());
+            lenient()
+                .when(membershipService.getMembersByReference(EXECUTION_CONTEXT, MembershipReferenceType.API, API_ID))
+                .thenReturn(
+                    Set.of(
+                        MemberEntity.builder().id("po-id").roles(List.of(RoleEntity.builder().id("po-role-id").build())).build(),
+                        MemberEntity.builder().id("id-1").roles(List.of(RoleEntity.builder().id("role-1").build())).build()
+                    )
+                );
+            lenient()
+                .when(roleService.findByScopeAndName(RoleScope.API, "role-1", AUDIT_INFO.organizationId()))
+                .thenReturn(Optional.of(RoleEntity.builder().id("role-1").build()));
+        }
+
+        @Test
+        void should_keep_members_and_primary_owner_when_the_spec_restates_the_members() {
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build());
+
+            cut.checkApiMembersUpdate(AUDIT_INFO, API_ID, members);
+            cut.updateApiMembers(AUDIT_INFO, API_ID, members);
+
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_let_a_direct_member_restate_the_other_members() {
+            when(membershipService.getMembersByReference(EXECUTION_CONTEXT, MembershipReferenceType.API, API_ID)).thenReturn(
+                Set.of(
+                    MemberEntity.builder().id("po-id").roles(List.of(RoleEntity.builder().id("po-role-id").build())).build(),
+                    MemberEntity.builder().id("id-1").roles(List.of(RoleEntity.builder().id("role-1").build())).build(),
+                    MemberEntity.builder().id(AUDIT_INFO.actor().userId()).roles(List.of(RoleEntity.builder().id("role-1").build())).build()
+                )
+            );
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build());
+
+            cut.checkApiMembersUpdate(AUDIT_INFO, API_ID, members);
+
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_reject_a_member_change() {
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-2").sourceId("source-id-2").source("test").build());
+
+            assertThatThrownBy(() -> cut.checkApiMembersUpdate(AUDIT_INFO, API_ID, members)).isInstanceOf(ForbiddenAccessException.class);
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_write_nothing_on_update_without_the_member_permission() {
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-2").sourceId("source-id-2").source("test").build());
+
+            cut.updateApiMembers(AUDIT_INFO, API_ID, members);
+
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_reject_a_spec_that_removes_every_member() {
+            assertThatThrownBy(() -> cut.checkApiMembersUpdate(AUDIT_INFO, API_ID, Set.of())).isInstanceOf(ForbiddenAccessException.class);
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_reject_a_spec_that_names_the_primary_owner() {
+            var members = Set.of(
+                MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build(),
+                MemberCRD.builder().role("role-1").id("po-id").sourceId("source-po").source("test").build()
+            );
+
+            assertThatThrownBy(() -> cut.checkApiMembersUpdate(AUDIT_INFO, API_ID, members)).isInstanceOf(ForbiddenAccessException.class);
+            verifyNoMembershipWrite();
+        }
+
+        private void verifyNoMembershipWrite() {
+            verify(membershipService, never()).addRoleToMemberOnReference(any(), any(), any(), any(), any(), any());
+            verify(membershipService, never()).removeRole(any(), any(), any(), any(), any());
+            verify(membershipService, never()).deleteReferenceMember(any(), any(), any(), any(), any());
+            verify(membershipService, never()).transferApiOwnership(any(), any(), any(), any());
+        }
+    }
+
+    @Nested
     class Application {
 
         private static final String APPLICATION_ID = "app-id";
@@ -397,6 +575,33 @@ class CRDMembersDomainServiceImplTest {
         void setUp() {
             when(roleService.findDefaultRoleByScopes(AUDIT_INFO.organizationId(), RoleScope.APPLICATION)).thenReturn(
                 List.of(RoleEntity.builder().id("default-app-role").build())
+            );
+            lenient()
+                .when(
+                    permissionService.hasPermission(
+                        any(ExecutionContext.class),
+                        eq(AUDIT_INFO.actor().userId()),
+                        eq(RolePermission.APPLICATION_MEMBER),
+                        eq(APPLICATION_ID),
+                        eq(RolePermissionAction.UPDATE)
+                    )
+                )
+                .thenReturn(true);
+        }
+
+        @Test
+        void should_transfer_ownership_to_the_caller_with_the_member_permission() {
+            when(roleService.findPrimaryOwnerRoleByOrganization(AUDIT_INFO.organizationId(), RoleScope.APPLICATION)).thenReturn(
+                RoleEntity.builder().id("po-role-id").build()
+            );
+
+            cut.updateApplicationMembers(AUDIT_INFO, APPLICATION_ID, Set.of());
+
+            verify(membershipService).transferApplicationOwnership(
+                eq(new ExecutionContext(AUDIT_INFO.organizationId(), AUDIT_INFO.environmentId())),
+                eq(APPLICATION_ID),
+                eq(new MembershipService.MembershipMember(AUDIT_INFO.actor().userId(), null, MembershipMemberType.USER)),
+                eq(List.of())
             );
         }
 
@@ -663,6 +868,113 @@ class CRDMembersDomainServiceImplTest {
     }
 
     @Nested
+    class ApplicationWithoutMemberPermission {
+
+        private static final String APPLICATION_ID = "app-id";
+        private static final ExecutionContext EXECUTION_CONTEXT = new ExecutionContext(
+            AUDIT_INFO.organizationId(),
+            AUDIT_INFO.environmentId()
+        );
+
+        @BeforeEach
+        void setUp() {
+            when(
+                permissionService.hasPermission(
+                    any(ExecutionContext.class),
+                    eq(AUDIT_INFO.actor().userId()),
+                    eq(RolePermission.APPLICATION_MEMBER),
+                    eq(APPLICATION_ID),
+                    eq(RolePermissionAction.UPDATE)
+                )
+            ).thenReturn(false);
+            lenient()
+                .when(roleService.findDefaultRoleByScopes(AUDIT_INFO.organizationId(), RoleScope.APPLICATION))
+                .thenReturn(List.of(RoleEntity.builder().id("default-app-role").build()));
+            lenient()
+                .when(roleService.findPrimaryOwnerRoleByOrganization(AUDIT_INFO.organizationId(), RoleScope.APPLICATION))
+                .thenReturn(RoleEntity.builder().id("po-role-id").build());
+            lenient()
+                .when(membershipService.getMembersByReference(EXECUTION_CONTEXT, MembershipReferenceType.APPLICATION, APPLICATION_ID))
+                .thenReturn(
+                    Set.of(
+                        MemberEntity.builder().id("po-id").roles(List.of(RoleEntity.builder().id("po-role-id").build())).build(),
+                        MemberEntity.builder().id("id-1").roles(List.of(RoleEntity.builder().id("role-1").build())).build()
+                    )
+                );
+            lenient()
+                .when(roleService.findByScopeAndName(RoleScope.APPLICATION, "role-1", AUDIT_INFO.organizationId()))
+                .thenReturn(Optional.of(RoleEntity.builder().id("role-1").build()));
+        }
+
+        @Test
+        void should_keep_members_and_primary_owner_when_the_spec_restates_the_members() {
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build());
+
+            cut.checkApplicationMembersUpdate(AUDIT_INFO, APPLICATION_ID, members);
+            cut.updateApplicationMembers(AUDIT_INFO, APPLICATION_ID, members);
+
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_let_a_direct_member_restate_the_other_members() {
+            when(
+                membershipService.getMembersByReference(EXECUTION_CONTEXT, MembershipReferenceType.APPLICATION, APPLICATION_ID)
+            ).thenReturn(
+                Set.of(
+                    MemberEntity.builder().id("po-id").roles(List.of(RoleEntity.builder().id("po-role-id").build())).build(),
+                    MemberEntity.builder().id("id-1").roles(List.of(RoleEntity.builder().id("role-1").build())).build(),
+                    MemberEntity.builder().id(AUDIT_INFO.actor().userId()).roles(List.of(RoleEntity.builder().id("role-1").build())).build()
+                )
+            );
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build());
+
+            cut.checkApplicationMembersUpdate(AUDIT_INFO, APPLICATION_ID, members);
+
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_reject_a_member_change() {
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-2").sourceId("source-id-2").source("test").build());
+
+            assertThatThrownBy(() -> cut.checkApplicationMembersUpdate(AUDIT_INFO, APPLICATION_ID, members)).isInstanceOf(
+                ForbiddenAccessException.class
+            );
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_write_nothing_on_update_without_the_member_permission() {
+            var members = Set.of(MemberCRD.builder().role("role-1").id("id-2").sourceId("source-id-2").source("test").build());
+
+            cut.updateApplicationMembers(AUDIT_INFO, APPLICATION_ID, members);
+
+            verifyNoMembershipWrite();
+        }
+
+        @Test
+        void should_reject_a_spec_that_names_the_primary_owner() {
+            var members = Set.of(
+                MemberCRD.builder().role("role-1").id("id-1").sourceId("source-id-1").source("test").build(),
+                MemberCRD.builder().role("role-1").id("po-id").sourceId("source-po").source("test").build()
+            );
+
+            assertThatThrownBy(() -> cut.checkApplicationMembersUpdate(AUDIT_INFO, APPLICATION_ID, members)).isInstanceOf(
+                ForbiddenAccessException.class
+            );
+            verifyNoMembershipWrite();
+        }
+
+        private void verifyNoMembershipWrite() {
+            verify(membershipService, never()).addRoleToMemberOnReference(any(), any(), any(), any(), any(), any());
+            verify(membershipService, never()).removeRole(any(), any(), any(), any(), any());
+            verify(membershipService, never()).deleteReferenceMember(any(), any(), any(), any(), any());
+            verify(membershipService, never()).transferApplicationOwnership(any(), any(), any(), any());
+        }
+    }
+
+    @Nested
     class GroupDefaultRoles {
 
         private static final String GROUP_ID = "group-id";
@@ -670,6 +982,57 @@ class CRDMembersDomainServiceImplTest {
         @BeforeEach
         void setUp() {
             reset(membershipService, roleService);
+        }
+
+        @Test
+        void should_converge_on_a_declared_map_setting_declared_scopes_and_clearing_the_others() {
+            when(membershipService.getRoles(MembershipReferenceType.API, null, MembershipMemberType.GROUP, GROUP_ID)).thenReturn(Set.of());
+            when(membershipService.getRoles(MembershipReferenceType.APPLICATION, null, MembershipMemberType.GROUP, GROUP_ID)).thenReturn(
+                Set.of(RoleEntity.builder().id("app-user-role").name("USER").scope(RoleScope.APPLICATION).build())
+            );
+            when(membershipService.getRoles(MembershipReferenceType.API_PRODUCT, null, MembershipMemberType.GROUP, GROUP_ID)).thenReturn(
+                Set.of()
+            );
+
+            cut.updateGroupDefaultRoles(AUDIT_INFO, GROUP_ID, java.util.Map.of(io.gravitee.apim.core.member.model.RoleScope.API, "USER"));
+
+            var executionContext = new ExecutionContext(AUDIT_INFO.organizationId(), AUDIT_INFO.environmentId());
+            verify(membershipService).addRoleToMemberOnReference(
+                eq(executionContext),
+                argThat(ref -> ref.getType() == MembershipReferenceType.API && ref.getId() == null),
+                eq(new MembershipService.MembershipMember(GROUP_ID, null, MembershipMemberType.GROUP)),
+                eq(new MembershipService.MembershipRole(RoleScope.API, "USER"))
+            );
+            verify(membershipService).deleteReferenceMember(
+                executionContext,
+                MembershipReferenceType.APPLICATION,
+                null,
+                MembershipMemberType.GROUP,
+                GROUP_ID
+            );
+            verify(membershipService, never()).deleteReferenceMember(
+                any(),
+                eq(MembershipReferenceType.API_PRODUCT),
+                eq(null),
+                eq(MembershipMemberType.GROUP),
+                eq(GROUP_ID)
+            );
+        }
+
+        @Test
+        void should_not_set_primary_owner_from_a_declared_map() {
+            cut.updateGroupDefaultRoles(
+                AUDIT_INFO,
+                GROUP_ID,
+                java.util.Map.of(io.gravitee.apim.core.member.model.RoleScope.API, "PRIMARY_OWNER")
+            );
+
+            verify(membershipService, never()).addRoleToMemberOnReference(
+                any(ExecutionContext.class),
+                any(MembershipService.MembershipReference.class),
+                any(MembershipService.MembershipMember.class),
+                any(MembershipService.MembershipRole.class)
+            );
         }
 
         @Test

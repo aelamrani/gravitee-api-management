@@ -25,11 +25,15 @@ import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
 
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
 import io.gravitee.apim.core.api.model.ApiMetadata;
+import io.gravitee.apim.core.api.model.property.EncryptableProperty;
 import io.gravitee.apim.core.api.query_service.ApiMetadataQueryService;
 import io.gravitee.apim.core.api_product.domain_service.RemoveApiFromApiProductsDomainService;
 import io.gravitee.apim.core.api_product.model.ApiProductComposition;
 import io.gravitee.apim.core.flow.crud_service.FlowCrudService;
+import io.gravitee.apim.core.portal_page.domain_service.ApiDocumentationCleanupDomainService;
+import io.gravitee.apim.core.subscription_form.domain_service.RemoveApiFromSubscriptionFormDomainService;
 import io.gravitee.common.data.domain.Page;
 import io.gravitee.definition.model.DefinitionContext;
 import io.gravitee.definition.model.DefinitionVersion;
@@ -74,6 +78,7 @@ import io.gravitee.rest.api.model.settings.ApiPrimaryOwnerMode;
 import io.gravitee.rest.api.model.v4.api.ApiEntity;
 import io.gravitee.rest.api.model.v4.api.GenericApiEntity;
 import io.gravitee.rest.api.model.v4.api.UpdateApiEntity;
+import io.gravitee.rest.api.model.v4.api.properties.PropertyEntity;
 import io.gravitee.rest.api.model.v4.plan.GenericPlanEntity;
 import io.gravitee.rest.api.model.v4.plan.PlanEntity;
 import io.gravitee.rest.api.service.AlertService;
@@ -161,6 +166,7 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
     private final SubscriptionService subscriptionService;
     private final EventService eventService;
     private final PageService pageService;
+    private final ApiDocumentationCleanupDomainService apiDocumentationCleanupDomainService;
     private final TopApiService topApiService;
     private final PortalNotificationConfigService portalNotificationConfigService;
     private final AlertService alertService;
@@ -174,7 +180,9 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
     private final ApiCategoryService apiCategoryService;
     private final ScoringReportRepository scoringReportRepository;
     private final RemoveApiFromApiProductsDomainService removeApiFromApiProductsDomainService;
+    private final RemoveApiFromSubscriptionFormDomainService removeApiFromSubscriptionFormDomainService;
     private final ApiMetadataQueryService apiMetadataQueryService;
+    private final PropertyDomainService propertyDomainService;
 
     private static final String EMAIL_METADATA_VALUE = "${(api.primaryOwner.email)!''}";
     private static final String EXPAND_PRIMARY_OWNER = "primaryOwner";
@@ -198,6 +206,7 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         @Lazy final SubscriptionService subscriptionService,
         final EventService eventService,
         @Lazy final PageService pageService,
+        final ApiDocumentationCleanupDomainService apiDocumentationCleanupDomainService,
         @Lazy final TopApiService topApiService,
         final PortalNotificationConfigService portalNotificationConfigService,
         @Lazy final AlertService alertService,
@@ -211,7 +220,9 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         final GroupService groupService,
         ApiCategoryService apiCategoryService,
         RemoveApiFromApiProductsDomainService removeApiFromApiProductsDomainService,
-        ApiMetadataQueryService apiMetadataQueryService
+        RemoveApiFromSubscriptionFormDomainService removeApiFromSubscriptionFormDomainService,
+        ApiMetadataQueryService apiMetadataQueryService,
+        PropertyDomainService propertyDomainService
     ) {
         this.apiRepository = apiRepository;
         this.apiMapper = apiMapper;
@@ -231,6 +242,7 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         this.subscriptionService = subscriptionService;
         this.eventService = eventService;
         this.pageService = pageService;
+        this.apiDocumentationCleanupDomainService = apiDocumentationCleanupDomainService;
         this.topApiService = topApiService;
         this.portalNotificationConfigService = portalNotificationConfigService;
         this.alertService = alertService;
@@ -244,7 +256,9 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         this.apiCategoryService = apiCategoryService;
         this.scoringReportRepository = scoringReportRepository;
         this.removeApiFromApiProductsDomainService = removeApiFromApiProductsDomainService;
+        this.removeApiFromSubscriptionFormDomainService = removeApiFromSubscriptionFormDomainService;
         this.apiMetadataQueryService = apiMetadataQueryService;
+        this.propertyDomainService = propertyDomainService;
     }
 
     @Override
@@ -318,7 +332,7 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
             createdApi = apiRepository.create(repositoryApi);
             log.debug("API {} imported", createdApi.getId());
         } catch (TechnicalException ex) {
-            String errorMsg = String.format("An error occurs while trying to create '%s' for user '%s'", apiEntity, userId);
+            String errorMsg = String.format("An error occurs while trying to create API '%s' for user '%s'", apiEntity.getId(), userId);
             log.error(errorMsg, ex);
             throw new TechnicalManagementException(errorMsg, ex);
         }
@@ -327,7 +341,7 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
         auditService.createApiAuditLog(
             executionContext,
             AuditService.AuditLogData.builder()
-                .properties(Collections.emptyMap())
+                .properties(EncryptedPropertyAuditProperties.ofChange(null, apiEntity.getProperties()))
                 .event(API_CREATED)
                 .createdAt(createdApi.getCreatedAt())
                 .oldValue(null)
@@ -458,9 +472,17 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
                     });
             }
 
-            // encrypt API properties
             if (updateApiEntity.getProperties() != null) {
-                updateApiEntity.setProperties(this.propertiesService.encryptProperties(updateApiEntity.getProperties()));
+                propertyDomainService.validateClassification(
+                    existingApiEntity.getProperties(),
+                    toEncryptableProperties(updateApiEntity.getProperties())
+                );
+                List<PropertyEntity> existingProperties = Optional.ofNullable(existingApiEntity.getProperties())
+                    .map(properties -> properties.stream().map(PropertyEntity::new).toList())
+                    .orElse(null);
+                updateApiEntity.setProperties(
+                    this.propertiesService.encryptProperties(existingProperties, updateApiEntity.getProperties())
+                );
             }
 
             if (io.gravitee.rest.api.model.api.ApiLifecycleState.DEPRECATED == updateApiEntity.getLifecycleState()) {
@@ -546,7 +568,9 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
             auditService.createApiAuditLog(
                 executionContext,
                 AuditService.AuditLogData.builder()
-                    .properties(Collections.emptyMap())
+                    .properties(
+                        EncryptedPropertyAuditProperties.ofChange(existingApiEntity.getProperties(), updateApiEntity.getProperties())
+                    )
                     .event(API_UPDATED)
                     .createdAt(updatedApi.getUpdatedAt())
                     .oldValue(apiToUpdate)
@@ -692,9 +716,12 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
 
             // Delete pages
             pageService.deleteAllByApi(executionContext, apiId);
+            apiDocumentationCleanupDomainService.cleanupForApi(api.getEnvironmentId(), apiId);
 
             // Delete top API
             topApiService.delete(executionContext, apiId);
+            // Remove API from the subscription form dedicated to it, while the API still exists to retry on failure
+            removeApiFromSubscriptionFormDomainService.removeApi(api.getEnvironmentId(), apiId);
             // Delete API
             apiRepository.delete(apiId);
             // Delete memberships
@@ -847,6 +874,18 @@ public class ApiServiceImpl extends AbstractService implements ApiService {
                 e
             );
         }
+    }
+
+    private static List<EncryptableProperty> toEncryptableProperties(List<PropertyEntity> properties) {
+        return properties
+            .stream()
+            .filter(Objects::nonNull)
+            .map(property -> {
+                var encryptableProperty = EncryptableProperty.fromProperty(property);
+                encryptableProperty.setEncryptable(property.isEncryptable());
+                return encryptableProperty;
+            })
+            .toList();
     }
 
     private void auditApiLogging(ExecutionContext executionContext, String apiId, Logging existingLogging, Logging updatedLogging) {

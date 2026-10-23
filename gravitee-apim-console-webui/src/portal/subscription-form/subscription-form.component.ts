@@ -15,42 +15,46 @@
  */
 import { GMD_FORM_STATE_STORE, GmdFormEditorComponent, provideGmdFormStore } from '@gravitee/gravitee-markdown';
 
-import { Component, computed, DestroyRef, effect, HostListener, inject, signal, untracked, WritableSignal } from '@angular/core';
-import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { Component, computed, DestroyRef, effect, HostListener, inject, NgZone, signal, untracked } from '@angular/core';
+import { takeUntilDestroyed, toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
+import { BehaviorSubject, EMPTY, Observable, of } from 'rxjs';
 import { catchError, filter, startWith, switchMap, tap } from 'rxjs/operators';
-import { EMPTY } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
-import { MatTooltipModule } from '@angular/material/tooltip';
-import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatCardModule } from '@angular/material/card';
 import { MatDialog } from '@angular/material/dialog';
-import {
-  GIO_DIALOG_WIDTH,
-  GioConfirmDialogComponent,
-  GioConfirmDialogData,
-  GioFormSlideToggleModule,
-} from '@gravitee/ui-particles-angular';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { GIO_DIALOG_WIDTH, GioConfirmDialogComponent, GioConfirmDialogData } from '@gravitee/ui-particles-angular';
 
-import { PortalHeaderComponent } from '../components/header/portal-header.component';
+import { SubscriptionFormListComponent } from './subscription-form-list/subscription-form-list.component';
+import { MappedApi } from './subscription-form-apis/subscription-form-apis.component';
+import { AssignApisDialogComponent, AssignApisDialogData, AssignApisDialogResult } from './assign-apis-dialog/assign-apis-dialog.component';
+
+import { EmptyStateComponent } from '../../shared/components/empty-state/empty-state.component';
 import { GioPermissionService } from '../../shared/components/gio-permission/gio-permission.service';
+import { GioPermissionModule } from '../../shared/components/gio-permission/gio-permission.module';
 import { SnackBarService } from '../../services-ngx/snack-bar.service';
+import { ApiV2Service } from '../../services-ngx/api-v2.service';
 import { SubscriptionForm } from '../../entities/management-api-v2';
 import { SubscriptionFormService } from '../../services-ngx/subscription-form.service';
 import { HasUnsavedChanges } from '../../shared/guards/has-unsaved-changes.guard';
-import { normalizeContent } from '../../shared/utils/content.util';
-import { GioPermissionModule } from '../../shared/components/gio-permission/gio-permission.module';
+import { confirmDiscardChanges, normalizeContent } from '../../shared/utils/content.util';
 
 @Component({
   selector: 'subscription-form',
   imports: [
-    PortalHeaderComponent,
+    EmptyStateComponent,
     ReactiveFormsModule,
-    GmdFormEditorComponent,
     MatButtonModule,
-    MatTooltipModule,
-    MatSlideToggleModule,
-    GioFormSlideToggleModule,
+    MatCardModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
     GioPermissionModule,
+    GmdFormEditorComponent,
+    SubscriptionFormListComponent,
   ],
   templateUrl: './subscription-form.component.html',
   styleUrl: './subscription-form.component.scss',
@@ -59,76 +63,135 @@ import { GioPermissionModule } from '../../shared/components/gio-permission/gio-
 export class SubscriptionFormComponent implements HasUnsavedChanges {
   private readonly snackbarService = inject(SnackBarService);
   private readonly subscriptionFormService = inject(SubscriptionFormService);
+  private readonly apiService = inject(ApiV2Service);
   private readonly gioPermissionService = inject(GioPermissionService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly matDialog = inject(MatDialog);
+  private readonly ngZone = inject(NgZone);
   private readonly store = inject(GMD_FORM_STATE_STORE);
 
-  private readonly subscriptionForm: WritableSignal<SubscriptionForm | null> = signal(null);
-  private readonly canUpdate = signal(this.gioPermissionService.hasAnyMatching(['environment-metadata-u']));
-  contentControl = new FormControl<string>('', { nonNullable: true });
-  enabledControl = new FormControl<boolean>(false, { nonNullable: true });
+  private readonly MIN_PANEL_WIDTH = 280;
+  private readonly MAX_PANEL_WIDTH = 600;
+  private readonly PANEL_RESIZE_STEP = 20;
+  panelWidth = signal(500);
+  readonly isPreviewVisible = signal(true);
 
-  private readonly contentValue = toSignal(this.contentControl.valueChanges.pipe(startWith(this.contentControl.value)));
-  private readonly subscriptionFormResult = toSignal(
-    this.subscriptionFormService.getSubscriptionForm().pipe(
-      catchError(({ error }) => {
-        this.snackbarService.error(error?.message ?? 'An error occurred while loading the subscription form');
-        return EMPTY;
+  readonly canUpdate = signal(this.gioPermissionService.hasAnyMatching(['environment-metadata-u']));
+  readonly canDelete = signal(this.gioPermissionService.hasAnyMatching(['environment-metadata-d']));
+  private readonly refreshList = new BehaviorSubject<void>(undefined);
+  readonly forms = toSignal(
+    this.refreshList.pipe(
+      switchMap(() =>
+        this.subscriptionFormService.list().pipe(
+          catchError(({ error }) => {
+            this.snackbarService.error(error?.message ?? 'An error occurred while loading subscription forms.');
+            return of([] as SubscriptionForm[]);
+          }),
+        ),
+      ),
+    ),
+    { initialValue: [] as SubscriptionForm[] },
+  );
+
+  /** `'new'` while creating an unsaved form; a form id while viewing/editing one; `null` before anything is ever selected. */
+  private readonly selectedFormId = signal<string | 'new' | null>(null);
+  readonly isCreating = computed(() => this.selectedFormId() === 'new');
+  readonly hasSelection = computed(() => this.selectedFormId() !== null);
+  readonly selectedForm = computed<SubscriptionForm | null>(() => {
+    const id = this.selectedFormId();
+    if (id === null || id === 'new') return null;
+    return this.forms().find(form => form.id === id) ?? null;
+  });
+
+  readonly nameControl = new FormControl<string>('', { nonNullable: true, validators: [Validators.required] });
+  readonly contentControl = new FormControl<string>('', { nonNullable: true });
+
+  /** APIs the edited form is dedicated to; the name is the id until the API search resolves it. */
+  readonly selectedApis = signal<MappedApi[]>([]);
+
+  private readonly initialName = signal('');
+  private readonly initialContent = signal('');
+  private readonly initialApiIds = signal<string[]>([]);
+
+  // Keyed purely on the selected id (not on the wider `forms` list) so an unrelated row's toggle
+  // refreshing the list never clobbers in-progress edits open in this panel.
+  private readonly selectedFormDetail = toSignal(
+    toObservable(this.selectedFormId).pipe(
+      switchMap(id => {
+        if (id === null || id === 'new') return of(null);
+        // Starts empty so the editor never keeps showing the previous form under the newly selected id.
+        return this.subscriptionFormService.get(id).pipe(
+          catchError(({ error }) => {
+            this.snackbarService.error(error?.message ?? 'An error occurred while loading the subscription form.');
+            return of(null);
+          }),
+          startWith(null),
+        );
       }),
     ),
     { initialValue: null },
   );
-  private readonly enabledControlChanges = toSignal(this.enabledControl.valueChanges.pipe(filter(() => this.canUpdate())), {
-    initialValue: undefined,
+
+  private readonly nameValue = toSignal(this.nameControl.valueChanges.pipe(startWith(this.nameControl.value)));
+  private readonly contentValue = toSignal(this.contentControl.valueChanges.pipe(startWith(this.contentControl.value)));
+
+  /** The form shown in the editor, once the one matching the current selection has loaded. */
+  private readonly loadedForm = computed<SubscriptionForm | null>(() => {
+    const form = this.selectedFormDetail();
+    return form?.id === this.selectedFormId() ? form : null;
+  });
+  /** A form is only editable once loaded: until then its mapping is unknown and must not be edited. */
+  readonly isEditable = computed(() => this.isCreating() || this.loadedForm() !== null);
+
+  /** The catalog as listed, the edited form counting its APIs as currently selected rather than as last saved. */
+  readonly listedForms = computed<SubscriptionForm[]>(() => {
+    const editedId = this.selectedFormId();
+    const apiIds = this.selectedApis().map(api => api.id);
+    return this.forms().map(form => (form.id === editedId ? { ...form, apiIds } : form));
   });
 
-  /** Only severity `error` blocks save; `warning` (e.g. normalized lengths) does not. */
+  /** Name of the form every API mapped outside the edited form belongs to, by API id. */
+  readonly apisMappedElsewhere = computed<Record<string, string>>(() => {
+    const editedId = this.selectedFormId();
+    return Object.fromEntries(
+      this.forms()
+        .filter(form => form.id !== editedId)
+        .flatMap(form => form.apiIds.map(apiId => [apiId, form.name])),
+    );
+  });
+
+  readonly saveButtonLabel = computed(() => (this.isCreating() ? 'Create' : 'Save'));
+
   protected readonly hasConfigErrors = computed(() => this.store.criticalConfigErrors().length > 0);
-  readonly configErrorsTooltip = 'Fix configuration errors before continuing.';
-  readonly subscriptionFormEnabled = computed(() => this.subscriptionForm()?.enabled ?? false);
 
-  readonly enabledControlTooltip = computed(() => {
-    if (!this.canUpdate()) return 'You do not have permission to change this.';
-    if (this.hasConfigErrors()) return this.configErrorsTooltip;
-    return '';
-  });
-
-  readonly saveButtonTooltip = computed(() => {
-    if (this.hasConfigErrors()) return this.configErrorsTooltip;
-    return '';
-  });
-
-  isSaveDisabled = computed(() => {
-    const currentContent = this.contentValue() ?? '';
-    const normalized = normalizeContent(currentContent);
-    const isEmpty = normalized.length === 0;
-    const hasConfigErrors = this.hasConfigErrors();
-    const isUnchanged = !this.hasUnsavedChanges();
-    return isEmpty || hasConfigErrors || isUnchanged;
+  readonly isSaveDisabled = computed(() => {
+    if (!this.isEditable()) return true;
+    const name = (this.nameValue() ?? '').trim();
+    const content = normalizeContent(this.contentValue());
+    if (name.length === 0 || content.length === 0 || this.hasConfigErrors()) return true;
+    return !this.hasUnsavedChanges();
   });
 
   private readonly controlsDisabledStateEffect = effect(() => {
-    const canUpdate = this.canUpdate();
-    const hasConfigErrors = this.hasConfigErrors();
     const options = { emitEvent: false };
-    canUpdate ? this.contentControl.enable(options) : this.contentControl.disable(options);
-    const enableToggle = canUpdate && !hasConfigErrors;
-    enableToggle ? this.enabledControl.enable(options) : this.enabledControl.disable(options);
+    const shouldEnable = this.canUpdate() && this.isEditable();
+    shouldEnable ? this.nameControl.enable(options) : this.nameControl.disable(options);
+    shouldEnable ? this.contentControl.enable(options) : this.contentControl.disable(options);
   });
 
-  private readonly subscriptionFormLoadEffect = effect(() => {
-    const result = this.subscriptionFormResult();
-    if (!result) return;
-    this.subscriptionForm.set(result);
-    this.contentControl.reset(result.gmdContent || '', { emitEvent: true });
-    this.enabledControl.setValue(result.enabled, { emitEvent: false });
+  private readonly formLoadEffect = effect(() => {
+    if (this.isCreating()) return;
+    const form = this.loadedForm();
+    untracked(() => this.resetEditor(form?.name ?? '', form?.gmdContent || '', form?.apiIds ?? []));
   });
 
-  private readonly enabledControlEffect = effect(() => {
-    const enabled = this.enabledControlChanges();
-    if (enabled === undefined) return;
-    untracked(() => this.handleToggleChange(enabled));
+  /** Selects the first row once, the first time the list loads. */
+  private readonly autoSelectEffect = effect(() => {
+    const forms = this.forms();
+    untracked(() => {
+      if (this.selectedFormId() !== null || forms.length === 0) return;
+      this.selectedFormId.set(forms[0].id);
+    });
   });
 
   @HostListener('window:beforeunload', ['$event'])
@@ -141,60 +204,180 @@ export class SubscriptionFormComponent implements HasUnsavedChanges {
   }
 
   hasUnsavedChanges(): boolean {
-    const current = normalizeContent(this.contentValue() ?? '');
-    const initial = normalizeContent(this.subscriptionForm()?.gmdContent ?? '');
-    return current !== initial;
+    if (this.selectedFormId() === null) return false;
+    const currentName = (this.nameValue() ?? '').trim();
+    const currentContent = normalizeContent(this.contentValue());
+    const currentApiIds = this.selectedApis().map(api => api.id);
+    return (
+      currentName !== this.initialName().trim() ||
+      currentContent !== normalizeContent(this.initialContent()) ||
+      !sameIds(currentApiIds, this.initialApiIds())
+    );
   }
 
-  updateSubscriptionForm(): void {
-    const form = this.subscriptionForm();
-    if (!form) return;
+  selectForm(form: SubscriptionForm): void {
+    this.checkUnsavedChangesAndRun(() => this.selectedFormId.set(form.id));
+  }
 
-    this.subscriptionFormService
-      .updateSubscriptionForm(form.id, {
-        gmdContent: this.contentControl.value,
+  startCreate(): void {
+    this.checkUnsavedChangesAndRun(() => {
+      this.selectedFormId.set('new');
+      this.resetEditor('', '');
+      this.subscriptionFormService
+        .getTemplate()
+        .pipe(
+          catchError(() => of({ gmdContent: '' })),
+          takeUntilDestroyed(this.destroyRef),
+        )
+        .subscribe(template => {
+          // The template is the starting point, not a pending change: only what the user types counts as unsaved.
+          if (!this.isCreating()) return;
+          this.initialContent.set(template.gmdContent);
+          this.contentControl.reset(template.gmdContent, { emitEvent: true });
+        });
+    });
+  }
+
+  togglePreview(): void {
+    this.isPreviewVisible.update(visible => !visible);
+  }
+
+  save(): void {
+    if (this.isSaveDisabled()) return;
+    const save$ = this.isCreating() ? this.createForm() : this.updateForm(this.loadedForm()!);
+    save$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe();
+  }
+
+  openAssignApis(): void {
+    // Opening a form still loading would capture an empty draft, and applying it would unmap every API.
+    if (!this.isEditable()) return;
+
+    const data: AssignApisDialogData = {
+      selectedApis: this.selectedApis(),
+      mappedElsewhere: this.apisMappedElsewhere(),
+      canUpdate: this.canUpdate(),
+    };
+
+    this.matDialog
+      .open<AssignApisDialogComponent, AssignApisDialogData, AssignApisDialogResult>(AssignApisDialogComponent, {
+        width: GIO_DIALOG_WIDTH.LARGE,
+        data,
+        role: 'dialog',
+        id: 'assignApisDialog',
       })
+      .afterClosed()
       .pipe(
-        tap(updatedForm => {
-          this.snackbarService.success(`The subscription form has been updated successfully`);
-          this.subscriptionForm.set(updatedForm);
-        }),
-        catchError(({ error }) => {
-          this.snackbarService.error(error?.message ?? 'An error occurred while updating the subscription form');
-          return EMPTY;
-        }),
+        // The mapping is applied to the edited form, not saved: the form's Save button sends it.
+        filter((apis): apis is AssignApisDialogResult => !!apis),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe(apis => this.selectedApis.set(apis));
+  }
+
+  onEnabledToggle(listedForm: SubscriptionForm): void {
+    // The list shows the edited form with its unsaved mapping; who loses the form depends on the saved one.
+    const form = this.forms().find(saved => saved.id === listedForm.id) ?? listedForm;
+    const enabling = !form.enabled;
+    const action = enabling ? 'Show' : 'Hide';
+    const data: GioConfirmDialogData = {
+      title: `${action} subscription form?`,
+      content: enabling
+        ? `"${form.name}" will be shown to API consumers in the Developer Portal when subscribing to the APIs it applies to.`
+        : `"${form.name}" will no longer be shown to API consumers in the Developer Portal. ${disableImpact(form)}`,
+      confirmButton: action,
+    };
+
+    this.confirm(data)
+      .pipe(
+        switchMap(() => this.toggleEnabled(form, enabling)),
         takeUntilDestroyed(this.destroyRef),
       )
       .subscribe();
   }
 
-  private resetEnabledToInitial(): void {
-    this.enabledControl.setValue(this.subscriptionFormEnabled(), { emitEvent: false });
+  deleteForm(form: SubscriptionForm): void {
+    const data: GioConfirmDialogData = {
+      title: 'Delete subscription form?',
+      content: `"${form.name}" will be removed from the catalog. ${deleteImpact(form)} This action cannot be undone.`,
+      confirmButton: 'Delete',
+    };
+
+    this.confirm(data)
+      .pipe(
+        switchMap(() =>
+          this.subscriptionFormService.delete(form.id).pipe(
+            tap(() => {
+              this.snackbarService.success(`Subscription form "${form.name}" has been deleted.`);
+              if (this.selectedFormId() === form.id) {
+                this.initialName.set('');
+                this.initialContent.set('');
+                this.initialApiIds.set([]);
+                this.selectedApis.set([]);
+                this.nameControl.reset('', { emitEvent: true });
+                this.contentControl.reset('', { emitEvent: true });
+                this.selectedFormId.set(null);
+              }
+              this.refreshList.next();
+            }),
+            catchError(({ error }) => {
+              this.snackbarService.error(error?.message ?? 'Failed to delete the subscription form.');
+              return EMPTY;
+            }),
+          ),
+        ),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe();
   }
 
-  private handleToggleChange(enabled: boolean): void {
-    if (this.hasConfigErrors()) {
-      this.resetEnabledToInitial();
-      return;
-    }
-    const saveBeforeToggle = this.hasUnsavedChanges();
-    const action = enabled ? 'Enable' : 'Disable';
-    const data: GioConfirmDialogData = saveBeforeToggle
-      ? {
-          title: `${action} subscription form?`,
-          content: `You have unsaved changes. Save the form before changing visibility.`,
-          confirmButton: `Save and ${action.toLowerCase()}`,
-          cancelButton: 'Cancel',
-        }
-      : {
-          title: `${action} subscription form?`,
-          content: enabled
-            ? `This action will enable the subscription form. It will be visible to API consumers in the Developer Portal.`
-            : `This action will disable the subscription form. It will no longer be visible in the Developer Portal, but you can enable it again at any time.`,
-          confirmButton: action,
-        };
+  onResizeStart(event: MouseEvent): void {
+    event.preventDefault();
 
-    this.matDialog
+    const startX = event.clientX;
+    const startWidth = this.panelWidth();
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    this.ngZone.runOutsideAngular(() => {
+      const onMove = (e: MouseEvent) => {
+        const deltaX = e.clientX - startX;
+        const newWidth = Math.max(this.MIN_PANEL_WIDTH, Math.min(this.MAX_PANEL_WIDTH, startWidth + deltaX));
+
+        this.ngZone.run(() => this.panelWidth.set(newWidth));
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  onResizeKeydown(event: KeyboardEvent): void {
+    const step = { ArrowLeft: -this.PANEL_RESIZE_STEP, ArrowRight: this.PANEL_RESIZE_STEP }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    this.panelWidth.update(width => Math.max(this.MIN_PANEL_WIDTH, Math.min(this.MAX_PANEL_WIDTH, width + step)));
+  }
+
+  private resetEditor(name: string, content: string, apiIds: string[] = []): void {
+    this.initialName.set(name);
+    this.initialContent.set(content);
+    this.initialApiIds.set(apiIds);
+    this.selectedApis.set(apiIds.map(id => ({ id, name: id })));
+    this.nameControl.reset(name, { emitEvent: true });
+    this.contentControl.reset(content, { emitEvent: true });
+    this.resolveApiNames(apiIds);
+  }
+
+  private confirm(data: GioConfirmDialogData): Observable<boolean> {
+    return this.matDialog
       .open<GioConfirmDialogComponent, GioConfirmDialogData, boolean>(GioConfirmDialogComponent, {
         width: GIO_DIALOG_WIDTH.SMALL,
         data,
@@ -202,51 +385,121 @@ export class SubscriptionFormComponent implements HasUnsavedChanges {
         id: 'confirmDialog',
       })
       .afterClosed()
-      .pipe(
-        filter(confirmed => {
-          if (!confirmed) this.resetEnabledToInitial();
-          return confirmed;
-        }),
-        switchMap(() => this.toggleEnabled(enabled, saveBeforeToggle)),
-        takeUntilDestroyed(this.destroyRef),
-      )
-      .subscribe();
+      .pipe(filter(confirmed => !!confirmed));
   }
 
-  private toggleEnabled(enabled: boolean, saveBeforeToggle: boolean) {
-    const form = this.subscriptionForm();
-    if (!form) {
-      this.resetEnabledToInitial();
-      return EMPTY;
+  private checkUnsavedChangesAndRun(action: () => void): void {
+    if (!this.hasUnsavedChanges()) {
+      action();
+      return;
     }
 
-    const action = enabled ? 'enable' : 'disable';
-    const toggle$ = enabled
-      ? this.subscriptionFormService.enableSubscriptionForm(form.id)
-      : this.subscriptionFormService.disableSubscriptionForm(form.id);
+    confirmDiscardChanges(this.matDialog)
+      .pipe(
+        filter(confirmed => !!confirmed),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe(() => action());
+  }
 
-    const request$ = saveBeforeToggle
-      ? this.subscriptionFormService
-          .updateSubscriptionForm(form.id, {
-            gmdContent: this.contentControl.value,
-          })
-          .pipe(
-            tap(updatedForm => this.subscriptionForm.set(updatedForm)),
-            switchMap(() => toggle$),
-          )
-      : toggle$;
+  private resolveApiNames(apiIds: string[]): void {
+    if (apiIds.length === 0) return;
+    this.apiService
+      .search({ ids: apiIds }, undefined, 1, apiIds.length, false)
+      .pipe(
+        // A failed lookup leaves the ids as they are: it does not say the APIs are gone.
+        catchError(() => of(null)),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe(response => {
+        if (response === null) return;
+        const names = new Map((response.data ?? []).map(api => [api.id, api.name]));
+        // Only the ids this lookup asked about can be judged: anything mapped since is left alone.
+        const lookedUp = new Set(apiIds);
+        this.selectedApis.update(apis =>
+          apis.map(api => {
+            const name = names.get(api.id);
+            if (name !== undefined) return { id: api.id, name };
+            // The search only returns the APIs the user can see: an id it leaves out is not a deleted API.
+            return lookedUp.has(api.id) ? { id: api.id, name: api.name, unlisted: true } : api;
+          }),
+        );
+      });
+  }
 
-    return request$.pipe(
-      tap(updatedForm => {
-        this.subscriptionForm.set(updatedForm);
-        this.enabledControl.setValue(updatedForm.enabled, { emitEvent: false });
-        this.snackbarService.success(`Subscription form has been ${updatedForm.enabled ? 'enabled' : 'disabled'} successfully.`);
+  private createForm(): Observable<unknown> {
+    const name = this.nameControl.value.trim();
+    const gmdContent = this.contentControl.value;
+    const apiIds = this.selectedApis().map(api => api.id);
+    return this.subscriptionFormService.create({ name, gmdContent, apiIds }).pipe(
+      tap(created => {
+        this.snackbarService.success('Subscription form created successfully.');
+        this.initialName.set(created.name);
+        this.initialContent.set(created.gmdContent);
+        this.initialApiIds.set(created.apiIds ?? []);
+        this.selectedFormId.set(created.id);
+        this.refreshList.next();
       }),
       catchError(({ error }) => {
-        this.resetEnabledToInitial();
-        this.snackbarService.error(error?.message ?? `Failed to ${action} subscription form.`);
+        this.snackbarService.error(error?.message ?? 'An error occurred while creating the subscription form.');
         return EMPTY;
       }),
     );
   }
+
+  private updateForm(form: SubscriptionForm): Observable<unknown> {
+    const name = this.nameControl.value.trim();
+    const gmdContent = this.contentControl.value;
+    const apiIds = this.selectedApis().map(api => api.id);
+    return this.subscriptionFormService.update(form.id, { name, gmdContent, apiIds }).pipe(
+      tap(updated => {
+        this.snackbarService.success('Subscription form updated successfully.');
+        this.initialName.set(updated.name);
+        this.initialContent.set(updated.gmdContent);
+        this.initialApiIds.set(updated.apiIds ?? []);
+        this.refreshList.next();
+      }),
+      catchError(({ error }) => {
+        this.snackbarService.error(error?.message ?? 'An error occurred while updating the subscription form.');
+        return EMPTY;
+      }),
+    );
+  }
+
+  private toggleEnabled(form: SubscriptionForm, enabled: boolean): Observable<unknown> {
+    const request$ = enabled ? this.subscriptionFormService.enable(form.id) : this.subscriptionFormService.disable(form.id);
+    return request$.pipe(
+      tap(() => {
+        this.snackbarService.success(`Subscription form "${form.name}" is now ${enabled ? 'visible to' : 'hidden from'} API consumers.`);
+        this.refreshList.next();
+      }),
+      catchError(({ error }) => {
+        this.snackbarService.error(error?.message ?? `Failed to ${enabled ? 'show' : 'hide'} the subscription form.`);
+        return EMPTY;
+      }),
+    );
+  }
+}
+
+function sameIds(left: string[], right: string[]): boolean {
+  const rightIds = new Set(right);
+  return left.length === right.length && left.every(id => rightIds.has(id));
+}
+
+/** Say who loses their form when it is deleted. */
+function deleteImpact(form: SubscriptionForm): string {
+  if (form.apiIds.length === 0) {
+    return 'It is not dedicated to any API.';
+  }
+  return form.apiIds.length === 1
+    ? 'The API it was dedicated to will have no subscription form.'
+    : `The ${form.apiIds.length} APIs it was dedicated to will have no subscription form.`;
+}
+
+/** Say who loses their form: an API whose form is hidden has none. */
+function disableImpact(form: SubscriptionForm): string {
+  if (form.apiIds.length === 0) {
+    return 'It is not dedicated to any API yet, so no consumer is affected.';
+  }
+  return `The ${form.apiIds.length} API${form.apiIds.length > 1 ? 's' : ''} it is dedicated to will have no subscription form until it is shown again.`;
 }

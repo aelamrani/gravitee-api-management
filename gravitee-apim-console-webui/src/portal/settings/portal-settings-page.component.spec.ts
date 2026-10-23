@@ -1,0 +1,528 @@
+/*
+ * Copyright (C) 2015 The Gravitee team (http://gravitee.io)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TestbedHarnessEnvironment } from '@angular/cdk/testing/testbed';
+import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { GioLicenseService, License } from '@gravitee/ui-particles-angular';
+import { of, throwError } from 'rxjs';
+
+import { PortalSettingsPageComponent } from './portal-settings-page.component';
+import { PortalSettingsPageHarness } from './portal-settings-page.harness';
+
+import { fakePortalSettings } from '../../entities/portal/portalSettings.fixture';
+import { PortalSettings } from '../../entities/portal/portalSettings';
+import { PortalSettingsService } from '../../services-ngx/portal-settings.service';
+import { SnackBarService } from '../../services-ngx/snack-bar.service';
+import { GioTestingModule } from '../../shared/testing';
+import { GioTestingPermissionProvider } from '../../shared/components/gio-permission/gio-permission.service';
+
+describe('PortalSettingsPageComponent', () => {
+  let fixture: ComponentFixture<PortalSettingsPageComponent>;
+  let harness: PortalSettingsPageHarness;
+  let portalSettingsService: { get: jest.Mock; save: jest.Mock };
+  let snackBarService: { success: jest.Mock; error: jest.Mock };
+
+  async function init(
+    settings: PortalSettings,
+    permissions = ['environment-settings-u', 'environment-settings-r'],
+    license: License = { tier: 'galaxy', packs: [], features: [], isExpired: false },
+  ): Promise<void> {
+    let persistedSettings = settings;
+    portalSettingsService = {
+      get: jest.fn().mockImplementation(() => of(persistedSettings)),
+      save: jest.fn().mockImplementation((updatedSettings: PortalSettings) => {
+        persistedSettings = updatedSettings;
+        return of(updatedSettings);
+      }),
+    };
+    snackBarService = { success: jest.fn(), error: jest.fn() };
+
+    await TestBed.configureTestingModule({
+      imports: [PortalSettingsPageComponent, GioTestingModule, NoopAnimationsModule],
+      providers: [
+        { provide: PortalSettingsService, useValue: portalSettingsService },
+        { provide: SnackBarService, useValue: snackBarService },
+        { provide: GioTestingPermissionProvider, useValue: permissions },
+        { provide: GioLicenseService, useValue: { getLicense$: () => of(license) } },
+      ],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(PortalSettingsPageComponent);
+    harness = await TestbedHarnessEnvironment.harnessForFixture(fixture, PortalSettingsPageHarness);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('loads the shared settings and exposes only enabled OpenAPI viewers', async () => {
+    const settings = fakePortalSettings();
+    await init(settings);
+
+    expect(await harness.getApiKeyHeader()).toBe(settings.portal.apikeyHeader);
+    expect(await harness.getPortalUrl()).toBe(settings.portal.url);
+    expect(await harness.getKafkaSaslMechanisms()).toBe('PLAIN, SCRAM-SHA-256, SCRAM-SHA-512');
+    expect(await (await harness.getRegistrationToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getAutomaticValidationToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getSwaggerViewer()).isDisabled()).toBe(true);
+    expect(await (await harness.getRedocViewer()).isDisabled()).toBe(false);
+    expect(await (await harness.getRedocViewer()).isChecked()).toBe(true);
+  });
+
+  it('loads the persisted Portal Next capabilities', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.mtls.enabled = true;
+    settings.portalNext.analytics.enabled = false;
+    settings.portalNext.aiWorkspaces.enabled = true;
+    settings.portalNext.catalog.fuzzySearch.enabled = true;
+
+    await init(settings);
+
+    expect(await harness.hasPortalCapabilitiesCard()).toBe(true);
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+    expect(await (await harness.getMtlsToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getAnalyticsToggle()).isChecked()).toBe(false);
+    expect(await (await harness.getFuzzySearchToggle()).isChecked()).toBe(true);
+  });
+
+  it('loads the persisted application membership settings', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.applications.membership.enabled = true;
+    settings.portalNext.applications.membership.transferOwnership.enabled = true;
+    settings.portalNext.applications.membership.invitations.enabled = false;
+
+    await init(settings);
+
+    expect(await harness.hasApplicationMembershipCard()).toBe(true);
+    expect(await harness.hasPortalNextDisabledBanner()).toBe(false);
+    expect(await (await harness.getApplicationMembershipToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getMembershipInvitationsToggle()).isChecked()).toBe(false);
+  });
+
+  it('disables application membership children without clearing them when the parent is disabled', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.applications.membership.enabled = false;
+    settings.portalNext.applications.membership.transferOwnership.enabled = true;
+    settings.portalNext.applications.membership.invitations.enabled = true;
+
+    await init(settings);
+
+    const membershipToggle = await harness.getApplicationMembershipToggle();
+    const transferOwnershipToggle = await harness.getTransferOwnershipToggle();
+    const invitationsToggle = await harness.getMembershipInvitationsToggle();
+
+    expect(await transferOwnershipToggle.isDisabled()).toBe(true);
+    expect(await invitationsToggle.isDisabled()).toBe(true);
+    expect(await transferOwnershipToggle.isChecked()).toBe(true);
+    expect(await invitationsToggle.isChecked()).toBe(true);
+
+    await membershipToggle.toggle();
+
+    expect(await transferOwnershipToggle.isDisabled()).toBe(false);
+    expect(await invitationsToggle.isDisabled()).toBe(false);
+
+    await membershipToggle.toggle();
+
+    expect(await transferOwnershipToggle.isDisabled()).toBe(true);
+    expect(await invitationsToggle.isDisabled()).toBe(true);
+    expect(await transferOwnershipToggle.isChecked()).toBe(true);
+    expect(await invitationsToggle.isChecked()).toBe(true);
+  });
+
+  it('updates application membership and preserves all unrelated settings', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.applications.membership.enabled = true;
+    settings.portalNext.applications.membership.transferOwnership.enabled = false;
+    settings.portalNext.applications.membership.invitations.enabled = true;
+    await init(settings);
+
+    await (await harness.getTransferOwnershipToggle()).toggle();
+    await harness.submit();
+
+    const savedSettings = portalSettingsService.save.mock.calls[0][0] as PortalSettings;
+    expect(savedSettings.portalNext.applications.membership).toEqual({
+      enabled: true,
+      transferOwnership: { enabled: true },
+      invitations: { enabled: true },
+    });
+    expect(savedSettings.portalNext.access).toEqual(settings.portalNext.access);
+    expect(savedSettings.portalNext.mtls).toEqual(settings.portalNext.mtls);
+    expect(savedSettings.portalNext.analytics).toEqual(settings.portalNext.analytics);
+    expect(savedSettings.portalNext.aiWorkspaces).toEqual(settings.portalNext.aiWorkspaces);
+    expect(savedSettings.portalNext.catalog).toEqual(settings.portalNext.catalog);
+    expect(savedSettings.portalNext.banner).toEqual(settings.portalNext.banner);
+    expect(savedSettings.portal).toEqual(settings.portal);
+    expect(savedSettings.cors).toEqual(settings.cors);
+  });
+
+  it('preserves application membership child values when the disabled parent is saved', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.applications.membership.enabled = true;
+    settings.portalNext.applications.membership.transferOwnership.enabled = true;
+    settings.portalNext.applications.membership.invitations.enabled = true;
+    await init(settings);
+
+    await (await harness.getApplicationMembershipToggle()).toggle();
+    await harness.submit();
+
+    const savedSettings = portalSettingsService.save.mock.calls[0][0] as PortalSettings;
+    expect(savedSettings.portalNext.applications.membership).toEqual({
+      enabled: false,
+      transferOwnership: { enabled: true },
+      invitations: { enabled: true },
+    });
+  });
+
+  it('disables application membership settings when Portal Next access is disabled', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.access.enabled = false;
+    settings.portalNext.applications.membership.enabled = true;
+    settings.portalNext.applications.membership.transferOwnership.enabled = true;
+    settings.portalNext.applications.membership.invitations.enabled = true;
+
+    await init(settings);
+
+    expect(await (await harness.getApplicationMembershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(true);
+    expect(await harness.hasPortalNextDisabledBanner()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getMembershipInvitationsToggle()).isChecked()).toBe(true);
+
+    await harness.setApiKeyHeader('X-Custom-Api-Key');
+    await harness.submit();
+
+    const savedSettings = portalSettingsService.save.mock.calls[0][0] as PortalSettings;
+    expect(savedSettings.portalNext.applications.membership).toEqual(settings.portalNext.applications.membership);
+  });
+
+  it('keeps a stored AI Workspaces value when another capability is saved', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.aiWorkspaces.enabled = true;
+    await init(settings);
+
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+
+    await (await harness.getAnalyticsToggle()).toggle();
+    await harness.submit();
+
+    const savedSettings = portalSettingsService.save.mock.calls[0][0] as PortalSettings;
+    expect(savedSettings.portalNext.aiWorkspaces.enabled).toBe(true);
+    expect(savedSettings.portalNext.analytics.enabled).toBe(true);
+  });
+
+  it('saves AI Workspaces as off when the setting was never stored', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.aiWorkspaces = undefined;
+    await init(settings);
+
+    await harness.setApiKeyHeader('X-Custom-Api-Key');
+    await harness.submit();
+
+    const savedSettings = portalSettingsService.save.mock.calls[0][0] as PortalSettings;
+    expect(savedSettings.portalNext.aiWorkspaces).toEqual({ enabled: false });
+  });
+
+  it('defaults missing application membership settings to disabled', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.applications = undefined;
+    settings.portalNext.aiWorkspaces = undefined;
+
+    await init(settings);
+
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+    expect(await (await harness.getApplicationMembershipToggle()).isChecked()).toBe(false);
+    expect(await (await harness.getTransferOwnershipToggle()).isChecked()).toBe(false);
+    expect(await (await harness.getMembershipInvitationsToggle()).isChecked()).toBe(false);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(true);
+  });
+
+  it.each([
+    { label: 'mTLS', getToggle: (page: PortalSettingsPageHarness) => page.getMtlsToggle(), capability: 'mtls' },
+    { label: 'analytics', getToggle: (page: PortalSettingsPageHarness) => page.getAnalyticsToggle(), capability: 'analytics' },
+    {
+      label: 'fuzzy search',
+      getToggle: (page: PortalSettingsPageHarness) => page.getFuzzySearchToggle(),
+      capability: 'fuzzySearch',
+    },
+  ])('updates $label independently and preserves all unrelated settings', async ({ getToggle, capability }) => {
+    const settings = fakePortalSettings();
+    settings.portalNext.mtls.enabled = false;
+    settings.portalNext.analytics.enabled = false;
+    settings.portalNext.aiWorkspaces.enabled = false;
+    settings.portalNext.catalog.fuzzySearch.enabled = false;
+    await init(settings);
+
+    await (await getToggle(harness)).toggle();
+    await harness.submit();
+
+    const savedSettings = portalSettingsService.save.mock.calls[0][0] as PortalSettings;
+    expect(savedSettings.portalNext.access).toEqual(settings.portalNext.access);
+    expect(savedSettings.portalNext.applications).toEqual(settings.portalNext.applications);
+    expect(savedSettings.portalNext.banner).toEqual(settings.portalNext.banner);
+    expect(savedSettings.portal).toEqual(settings.portal);
+    expect(savedSettings.cors).toEqual(settings.cors);
+
+    expect(savedSettings.portalNext.mtls.enabled).toBe(capability === 'mtls');
+    expect(savedSettings.portalNext.analytics.enabled).toBe(capability === 'analytics');
+    expect(savedSettings.portalNext.aiWorkspaces.enabled).toBe(false);
+    expect(savedSettings.portalNext.catalog.fuzzySearch.enabled).toBe(capability === 'fuzzySearch');
+  });
+
+  it('keeps Portal Next capabilities editable when Portal Next access is disabled', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.access.enabled = false;
+
+    await init(settings);
+
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+    expect(await (await harness.getMtlsToggle()).isDisabled()).toBe(false);
+    expect(await (await harness.getAnalyticsToggle()).isDisabled()).toBe(false);
+    expect(await (await harness.getFuzzySearchToggle()).isDisabled()).toBe(false);
+  });
+
+  it('resets Portal Next settings to their persisted values and disabled state', async () => {
+    const settings = fakePortalSettings();
+    settings.portalNext.mtls.enabled = true;
+    settings.portalNext.analytics.enabled = false;
+    settings.portalNext.aiWorkspaces.enabled = true;
+    settings.portalNext.catalog.fuzzySearch.enabled = true;
+    settings.portalNext.applications.membership.enabled = true;
+    settings.portalNext.applications.membership.transferOwnership.enabled = true;
+    settings.portalNext.applications.membership.invitations.enabled = false;
+    await init(settings);
+
+    await (await harness.getMtlsToggle()).toggle();
+    await (await harness.getAnalyticsToggle()).toggle();
+    await (await harness.getFuzzySearchToggle()).toggle();
+    await (await harness.getTransferOwnershipToggle()).toggle();
+    await (await harness.getMembershipInvitationsToggle()).toggle();
+    await (await harness.getApplicationMembershipToggle()).toggle();
+    expect(fixture.componentInstance.hasUnsavedChanges()).toBe(true);
+
+    await harness.reset();
+
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+    expect(await (await harness.getMtlsToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getAnalyticsToggle()).isChecked()).toBe(false);
+    expect(await (await harness.getFuzzySearchToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getApplicationMembershipToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isChecked()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(false);
+    expect(await (await harness.getMembershipInvitationsToggle()).isChecked()).toBe(false);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(false);
+    expect(fixture.componentInstance.hasUnsavedChanges()).toBe(false);
+  });
+
+  it('hides Portal Next settings for an OSS license', async () => {
+    await init(fakePortalSettings(), ['environment-settings-u', 'environment-settings-r'], {
+      tier: 'oss',
+      packs: [],
+      features: [],
+      isExpired: false,
+    });
+
+    expect(await harness.hasPortalCapabilitiesCard()).toBe(false);
+    expect(await harness.hasApplicationMembershipCard()).toBe(false);
+  });
+
+  it('preserves the automatic validation value when registration is disabled', async () => {
+    await init(fakePortalSettings());
+    const registrationToggle = await harness.getRegistrationToggle();
+    const automaticValidationToggle = await harness.getAutomaticValidationToggle();
+
+    await registrationToggle.toggle();
+
+    expect(await automaticValidationToggle.isDisabled()).toBe(true);
+    expect(await automaticValidationToggle.isChecked()).toBe(true);
+
+    await registrationToggle.toggle();
+
+    expect(await automaticValidationToggle.isDisabled()).toBe(false);
+    expect(await automaticValidationToggle.isChecked()).toBe(true);
+  });
+
+  it('disables all controls when the user has read permission only', async () => {
+    await init(fakePortalSettings(), ['environment-settings-r']);
+
+    expect(await harness.isApiKeyHeaderDisabled()).toBe(true);
+    expect(await harness.isPortalUrlDisabled()).toBe(true);
+    expect(await harness.isKafkaSaslMechanismsDisabled()).toBe(true);
+    expect(await (await harness.getRegistrationToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getRedocViewer()).isDisabled()).toBe(true);
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+    expect(await (await harness.getMtlsToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getAnalyticsToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getFuzzySearchToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getApplicationMembershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(true);
+  });
+
+  it('keeps application membership children disabled when the read-only parent is disabled', async () => {
+    const settings = fakePortalSettings({
+      metadata: {
+        readonly: ['portal.next.applications.membership.enabled'],
+      },
+    });
+    settings.portalNext.applications.membership.enabled = false;
+
+    await init(settings);
+
+    expect(await (await harness.getApplicationMembershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(true);
+  });
+
+  it('respects property-level read-only metadata', async () => {
+    const settings = fakePortalSettings({
+      metadata: {
+        readonly: [
+          'portal.apikey.header',
+          'portal.kafka.saslMechanisms',
+          'portal.next.mtls.enabled',
+          'portal.next.analytics.enabled',
+          'portal.next.aiWorkspaces.enabled',
+          'portal.next.catalog.fuzzySearch.enabled',
+          'portal.next.applications.membership.enabled',
+        ],
+      },
+    });
+    settings.portalNext.applications.membership.enabled = true;
+    await init(settings);
+
+    expect(await harness.isApiKeyHeaderDisabled()).toBe(true);
+    expect(await harness.isPortalUrlDisabled()).toBe(false);
+    expect(await harness.isKafkaSaslMechanismsDisabled()).toBe(true);
+    expect(fixture.nativeElement.querySelector('[data-testid="portal-next-ai-workspaces-toggle"]')).toBeNull();
+    expect(await (await harness.getMtlsToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getAnalyticsToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getFuzzySearchToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getApplicationMembershipToggle()).isDisabled()).toBe(true);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(false);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(false);
+  });
+
+  it('keeps only the read-only application membership child disabled', async () => {
+    const settings = fakePortalSettings({
+      metadata: {
+        readonly: ['portal.next.applications.membership.invitations.enabled'],
+      },
+    });
+    settings.portalNext.applications.membership.enabled = true;
+
+    await init(settings);
+
+    expect(await (await harness.getApplicationMembershipToggle()).isDisabled()).toBe(false);
+    expect(await (await harness.getTransferOwnershipToggle()).isDisabled()).toBe(false);
+    expect(await (await harness.getMembershipInvitationsToggle()).isDisabled()).toBe(true);
+  });
+
+  it('merges edited values into the complete settings payload', async () => {
+    const settings = fakePortalSettings();
+    await init(settings);
+
+    await harness.setApiKeyHeader('X-Custom-Api-Key');
+    await harness.toggleKafkaSaslMechanism('SCRAM-SHA-256');
+    await harness.toggleKafkaSaslMechanism('SCRAM-SHA-512');
+    expect(fixture.componentInstance.hasUnsavedChanges()).toBe(true);
+    await harness.submit();
+
+    expect(portalSettingsService.save).toHaveBeenCalledTimes(1);
+    expect(portalSettingsService.save).toHaveBeenCalledWith({
+      ...settings,
+      portal: {
+        ...settings.portal,
+        apikeyHeader: 'X-Custom-Api-Key',
+        kafkaSaslMechanisms: ['PLAIN'],
+        userCreation: {
+          ...settings.portal.userCreation,
+          automaticValidation: {
+            ...settings.portal.userCreation.automaticValidation,
+          },
+        },
+      },
+      openAPIDocViewer: {
+        ...settings.openAPIDocViewer,
+        openAPIDocType: {
+          ...settings.openAPIDocViewer.openAPIDocType,
+        },
+      },
+    });
+    expect(portalSettingsService.get).toHaveBeenCalledTimes(1);
+    expect(snackBarService.success).toHaveBeenCalledWith('Portal settings saved successfully.');
+    expect(snackBarService.success).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance.hasUnsavedChanges()).toBe(false);
+  });
+
+  it('keeps entered values and dirty state after a save failure', async () => {
+    await init(fakePortalSettings());
+    portalSettingsService.save.mockReturnValue(throwError(() => ({ error: { message: 'Save failed' } })));
+
+    await harness.setApiKeyHeader('X-Unsaved-Key');
+    await harness.submit();
+
+    expect(await harness.getApiKeyHeader()).toBe('X-Unsaved-Key');
+    expect(fixture.componentInstance.hasUnsavedChanges()).toBe(true);
+    expect(snackBarService.error).toHaveBeenCalledWith('Save failed');
+  });
+
+  it('shows a recoverable load error and retries the request', async () => {
+    const settings = fakePortalSettings();
+    portalSettingsService = {
+      get: jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => new Error('Load failed')))
+        .mockReturnValueOnce(of(settings)),
+      save: jest.fn(),
+    };
+    snackBarService = { success: jest.fn(), error: jest.fn() };
+
+    await TestBed.configureTestingModule({
+      imports: [PortalSettingsPageComponent, GioTestingModule, NoopAnimationsModule],
+      providers: [
+        { provide: PortalSettingsService, useValue: portalSettingsService },
+        { provide: SnackBarService, useValue: snackBarService },
+        { provide: GioTestingPermissionProvider, useValue: ['environment-settings-u', 'environment-settings-r'] },
+        {
+          provide: GioLicenseService,
+          useValue: { getLicense$: () => of({ tier: 'galaxy', packs: [], features: [], isExpired: false } satisfies License) },
+        },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(PortalSettingsPageComponent);
+    harness = await TestbedHarnessEnvironment.harnessForFixture(fixture, PortalSettingsPageHarness);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(await harness.hasLoadError()).toBe(true);
+
+    await harness.retry();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(await harness.hasLoadError()).toBe(false);
+    expect(await harness.getApiKeyHeader()).toBe(settings.portal.apikeyHeader);
+    expect(portalSettingsService.get).toHaveBeenCalledTimes(2);
+  });
+});

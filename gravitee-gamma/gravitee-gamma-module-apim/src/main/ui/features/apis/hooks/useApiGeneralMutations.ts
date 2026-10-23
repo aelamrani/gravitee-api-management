@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 import { useEnvironment } from '@gravitee/gamma-modules-sdk';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 
@@ -23,6 +23,10 @@ import {
     deleteApiBackground,
     deleteApiPicture,
     duplicateApi,
+    getApiV4,
+    getPendingPromotions,
+    getPromotionTargets,
+    promoteApi,
     startApi,
     stopApi,
     updateApiBackground,
@@ -34,15 +38,16 @@ import {
     updateApiPicture,
 } from '../services/apis';
 import type { ApiDetailDto, ApiImportSubmission, DuplicateApiOptions } from '../types';
-import { apiDetailKeys } from '../utils/queryKeys';
+import { apiDetailKeys, apiListKeys, apiPromotionKeys } from '../utils/queryKeys';
 
 interface ApiGeneralSideEffects {
     onDeleteSuccess?: () => void;
     onDuplicateSuccess?: (newApi: ApiDetailDto) => void;
     onImportSuccess?: (updatedApi: ApiDetailDto) => void;
+    onPromoteSuccess?: () => void;
 }
 
-export function useApiGeneralMutations(api: ApiDetailDto | null, sideEffects: ApiGeneralSideEffects = {}) {
+export function useApiGeneralMutations(api: ApiDetailDto | null, sideEffects: ApiGeneralSideEffects = {}, promoteDialogOpen = false) {
     const { apiId } = useParams<{ apiId: string }>();
     const env = useEnvironment();
     const queryClient = useQueryClient();
@@ -60,6 +65,15 @@ export function useApiGeneralMutations(api: ApiDetailDto | null, sideEffects: Ap
         onSuccess: invalidateDetail,
     });
 
+    // Classic danger-zone loads the API again before publish, visibility, and deprecate.
+    const lifecycleMutation = useMutation({
+        mutationFn: async (patch: Partial<ApiDetailDto>) => {
+            const current = await getApiV4(env!.id, apiId!);
+            return updateApiGeneral(env!.id, apiId!, current, patch);
+        },
+        onSuccess: invalidateDetail,
+    });
+
     const startMutation = useMutation({
         mutationFn: () => startApi(env!.id, apiId!),
         onSuccess: invalidateDetail,
@@ -72,12 +86,41 @@ export function useApiGeneralMutations(api: ApiDetailDto | null, sideEffects: Ap
 
     const deleteMutation = useMutation({
         mutationFn: () => deleteApi(env!.id, apiId!),
-        onSuccess: () => sideEffectsRef.current.onDeleteSuccess?.(),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: apiListKeys.all });
+            sideEffectsRef.current.onDeleteSuccess?.();
+        },
     });
 
     const duplicateMutation = useMutation({
         mutationFn: (opts: DuplicateApiOptions) => duplicateApi(env!.id, apiId!, opts),
         onSuccess: newApi => sideEffectsRef.current.onDuplicateSuccess?.(newApi),
+    });
+
+    // Both refetch whenever the dialog reopens; refetching on window focus instead would blank an
+    // open dialog back to its loading state, since that state now follows isFetching.
+    const promotionTargetsQuery = useQuery({
+        queryKey: apiPromotionKeys.targets(env?.id ?? ''),
+        queryFn: () => getPromotionTargets(env!.id),
+        enabled: promoteDialogOpen && Boolean(env?.id),
+        retry: false,
+        refetchOnWindowFocus: false,
+    });
+
+    const pendingPromotionsQuery = useQuery({
+        queryKey: apiPromotionKeys.pending(apiId ?? ''),
+        queryFn: () => getPendingPromotions(apiId!),
+        enabled: promoteDialogOpen && Boolean(apiId),
+        retry: false,
+        refetchOnWindowFocus: false,
+    });
+
+    const promoteMutation = useMutation({
+        mutationFn: (target: { targetEnvCockpitId: string; targetEnvName: string }) => promoteApi(env!.id, apiId!, target),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: apiPromotionKeys.pending(apiId ?? '') });
+            sideEffectsRef.current.onPromoteSuccess?.();
+        },
     });
 
     const performImportSubmission = (submission: ApiImportSubmission) => {
@@ -123,6 +166,7 @@ export function useApiGeneralMutations(api: ApiDetailDto | null, sideEffects: Ap
 
     return {
         saveMutation,
+        lifecycleMutation,
         startMutation,
         stopMutation,
         deleteMutation,
@@ -132,5 +176,8 @@ export function useApiGeneralMutations(api: ApiDetailDto | null, sideEffects: Ap
         removePictureMutation,
         backgroundMutation,
         removeBackgroundMutation,
+        promotionTargetsQuery,
+        pendingPromotionsQuery,
+        promoteMutation,
     };
 }

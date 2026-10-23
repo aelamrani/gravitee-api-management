@@ -504,13 +504,22 @@ public class JdbcApplicationRepository extends JdbcAbstractCrudRepository<Applic
             field = sortable.field();
         }
 
-        sbQuery.append(String.format("order by a.%s %s", field, direction));
+        // id tie-breaker keeps pages stable when sort values collide (e.g. same name)
+        sbQuery.append(String.format("order by a.%s %s, a.id %s", field, direction, direction));
 
         return sbQuery.toString();
     }
 
     private List<Application> search(ApplicationCriteria applicationCriteria, Sortable sortable) {
         log.debug("JdbcApplicationRepository.search({})", applicationCriteria);
+        // An empty restriction matches nothing, and must not reach the query: "in ()" is not valid SQL.
+        if (
+            applicationCriteria != null &&
+            applicationCriteria.getRestrictedToIds() != null &&
+            applicationCriteria.getRestrictedToIds().isEmpty()
+        ) {
+            return List.of();
+        }
         final JdbcHelper.CollatingRowMapper<Application> rowMapper = new JdbcHelper.CollatingRowMapper<>(
             getOrm().getRowMapper(),
             CHILD_ADDER,

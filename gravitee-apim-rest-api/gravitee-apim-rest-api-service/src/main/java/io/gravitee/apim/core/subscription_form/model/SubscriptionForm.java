@@ -16,8 +16,7 @@
 package io.gravitee.apim.core.subscription_form.model;
 
 import io.gravitee.apim.core.gravitee_markdown.GraviteeMarkdown;
-import io.gravitee.apim.core.portal_page.model.PortalPageContentId;
-import jakarta.annotation.Nullable;
+import java.util.List;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -28,8 +27,8 @@ import lombok.Getter;
  * <p>The form content is defined using Gravitee Markdown (GMD) syntax with
  * form components like gmd-input, gmd-textarea, gmd-select, gmd-checkbox, gmd-radio.</p>
  *
- * <p>Currently, forms are scoped to the environment level (one form per environment).
- * Future versions may support per-API or per-plan forms.</p>
+ * <p>An environment holds a catalog of named forms. A form only applies to the APIs it is dedicated to: an API
+ * without one has no subscription form.</p>
  *
  * <p>Mutation (update, enable, disable) is done via instance methods that modify internal state,
  * similar to {@link io.gravitee.apim.core.portal_page.model.GraviteeMarkdownPageContent}.</p>
@@ -43,26 +42,31 @@ public class SubscriptionForm {
     private final SubscriptionFormId id;
     private final String environmentId;
 
-    /**
-     * The {@link io.gravitee.apim.core.portal_page.model.GraviteeMarkdownPageContent} holding the form
-     * definition, shared with every other GMD-backed portal content. {@code null} until the form has been
-     * persisted, and on a legacy form whose definition is still stored inline: the CRUD service creates
-     * the content on the next write in both cases.
-     */
-    @Nullable
-    private final PortalPageContentId portalPageContentId;
+    /** Display name, unique within the environment. */
+    private String name;
 
-    /** The form definition, loaded from {@link #portalPageContentId}. */
     private GraviteeMarkdown gmdContent;
     private boolean enabled;
+
+    /** Identifiers of the APIs this form is dedicated to. An API is mapped to at most one form. */
+    @Builder.Default
+    private List<String> apiIds = List.of();
+
     private SubscriptionFormFieldConstraints validationConstraints;
 
     /**
-     * Updates this form (mutates in place).
+     * Updates the definition of this form (mutates in place).
      */
     public void update(GraviteeMarkdown gmdContent, SubscriptionFormFieldConstraints constraints) {
         this.gmdContent = gmdContent;
         this.validationConstraints = constraints;
+    }
+
+    /**
+     * Renames this form (mutates in place).
+     */
+    public void rename(String name) {
+        this.name = name;
     }
 
     /**
@@ -77,5 +81,22 @@ public class SubscriptionForm {
      */
     public void disable() {
         this.enabled = false;
+    }
+
+    /**
+     * Replaces the APIs this form is dedicated to (mutates in place).
+     */
+    public void assignApis(List<String> apiIds) {
+        this.apiIds = List.copyOf(apiIds);
+    }
+
+    /**
+     * Stops dedicating this form to an API (mutates in place).
+     */
+    public void unassignApi(String apiId) {
+        this.apiIds = apiIds
+            .stream()
+            .filter(id -> !id.equals(apiId))
+            .toList();
     }
 }

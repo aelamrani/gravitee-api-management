@@ -22,7 +22,9 @@ import io.gravitee.apim.core.subscription.model.SubscriptionReferenceType;
 import io.gravitee.apim.core.subscription.model.crd.ApiKeyCRDSpec;
 import io.gravitee.apim.core.subscription.model.crd.SubscriptionCRDSpec;
 import io.gravitee.apim.core.subscription.model.crd.SubscriptionCRDStatus;
+import io.gravitee.apim.core.subscription.query_service.SubscriptionQueryService;
 import io.gravitee.apim.core.subscription.use_case.ImportSubscriptionCRDUseCase;
+import io.gravitee.apim.rest.api.automation.helpers.ApiIdResolver;
 import io.gravitee.apim.rest.api.automation.mapper.SubscriptionMapper;
 import io.gravitee.apim.rest.api.automation.model.ApiKeySpec;
 import io.gravitee.apim.rest.api.automation.model.SubscriptionSpec;
@@ -32,6 +34,7 @@ import io.gravitee.rest.api.rest.annotation.Permission;
 import io.gravitee.rest.api.rest.annotation.Permissions;
 import io.gravitee.rest.api.service.common.GraviteeContext;
 import io.gravitee.rest.api.service.common.HRIDToUUID;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
@@ -41,6 +44,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ResourceContext;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
@@ -54,6 +58,9 @@ public class ApiSubscriptionsResource extends AbstractResource {
 
     @Inject
     private ImportSubscriptionCRDUseCase importSubscriptionCRDUseCase;
+
+    @Inject
+    private SubscriptionQueryService subscriptionQueryService;
 
     @Context
     private ResourceContext resourceContext;
@@ -72,12 +79,15 @@ public class ApiSubscriptionsResource extends AbstractResource {
         @PathParam("apiHrid") String apiHrid,
         @QueryParam("hridContainsUUID") boolean hridContainsUUID,
         @QueryParam("hridContainsApiUUID") boolean hridContainsApiUUID,
-        @QueryParam("hridContainsAppUUID") boolean hridContainsAppUUID
+        @QueryParam("hridContainsAppUUID") boolean hridContainsAppUUID,
+        @Context ContainerRequestContext requestContext
     ) {
         var executionContext = GraviteeContext.getExecutionContext();
         var userDetails = getAuthenticatedUserDetails();
 
         var auditInfo = buildAuditInfo(executionContext, userDetails);
+
+        var apiId = ApiIdResolver.authorizedApiId(requestContext);
 
         // Legacy mode means 'Hrid' fields contains GUID from GKO Status
         // that were preexisting in the kube cluster
@@ -92,7 +102,7 @@ public class ApiSubscriptionsResource extends AbstractResource {
                     ? spec.getApplicationHrid()
                     : HRIDToUUID.application().context(auditInfo).hrid(spec.getApplicationHrid()).id()
             )
-            .referenceId(hridContainsApiUUID ? apiHrid : HRIDToUUID.api().context(auditInfo).hrid(apiHrid).id())
+            .referenceId(apiId)
             .referenceType(SubscriptionReferenceType.API)
             .planId(
                 hridContainsApiUUID ? spec.getPlanHrid() : HRIDToUUID.plan().context(auditInfo).api(apiHrid).plan(spec.getPlanHrid()).id()
@@ -103,8 +113,22 @@ public class ApiSubscriptionsResource extends AbstractResource {
             .consumerConfiguration(SubscriptionMapper.INSTANCE.toConsumerConfiguration(spec.getConsumerConfiguration()))
             .build();
 
+        var existing = subscriptionQueryService.findByIdAndReferenceIdAndReferenceType(
+            subscriptionCRDSpec.getId(),
+            subscriptionCRDSpec.getReferenceId(),
+            SubscriptionReferenceType.API
+        );
+        requireCreateOrUpdateOn(RolePermission.API_SUBSCRIPTION, subscriptionCRDSpec.getReferenceId(), existing.isPresent());
+        // Creating or restoring a subscription gives the application access, so the caller must be allowed to subscribe it
+        if (
+            existing.map(subscription -> subscription.isClosed()).orElse(true) &&
+            !hasPermission(executionContext, RolePermission.APPLICATION_SUBSCRIPTION, subscriptionCRDSpec.getApplicationId(), CREATE)
+        ) {
+            throw new ForbiddenAccessException();
+        }
+
         SubscriptionCRDStatus status = importSubscriptionCRDUseCase
-            .execute(new ImportSubscriptionCRDUseCase.Input(auditInfo, subscriptionCRDSpec))
+            .execute(new ImportSubscriptionCRDUseCase.Input(auditInfo, subscriptionCRDSpec.getReferenceId(), subscriptionCRDSpec))
             .status();
 
         return Response.ok(SubscriptionMapper.INSTANCE.subscriptionSpecAndStatusToSubscriptionState(apiHrid, spec, status)).build();

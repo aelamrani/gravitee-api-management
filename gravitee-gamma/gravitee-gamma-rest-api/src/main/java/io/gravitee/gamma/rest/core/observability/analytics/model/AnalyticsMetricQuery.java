@@ -15,13 +15,21 @@
  */
 package io.gravitee.gamma.rest.core.observability.analytics.model;
 
+import io.gravitee.gamma.rest.core.observability.filter.model.FilterCondition;
 import java.util.List;
 
 /**
  * Framework-independent metric spec for the measures endpoint. String-typed so the core layer
  * stays free from analytics-engine enums — the adapter translates names at the boundary.
  *
+ * @param id          The caller's name for this metric, echoed on its response entry; {@code null} when the
+ *                    request names its metrics by metric name only.
  * @param metricName  Metric identifier (e.g. "HTTP_REQUESTS", "LLM_PROMPT_TOKEN_SENT").
  * @param measures    Aggregation functions to compute (e.g. "COUNT", "AVG", "P99").
+ * @param filters     The metric's own conditions, ANDed with the request's when applied.
  */
-public record AnalyticsMetricQuery(String metricName, List<String> measures) {}
+public record AnalyticsMetricQuery(String id, String metricName, List<String> measures, List<FilterCondition> filters) {
+    public AnalyticsMetricQuery {
+        filters = filters == null ? List.of() : List.copyOf(filters);
+    }
+}

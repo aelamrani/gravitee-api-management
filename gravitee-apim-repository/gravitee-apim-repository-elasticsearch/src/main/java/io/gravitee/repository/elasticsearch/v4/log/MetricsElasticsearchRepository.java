@@ -44,6 +44,7 @@ import io.gravitee.repository.log.v4.model.authz.AuthzDecisionLogQuery;
 import io.gravitee.repository.log.v4.model.connection.*;
 import io.gravitee.repository.log.v4.model.message.MessageMetrics;
 import io.gravitee.repository.log.v4.model.message.MessageMetricsQuery;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import lombok.CustomLog;
@@ -90,7 +91,7 @@ public class MetricsElasticsearchRepository extends AbstractElasticsearchReposit
     }
 
     @Override
-    public List<String> searchConnectionLogErrorKeys(QueryContext queryContext, String apiId, Long from, Long to) {
+    public List<String> searchConnectionLogErrorKeys(QueryContext queryContext, Collection<String> apiIds, Long from, Long to) {
         var indexes = getQueryIndexesFromDefinitionVersions(
             Type.REQUEST,
             Type.V4_METRICS,
@@ -98,7 +99,7 @@ public class MetricsElasticsearchRepository extends AbstractElasticsearchReposit
             queryContext,
             List.of(DefinitionVersion.V2, DefinitionVersion.V4)
         );
-        var query = SearchConnectionLogErrorKeysQuery.of(apiId, from, to);
+        var query = SearchConnectionLogErrorKeysQuery.of(apiIds, from, to);
         var searchRequest = SearchConnectionLogErrorKeysQueryAdapter.adapt(query);
         var searchResponse = this.client.search(indexes, null, searchRequest);
         return searchResponse.map(SearchConnectionLogErrorKeysResponseAdapter::adapt).blockingGet();
@@ -135,10 +136,15 @@ public class MetricsElasticsearchRepository extends AbstractElasticsearchReposit
             queryContext,
             List.of(DefinitionVersion.V4)
         );
+        // Built before the try on purpose. The adapter refuses a page past the cluster's result window with an
+        // IllegalArgumentException, and that is the caller's mistake, not a search failure: wrapping it as an
+        // AnalyticsException turns a 400 into a 500 and buries the message that says which page was too deep.
+        var searchQuery = NativeApiMetricsSearchQueryAdapter.adapt(query, configuration.getMaxResultWindow());
         try {
-            return this.client.search(indexes, null, NativeApiMetricsSearchQueryAdapter.adapt(query))
-                .map(NativeApiMetricsSearchResponseAdapter::adapt)
-                .blockingGet();
+            var response = this.client.search(indexes, null, searchQuery).map(NativeApiMetricsSearchResponseAdapter::adapt).blockingGet();
+            // The count is truthful; how far it can be paged is not the same number. Handed up rather than
+            // used to clamp the total, so the caller can say "10 000 of 50 000" instead of just "10 000".
+            return new LogResponse<>(response.total(), response.data(), (long) configuration.getMaxResultWindow());
         } catch (RuntimeException e) {
             log.error("Failed to search native metrics [apiId={}]", query.getApiId(), e);
             throw new AnalyticsException("Failed to search native metrics for api " + query.getApiId(), e);
@@ -150,10 +156,10 @@ public class MetricsElasticsearchRepository extends AbstractElasticsearchReposit
         throws AnalyticsException {
         query.validate();
         var clusters = ClusterUtils.extractClusterIndexPrefixes(configuration);
-        var index = this.indexNameGenerator.getWildcardIndexName(queryContext.placeholder(), Type.AUTHZ_DECISIONS, clusters);
+        var index = this.indexNameGenerator.getWildcardIndexName(queryContext.placeholder(), Type.DECISIONS, clusters);
 
         try {
-            return this.client.search(index, null, SearchAuthzDecisionLogsQueryAdapter.adapt(query))
+            return this.client.search(index, null, SearchAuthzDecisionLogsQueryAdapter.adapt(queryContext, query))
                 .map(SearchAuthzDecisionLogsResponseAdapter::adapt)
                 .blockingGet();
         } catch (RuntimeException e) {
@@ -165,10 +171,10 @@ public class MetricsElasticsearchRepository extends AbstractElasticsearchReposit
     public Optional<AuthzDecisionLog> findAuthzDecisionLog(QueryContext queryContext, String apiId, String eventId)
         throws AnalyticsException {
         var clusters = ClusterUtils.extractClusterIndexPrefixes(configuration);
-        var index = this.indexNameGenerator.getWildcardIndexName(queryContext.placeholder(), Type.AUTHZ_DECISIONS, clusters);
+        var index = this.indexNameGenerator.getWildcardIndexName(queryContext.placeholder(), Type.DECISIONS, clusters);
 
         try {
-            return this.client.search(index, null, FindAuthzDecisionLogQueryAdapter.adapt(apiId, eventId))
+            return this.client.search(index, null, FindAuthzDecisionLogQueryAdapter.adapt(queryContext, apiId, eventId))
                 .map(SearchAuthzDecisionLogsResponseAdapter::adaptFirst)
                 .blockingGet();
         } catch (RuntimeException e) {

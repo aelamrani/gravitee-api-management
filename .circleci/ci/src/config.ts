@@ -13,13 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-const artifactoryUrl = 'https://odbxikk7vo-artifactory.services.clever-cloud.com';
-
 const awsCliVersion = '2.22.35';
 const awsECRUrl = '430630701098.dkr.ecr.eu-west-2.amazonaws.com';
 
 const cache = {
-  prefix: 'gravitee-api-management-v15',
+  prefix: 'gravitee-api-management-v16',
   // Written by `Build backend`, read by `Test rest-api` and by nothing else.
   restApiClassesArchive: '/tmp/rest-api-classes.tar',
 };
@@ -103,6 +101,7 @@ const maven = {
   // Pinned: an unpinned plugin coordinate makes Maven resolve maven-metadata.xml first.
   dependencyPluginVersion: '3.8.1',
   azureFeedUrl: 'https://pkgs.dev.azure.com/graviteeio/packages/_packaging/gravitee/maven/v1',
+  azureSnapshotsFeedUrl: 'https://pkgs.dev.azure.com/graviteeio/packages/_packaging/gravitee-snapshots/maven/v1',
 };
 
 const yarn = {
@@ -111,7 +110,6 @@ const yarn = {
 
 const orbs = {
   aikido: '1.0.3',
-  artifactory: '1.0.1',
   awsCli: '5.1.2',
   awsS3: '4.1.0',
   github: '1.0.5',
@@ -123,8 +121,6 @@ const orbs = {
 
 const secrets = {
   aikidoApiKey: 'keeper://_XrkO71xa9HZBwxYoUHX0w/field/password',
-  artifactoryApiKey: 'keeper://R7NuqoW0KD-8l-kjx0-PgQ/field/password',
-  artifactoryUser: 'keeper://R7NuqoW0KD-8l-kjx0-PgQ/field/login',
   awsAccessKeyId: 'keeper://Mqmplmfu17bDR5XRLmO1mQ/field/password',
   awsSecretAccessKey: 'keeper://3-pU56sIqcyWWw7HxhxjaQ/field/password',
   awsHelmAccessKeyId: 'keeper://AEmKkeWZ4Zq758pvaPIE1A/custom_field/aws_access_key_id',
@@ -181,7 +177,6 @@ const docker = {
 
 export type Variant = 'alpine' | 'debian' | 'chainguard' | 'chainguard-fips';
 export const config = {
-  artifactoryUrl,
   awsCliVersion,
   awsECRUrl,
   cache,

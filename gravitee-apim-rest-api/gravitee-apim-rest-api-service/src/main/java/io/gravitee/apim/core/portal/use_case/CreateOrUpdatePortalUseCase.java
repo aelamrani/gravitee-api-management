@@ -93,13 +93,12 @@ public class CreateOrUpdatePortalUseCase {
         var resolvedActiveThemeId = resolveActiveThemeId(input, existing.map(Portal::getActiveThemeId).orElse(null));
         var portalToSave = sanitized.portal().withNavigationStructure(sanitized.structure()).withActiveThemeId(resolvedActiveThemeId);
         var saved = existing.isPresent() ? portalCrudService.update(portalToSave) : portalCrudService.create(portalToSave);
-        var isDefault = portalAutomationScopeEnforcer.isDefaultPortal(input.auditInfo(), saved.getId());
-        // Skip nav-tree materialization for non-default portals — app is not ready for that.
-        if (isDefault) {
+        var portalExists = portalAutomationScopeEnforcer.portalExistsInEnvironment(input.auditInfo(), saved.getId());
+        if (portalExists) {
             portalNavigationSyncDomainService.sync(input.auditInfo(), saved.getId(), previouslyPersisted, sanitized.structure());
             portalPageContentQueryService
                 .findByReference(input.auditInfo().environmentId(), AutomationMetadata.ReferenceType.PORTAL, saved.getId().toString())
-                .forEach(pc -> portalDocumentationSyncDomainService.materialize(input.auditInfo(), pc));
+                .forEach(pc -> portalDocumentationSyncDomainService.rematerialize(input.auditInfo(), pc));
         }
         var activeThemeHrid = reverseResolveActiveThemeHrid(input, saved.getActiveThemeId());
         return new Output(saved, saved.getNavigationStructure(), activeThemeHrid, warnings);
@@ -128,7 +127,9 @@ public class CreateOrUpdatePortalUseCase {
         }
         var environmentId = input.auditInfo().environmentId();
         if (targetThemeId == null) {
-            themeCrudService.findByIdAndEnvironmentId(currentActiveThemeId, environmentId).ifPresent(currentThemeDomainService::deactivate);
+            themeCrudService
+                .findByIdAndEnvironmentId(currentActiveThemeId, environmentId)
+                .ifPresent(currentThemeDomainService::deactivateAndFallback);
             return null;
         }
         var target = themeCrudService

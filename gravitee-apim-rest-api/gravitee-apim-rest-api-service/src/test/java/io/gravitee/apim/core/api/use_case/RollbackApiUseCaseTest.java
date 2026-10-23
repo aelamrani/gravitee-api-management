@@ -29,8 +29,10 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import fixtures.ApiModelFixtures;
+import fixtures.core.model.ApiFixtures;
 import fixtures.core.model.AuditInfoFixtures;
 import fixtures.core.model.PlanFixtures;
+import fixtures.definition.ApiDefinitionFixtures;
 import inmemory.*;
 import inmemory.ApiCrudServiceInMemory;
 import inmemory.AuditCrudServiceInMemory;
@@ -46,6 +48,8 @@ import io.gravitee.apim.core.api.domain_service.ApiIndexerDomainService;
 import io.gravitee.apim.core.api.domain_service.ApiMetadataDecoderDomainService;
 import io.gravitee.apim.core.api.domain_service.ApiStateDomainService;
 import io.gravitee.apim.core.api.domain_service.UpdateApiDomainService;
+import io.gravitee.apim.core.api.domain_service.UpdateNativeApiDomainService;
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
 import io.gravitee.apim.core.audit.domain_service.AuditDomainService;
 import io.gravitee.apim.core.audit.model.AuditEntity;
 import io.gravitee.apim.core.audit.model.AuditInfo;
@@ -55,8 +59,10 @@ import io.gravitee.apim.core.event.model.Event;
 import io.gravitee.apim.core.membership.domain_service.ApiPrimaryOwnerDomainService;
 import io.gravitee.apim.core.membership.model.Membership;
 import io.gravitee.apim.core.membership.model.Role;
+import io.gravitee.apim.core.notification.domain_service.TriggerNotificationDomainService;
 import io.gravitee.apim.core.plan.domain_service.ClosePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.CreatePlanDomainService;
+import io.gravitee.apim.core.plan.domain_service.DeprecatePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.UpdatePlanDomainService;
 import io.gravitee.apim.core.plan.model.Plan;
 import io.gravitee.apim.core.search.model.IndexableApi;
@@ -65,23 +71,30 @@ import io.gravitee.apim.core.user.model.BaseUserEntity;
 import io.gravitee.apim.infra.adapter.ApiAdapter;
 import io.gravitee.apim.infra.adapter.GraviteeJacksonMapper;
 import io.gravitee.apim.infra.domain_service.api.ApiStateDomainServiceLegacyWrapper;
+import io.gravitee.apim.infra.domain_service.api.CategoryDomainServiceImpl;
 import io.gravitee.apim.infra.domain_service.api.UpdateApiDomainServiceImpl;
 import io.gravitee.apim.infra.json.jackson.JacksonJsonDiffProcessor;
 import io.gravitee.apim.infra.template.FreemarkerTemplateProcessor;
+import io.gravitee.common.util.DataEncryptor;
 import io.gravitee.common.utils.TimeProvider;
 import io.gravitee.definition.model.*;
 import io.gravitee.definition.model.flow.Flow;
 import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.definition.model.v4.flow.AbstractFlow;
 import io.gravitee.definition.model.v4.listener.entrypoint.Entrypoint;
+import io.gravitee.definition.model.v4.nativeapi.NativeApiServices;
 import io.gravitee.definition.model.v4.plan.PlanStatus;
+import io.gravitee.definition.model.v4.property.Property;
+import io.gravitee.repository.management.api.ApiCategoryOrderRepository;
 import io.gravitee.repository.management.model.Api;
 import io.gravitee.repository.management.model.ApiLifecycleState;
 import io.gravitee.repository.management.model.LifecycleState;
 import io.gravitee.repository.management.model.Visibility;
 import io.gravitee.rest.api.model.EventType;
+import io.gravitee.rest.api.model.v4.api.UpdateApiEntity;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.UuidString;
+import io.gravitee.rest.api.service.converter.CategoryMapper;
 import io.gravitee.rest.api.service.v4.ApiService;
 import java.sql.Date;
 import java.time.Clock;
@@ -99,6 +112,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -138,6 +152,7 @@ class RollbackApiUseCaseTest {
     UpdatePlanDomainService updatePlanDomainService;
 
     ApiService delegateApiService = mock(ApiService.class);
+    DataEncryptor dataEncryptor = mock(DataEncryptor.class);
     UpdateApiDomainService updateApiDomainService = new UpdateApiDomainServiceImpl(delegateApiService, apiCrudService);
     ApiPrimaryOwnerDomainService apiPrimaryOwnerDomainService;
 
@@ -182,6 +197,17 @@ class RollbackApiUseCaseTest {
             indexer
         );
 
+        var updateNativeApiDomainService = new UpdateNativeApiDomainService(
+            apiCrudService,
+            planQueryService,
+            mock(DeprecatePlanDomainService.class),
+            mock(TriggerNotificationDomainService.class),
+            flowCrudService,
+            new CategoryDomainServiceImpl(mock(CategoryMapper.class), mock(ApiCategoryOrderRepository.class)),
+            auditDomainService,
+            apiIndexerDomainService
+        );
+
         useCase = new RollbackApiUseCase(
             eventQueryService,
             apiCrudService,
@@ -195,7 +221,9 @@ class RollbackApiUseCaseTest {
             flowCrudService,
             apiIndexerDomainService,
             this.apiPrimaryOwnerDomainService,
-            apiStateDomainService
+            apiStateDomainService,
+            updateNativeApiDomainService,
+            new PropertyDomainService(dataEncryptor)
         );
 
         this.initializePrimaryOwnerData();
@@ -272,7 +300,7 @@ class RollbackApiUseCaseTest {
         // Then
         assertThat(throwable)
             .isInstanceOf(IllegalStateException.class)
-            .hasMessage("Cannot rollback an API that is not a V4 or V2 API (%s)".formatted(event.getId()));
+            .hasMessage("Cannot rollback this API: only V2 and V4 APIs are supported (%s)".formatted(event.getId()));
     }
 
     @Test
@@ -292,7 +320,154 @@ class RollbackApiUseCaseTest {
         // Then
         assertThat(throwable)
             .isInstanceOf(IllegalStateException.class)
-            .hasMessage("Cannot rollback an API that is not a V4 or V2 API (%s)".formatted(event.getId()));
+            .hasMessage("Cannot rollback this API: only V2 and V4 APIs are supported (%s)".formatted(event.getId()));
+    }
+
+    @Test
+    void should_rollback_a_native_api() throws Exception {
+        // Given a NATIVE API whose stored definition drifted from the one in the last publish event
+        var deployedPlan = fixtures.definition.PlanFixtures.NativeV4Definition.aKeylessV4()
+            .toBuilder()
+            .id("native-plan")
+            .name("deployed-plan-name")
+            .bootstrapPort(9092)
+            .brokerRangeStart(10)
+            .brokerRangeEnd(20)
+            .build();
+        var deployedDefinition = ApiDefinitionFixtures.aNativeApiV4(API_ID)
+            .toBuilder()
+            .plans(Map.of(deployedPlan.getId(), deployedPlan))
+            .tags(Set.of("deployed-tag"))
+            .properties(List.of(new Property("deployed-prop", "deployed-value", false, true)))
+            .services(
+                new NativeApiServices(
+                    io.gravitee.definition.model.v4.service.Service.builder().type("http-dynamic-properties").enabled(true).build()
+                )
+            )
+            .build();
+        apiCrudService.initWith(
+            List.of(
+                ApiFixtures.aNativeApi()
+                    .toBuilder()
+                    .id(API_ID)
+                    .environmentId(ENVIRONMENT_ID)
+                    .apiDefinitionNativeV4(
+                        ApiDefinitionFixtures.aNativeApiV4(API_ID).toBuilder().tags(Set.of("drifted-tag")).properties(List.of()).build()
+                    )
+                    .build()
+            )
+        );
+
+        givenExistingPlan(
+            PlanFixtures.aPlanNativeV4()
+                .toBuilder()
+                .id("native-plan")
+                .referenceId(API_ID)
+                .name("drifted-plan-name")
+                .planDefinitionNativeV4(
+                    fixtures.definition.PlanFixtures.NativeV4Definition.aKeylessV4()
+                        .toBuilder()
+                        .id("native-plan")
+                        .name("drifted-plan-name")
+                        .bootstrapPort(7000)
+                        .brokerRangeStart(1)
+                        .brokerRangeEnd(2)
+                        .build()
+                )
+                .build()
+        );
+
+        var apiRepositoryModel = io.gravitee.repository.management.model.Api.builder()
+            .id(deployedDefinition.getId())
+            .name(deployedDefinition.getName())
+            .version(deployedDefinition.getApiVersion())
+            .definitionVersion(deployedDefinition.getDefinitionVersion())
+            // ApiAdapter#toApiDefinition picks NativeApi on the repository model's type, not on the definition
+            .type(io.gravitee.definition.model.v4.ApiType.NATIVE)
+            .description("deployed-description")
+            .definition(GraviteeJacksonMapper.getInstance().writeValueAsString(deployedDefinition))
+            .build();
+        var event = Event.builder()
+            .id("event-id")
+            .type(EventType.PUBLISH_API)
+            .environments(Set.of(ENVIRONMENT_ID))
+            .payload(GraviteeJacksonMapper.getInstance().writeValueAsString(apiRepositoryModel))
+            .build();
+        eventQueryService.initWith(List.of(event));
+
+        // When
+        useCase.execute(new RollbackApiUseCase.Input(event.getId(), AUDIT_INFO));
+
+        // Then the stored definition carries the deployed one again
+        var rolledBack = apiCrudService.get(API_ID);
+        assertSoftly(softly -> {
+            var definition = rolledBack.getApiDefinitionNativeV4();
+            softly.assertThat(definition).isNotNull();
+            softly.assertThat(definition.getTags()).containsExactly("deployed-tag");
+            softly.assertThat(definition.getProperties()).extracting(Property::getKey).containsExactly("deployed-prop");
+            softly.assertThat(definition.getServices()).isNotNull();
+            softly.assertThat(definition.getServices().getDynamicProperty().getType()).isEqualTo("http-dynamic-properties");
+            // the description is not stored in the definition, it comes from the event payload
+            softly.assertThat(rolledBack.getDescription()).isEqualTo("deployed-description");
+        });
+        // the plan is rolled back too, port routing included - it is part of the deployed definition
+        var planCaptor = ArgumentCaptor.forClass(io.gravitee.apim.core.plan.model.Plan.class);
+        verify(updatePlanDomainService).update(planCaptor.capture(), any(), any(), any(), any());
+        assertSoftly(softly -> {
+            var rolledBackPlan = planCaptor.getValue().getPlanDefinitionNativeV4();
+            softly.assertThat(rolledBackPlan.getName()).isEqualTo("deployed-plan-name");
+            softly.assertThat(rolledBackPlan.getBootstrapPort()).isEqualTo(9092);
+            softly.assertThat(rolledBackPlan.getBrokerRangeStart()).isEqualTo(10);
+            softly.assertThat(rolledBackPlan.getBrokerRangeEnd()).isEqualTo(20);
+        });
+
+        assertRollbackAuditHasBeenCreated();
+    }
+
+    @Test
+    void should_rollback_a_native_api_keeping_the_encryption_of_properties_stored_encrypted() throws Exception {
+        apiCrudService.initWith(
+            List.of(
+                ApiFixtures.aNativeApi()
+                    .toBuilder()
+                    .id(API_ID)
+                    .environmentId(ENVIRONMENT_ID)
+                    .apiDefinitionNativeV4(
+                        ApiDefinitionFixtures.aNativeApiV4(API_ID)
+                            .toBuilder()
+                            .properties(List.of(Property.builder().key("secret").value("current-ciphertext").encrypted(true).build()))
+                            .build()
+                    )
+                    .build()
+            )
+        );
+        when(dataEncryptor.encrypt("old")).thenReturn("old-ciphertext");
+
+        var deployedDefinition = ApiDefinitionFixtures.aNativeApiV4(API_ID)
+            .toBuilder()
+            .properties(List.of(Property.builder().key("secret").value("old").build()))
+            .build();
+        var apiRepositoryModel = io.gravitee.repository.management.model.Api.builder()
+            .id(deployedDefinition.getId())
+            .name(deployedDefinition.getName())
+            .version(deployedDefinition.getApiVersion())
+            .definitionVersion(deployedDefinition.getDefinitionVersion())
+            .type(io.gravitee.definition.model.v4.ApiType.NATIVE)
+            .definition(GraviteeJacksonMapper.getInstance().writeValueAsString(deployedDefinition))
+            .build();
+        var event = Event.builder()
+            .id("event-id")
+            .type(EventType.PUBLISH_API)
+            .environments(Set.of(ENVIRONMENT_ID))
+            .payload(GraviteeJacksonMapper.getInstance().writeValueAsString(apiRepositoryModel))
+            .build();
+        eventQueryService.initWith(List.of(event));
+
+        useCase.execute(new RollbackApiUseCase.Input(event.getId(), AUDIT_INFO));
+
+        assertThat(apiCrudService.get(API_ID).getApiDefinitionNativeV4().getProperties())
+            .extracting(Property::getKey, Property::getValue, Property::isEncrypted)
+            .containsExactly(tuple("secret", "old-ciphertext", true));
     }
 
     @Test
@@ -312,7 +487,7 @@ class RollbackApiUseCaseTest {
         // Then
         assertThat(throwable)
             .isInstanceOf(IllegalStateException.class)
-            .hasMessage("Cannot rollback an API that is not a V4 or V2 API (%s)".formatted(event.getId()));
+            .hasMessage("Cannot rollback this API: only V2 and V4 APIs are supported (%s)".formatted(event.getId()));
     }
 
     @Test
@@ -406,6 +581,49 @@ class RollbackApiUseCaseTest {
         );
 
         assertRollbackAuditHasBeenCreated();
+    }
+
+    @Test
+    void should_rollback_api_keeping_the_encryption_of_properties_stored_encrypted() throws Exception {
+        var current = apiCrudService.get(existingApi.getId());
+        current
+            .getApiDefinitionHttpV4()
+            .setProperties(List.of(Property.builder().key("secret").value("current-ciphertext").encrypted(true).build()));
+        apiCrudService.update(current);
+        when(dataEncryptor.encrypt("old")).thenReturn("old-ciphertext");
+
+        var eventApiDefinition = io.gravitee.definition.model.v4.Api.builder()
+            .id(existingApi.getId())
+            .name("api-previous-name")
+            .apiVersion("api-previous-version")
+            .properties(List.of(Property.builder().key("secret").value("old").build()))
+            .build();
+        var apiRepositoryModel = io.gravitee.repository.management.model.Api.builder()
+            .id(eventApiDefinition.getId())
+            .name(eventApiDefinition.getName())
+            .version(eventApiDefinition.getApiVersion())
+            .definitionVersion(eventApiDefinition.getDefinitionVersion())
+            .visibility(io.gravitee.repository.management.model.Visibility.PUBLIC)
+            .definition(GraviteeJacksonMapper.getInstance().writeValueAsString(eventApiDefinition))
+            .build();
+        var event = Event.builder()
+            .id("event-id")
+            .type(EventType.PUBLISH_API)
+            .environments(Set.of(ENVIRONMENT_ID))
+            .payload(GraviteeJacksonMapper.getInstance().writeValueAsString(apiRepositoryModel))
+            .build();
+        eventQueryService.initWith(List.of(event));
+        when(delegateApiService.update(any(), eq(existingApi.getId()), any(), eq(false), eq(USER_ID))).thenReturn(
+            ApiModelFixtures.aModelHttpApiV4().toBuilder().id(existingApi.getId()).build()
+        );
+
+        useCase.execute(new RollbackApiUseCase.Input(event.getId(), AUDIT_INFO));
+
+        var updateApiEntity = ArgumentCaptor.forClass(UpdateApiEntity.class);
+        verify(delegateApiService).update(any(), eq(existingApi.getId()), updateApiEntity.capture(), eq(false), eq(USER_ID));
+        assertThat(updateApiEntity.getValue().getProperties())
+            .extracting(Property::getKey, Property::getValue, Property::isEncrypted)
+            .containsExactly(tuple("secret", "old-ciphertext", true));
     }
 
     @Test

@@ -34,9 +34,12 @@ import io.gravitee.repository.analytics.engine.api.query.FacetsQuery;
 import io.gravitee.repository.analytics.engine.api.query.Filter;
 import io.gravitee.repository.analytics.engine.api.query.MeasuresQuery;
 import io.gravitee.repository.analytics.engine.api.query.MetricMeasuresQuery;
+import io.gravitee.repository.analytics.engine.api.query.MetricMeasuresQuery.Sort;
 import io.gravitee.repository.analytics.engine.api.query.NumberRange;
 import io.gravitee.repository.analytics.engine.api.query.TimeSeriesQuery;
+import io.gravitee.repository.analytics.engine.api.query.TrafficScope;
 import io.gravitee.repository.analytics.engine.api.result.FacetBucketResult;
+import io.gravitee.repository.analytics.engine.api.result.MeasuresResult;
 import io.gravitee.repository.common.query.QueryContext;
 import io.gravitee.repository.elasticsearch.AbstractElasticsearchRepositoryTest;
 import io.gravitee.repository.elasticsearch.TimeProvider;
@@ -75,13 +78,13 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.DoublePredicate;
 import java.util.function.Predicate;
 import org.assertj.core.api.Condition;
 import org.assertj.core.api.SoftAssertions;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
@@ -105,6 +108,7 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
     private static final String API_ID_SSE = "43276d60-7058-4588-8023-52bf1154f903";
     private static final String API_ID_UNCOMMITTED_STATUS = "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d";
     private static final String API_ID_NATIVE_KAFKA = "kafka-api-001";
+    private static final String API_ID_AUTHZ = "authz-traffic-api-001";
 
     @Autowired
     private AnalyticsElasticsearchRepository cut;
@@ -955,6 +959,52 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
         }
 
         @Test
+        void should_count_authzen_requests_in_status_histogram_of_an_authz_api() {
+            var now = TimeProvider.now();
+            var from = now.minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.DAYS);
+            var to = now.plus(Duration.ofDays(1)).truncatedTo(ChronoUnit.DAYS);
+
+            var query = new HistogramQuery(
+                new SearchTermId(SearchTermId.SearchTerm.API, API_ID_AUTHZ),
+                new TimeRange(from, to, Duration.ofMinutes(30)),
+                List.of(new Aggregation("status", AggregationType.FIELD)),
+                Optional.empty(),
+                null
+            );
+
+            var result = cut.searchHistogram(new QueryContext("org#1", "env#1"), query);
+
+            var histogram = (HistogramAggregate.Counts) result.getFirst();
+            assertThat(histogram.counts().keySet()).containsExactly("200");
+            assertThat(histogram.counts().get("200").stream().mapToLong(Long::longValue).sum()).isEqualTo(4L);
+        }
+
+        @Test
+        void should_average_authzen_response_times_in_histogram_of_an_authz_api() {
+            var now = TimeProvider.now();
+            var from = now.minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.DAYS);
+            var to = now.plus(Duration.ofDays(1)).truncatedTo(ChronoUnit.DAYS);
+
+            var query = new HistogramQuery(
+                new SearchTermId(SearchTermId.SearchTerm.API, API_ID_AUTHZ),
+                new TimeRange(from, to, Duration.ofMinutes(30)),
+                List.of(new Aggregation("gateway-response-time-ms", AggregationType.AVG)),
+                Optional.empty(),
+                null
+            );
+
+            var result = cut.searchHistogram(new QueryContext("org#1", "env#1"), query);
+
+            var histogram = (HistogramAggregate.Metric) result.getFirst();
+            assertThat(
+                histogram
+                    .values()
+                    .stream()
+                    .filter(v -> v > 0)
+            ).containsExactly(10.5);
+        }
+
+        @Test
         void should_return_histogram_aggregates_for_a_given_api_with_query_string() {
             var now = TimeProvider.now();
             var from = now.minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.DAYS);
@@ -1491,7 +1541,7 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
             });
         }
 
-        private static @NotNull HistogramQuery buildHistogramQuery(
+        private static HistogramQuery buildHistogramQuery(
             List<Aggregation> aggregations,
             List<Term> terms,
             String apiId,
@@ -1570,25 +1620,170 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
                 assertThat(count(api(), entrypoints("(none)"))).isEqualTo(1L);
                 assertThat(count(api(), entrypoints("mcp", "(none)"))).isEqualTo(2L);
             }
+
+            /** A hybrid API in a module scoped by kind: only its calls through an entrypoint adding that kind. */
+            @Test
+            void should_count_only_the_calls_an_entrypoint_adds_to_the_kind_when_the_api_is_not_in_scope_by_type() {
+                var aim = new Filter(
+                    Filter.Name.TRAFFIC_SCOPE,
+                    Filter.Operator.IN,
+                    new TrafficScope(Set.of(), Set.of("mcp", "agent-to-agent"))
+                );
+
+                assertThat(count(api(), aim)).isEqualTo(2L);
+            }
+
+            @Test
+            void should_count_every_call_of_an_api_in_scope_by_type() {
+                var aim = new Filter(Filter.Name.TRAFFIC_SCOPE, Filter.Operator.IN, new TrafficScope(Set.of(SCOPE_API), Set.of("mcp")));
+
+                assertThat(count(api(), aim)).isEqualTo(count(api()));
+            }
         }
 
         @Nested
         class AuthzDecisions {
 
             private static final String AUTHZ_API = "authz-api-001";
+            private static final String ENTITY_REFS_API = "authz-api-entity-refs";
+            private static final String COLD_START_API = "authz-api-cold-start";
+            private static final String TOP_LIST_API = "authz-api-top-list";
 
             private static Filter api() {
                 return new Filter(Filter.Name.API, Filter.Operator.IN, List.of(AUTHZ_API));
             }
 
-            @Test
-            void should_count_decisions_from_the_authz_decisions_data_stream() {
+            private long countEntityRefsDecisions(Filter filter) {
                 var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+                var entityRefsApi = new Filter(Filter.Name.API, Filter.Operator.IN, List.of(ENTITY_REFS_API));
+
+                var result = cut.searchAuthzMeasures(
+                    QUERY_CONTEXT,
+                    new MeasuresQuery(buildTimeRange(), List.of(entityRefsApi, filter), metrics)
+                );
+
+                return result.measures().getFirst().measures().get(Measure.COUNT).longValue();
+            }
+
+            @Test
+            void should_narrow_a_subject_filter_to_the_entity_its_type_qualified_reference_names() {
+                assertThat(countEntityRefsDecisions(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.EQ, "alice"))).isEqualTo(3L);
+                assertThat(countEntityRefsDecisions(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.EQ, "User::alice"))).isEqualTo(
+                    1L
+                );
+                assertThat(
+                    countEntityRefsDecisions(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.EQ, "User::\"alice\""))
+                ).isEqualTo(1L);
+            }
+
+            @Test
+            void should_match_any_of_several_subjects_given_bare_or_type_qualified() {
+                var subjects = List.of("alice", "User::\"a::b\"");
+
+                assertThat(countEntityRefsDecisions(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.IN, subjects))).isEqualTo(4L);
+            }
+
+            @Test
+            void should_narrow_a_resource_filter_to_the_entities_its_type_qualified_references_name() {
+                var references = List.of("Doc::d2", "docs::Doc::\"d1\"");
+
+                assertThat(countEntityRefsDecisions(new Filter(Filter.Name.AUTHZ_RESOURCE_ID, Filter.Operator.IN, references))).isEqualTo(
+                    2L
+                );
+            }
+
+            private long count(Metric metric) {
+                return count(AUTHZ_API, metric);
+            }
+
+            private long count(String apiId, Metric metric, Filter... filters) {
+                var metrics = List.of(new MetricMeasuresQuery(metric, Set.of(Measure.COUNT)));
+                var conditions = new ArrayList<Filter>();
+                conditions.add(new Filter(Filter.Name.API, Filter.Operator.IN, List.of(apiId)));
+                conditions.addAll(List.of(filters));
+
+                var result = cut.searchAuthzMeasures(QUERY_CONTEXT, new MeasuresQuery(buildTimeRange(), conditions, metrics));
+
+                return result.measures().getFirst().measures().get(Measure.COUNT).longValue();
+            }
+
+            @Test
+            void should_count_decisions_from_the_decisions_data_stream() {
+                assertThat(count(Metric.AUTHZ_DECISIONS)).isEqualTo(6L);
+            }
+
+            @Test
+            void should_count_a_failed_and_a_not_ready_evaluation_as_decisions() {
+                var failed = new Filter(Filter.Name.AUTHZ_STATUS, Filter.Operator.EQ, "error");
+
+                assertThat(count(AUTHZ_API, Metric.AUTHZ_DECISIONS, failed)).isEqualTo(1L);
+                assertThat(count(COLD_START_API, Metric.AUTHZ_DECISIONS)).isEqualTo(1L);
+            }
+
+            @Test
+            void should_count_as_forbids_only_what_the_pdp_forbade() {
+                assertThat(count(Metric.AUTHZ_FORBIDS)).isEqualTo(1L);
+            }
+
+            @Test
+            void should_count_as_permits_only_what_the_pdp_permitted() {
+                assertThat(count(Metric.AUTHZ_PERMITS)).isEqualTo(3L);
+            }
+
+            @Test
+            void should_count_not_applicable_by_the_indeterminate_cause() {
+                assertThat(count(Metric.AUTHZ_NOT_APPLICABLE)).isEqualTo(1L);
+            }
+
+            @Test
+            void should_count_failures_by_the_error_status() {
+                assertThat(count(Metric.AUTHZ_FAILURES)).isEqualTo(1L);
+            }
+
+            @Test
+            void should_count_a_cold_start_as_a_failure_rather_than_as_not_applicable() {
+                assertThat(count(COLD_START_API, Metric.AUTHZ_FAILURES)).isEqualTo(1L);
+                assertThat(count(COLD_START_API, Metric.AUTHZ_NOT_APPLICABLE)).isZero();
+            }
+
+            @Test
+            void should_measure_the_evaluation_time_of_successful_evaluations_only() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_EVAL_DURATION, Set.of(Measure.AVG)));
 
                 var result = cut.searchAuthzMeasures(QUERY_CONTEXT, new MeasuresQuery(buildTimeRange(), List.of(api()), metrics));
 
-                assertThat(result.measures()).hasSize(1);
-                assertThat(result.measures().getFirst().measures().get(Measure.COUNT).longValue()).isEqualTo(6L);
+                assertThat(result.measures().getFirst().measures().get(Measure.AVG).doubleValue()).isCloseTo(0.135, offset(1e-9));
+            }
+
+            @Test
+            void should_facet_decisions_by_the_pdp_that_evaluated_them() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+
+                var result = cut.searchAuthzFacets(
+                    QUERY_CONTEXT,
+                    new FacetsQuery(buildTimeRange(), List.of(api()), metrics, List.of(Facet.AUTHZ_PDP))
+                );
+
+                assertThat(result.metrics().getFirst().buckets()).satisfiesExactlyInAnyOrder(
+                    bucket -> {
+                        assertThat(bucket.key()).isEqualTo("default");
+                        assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(4L);
+                    },
+                    bucket -> {
+                        assertThat(bucket.key()).isEqualTo("pdp-b");
+                        assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(2L);
+                    }
+                );
+            }
+
+            @Test
+            void should_filter_decisions_on_the_pdp_that_evaluated_them() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+                var pdp = new Filter(Filter.Name.AUTHZ_PDP, Filter.Operator.IN, List.of("pdp-b"));
+
+                var result = cut.searchAuthzMeasures(QUERY_CONTEXT, new MeasuresQuery(buildTimeRange(), List.of(api(), pdp), metrics));
+
+                assertThat(result.measures().getFirst().measures().get(Measure.COUNT).longValue()).isEqualTo(2L);
             }
 
             @Test
@@ -1616,6 +1811,124 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
                         assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(1L);
                     }
                 );
+            }
+
+            @Test
+            void should_leave_out_a_facet_bucket_the_scoped_metric_never_counted() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_FORBIDS, Set.of(Measure.COUNT)));
+
+                var result = cut.searchAuthzFacets(
+                    QUERY_CONTEXT,
+                    new FacetsQuery(buildTimeRange(), List.of(api()), metrics, List.of(Facet.AUTHZ_ACTION))
+                );
+
+                assertThat(result.metrics().getFirst().buckets()).satisfiesExactly(bucket -> {
+                    assertThat(bucket.key()).isEqualTo("write");
+                    assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(1L);
+                });
+            }
+
+            private static Filter topListApi() {
+                return new Filter(Filter.Name.API, Filter.Operator.IN, List.of(TOP_LIST_API));
+            }
+
+            private static MetricMeasuresQuery forbidsSorted(String order) {
+                var sorts = order.isEmpty() ? List.<Sort>of() : List.of(new Sort(Measure.COUNT, Sort.Order.valueOf(order)));
+                return new MetricMeasuresQuery(Metric.AUTHZ_FORBIDS, Set.of(Measure.COUNT), sorts);
+            }
+
+            @ParameterizedTest
+            @ValueSource(strings = { "ASC", "DESC", "" })
+            void should_limit_a_scoped_top_list_to_the_buckets_the_metric_counted(String order) {
+                var result = cut.searchAuthzFacets(
+                    QUERY_CONTEXT,
+                    new FacetsQuery(buildTimeRange(), List.of(topListApi()), List.of(forbidsSorted(order)), List.of(Facet.AUTHZ_ACTION), 1)
+                );
+
+                assertThat(result.metrics().getFirst().buckets()).satisfiesExactly(bucket -> {
+                    assertThat(bucket.key()).isEqualTo("write");
+                    assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(1L);
+                });
+            }
+
+            @ParameterizedTest
+            @ValueSource(strings = { "ASC", "DESC", "" })
+            void should_limit_a_scoped_time_series_facet_to_the_buckets_the_metric_counted(String order) {
+                var result = cut.searchAuthzTimeSeries(
+                    QUERY_CONTEXT,
+                    new TimeSeriesQuery(
+                        buildTimeRange(),
+                        List.of(topListApi()),
+                        Duration.ofDays(1).toMillis(),
+                        List.of(forbidsSorted(order)),
+                        List.of(Facet.AUTHZ_ACTION),
+                        1,
+                        null
+                    )
+                );
+
+                var facetBuckets = result
+                    .metrics()
+                    .getFirst()
+                    .buckets()
+                    .stream()
+                    .flatMap(bucket -> bucket.buckets().stream())
+                    .toList();
+                assertThat(facetBuckets).satisfiesExactly(bucket -> {
+                    assertThat(bucket.key()).isEqualTo("write");
+                    assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(1L);
+                });
+            }
+
+            @Test
+            void should_keep_a_facet_bucket_whose_scoped_measure_is_zero_and_drop_one_without_a_scoped_decision() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_EVAL_DURATION, Set.of(Measure.MIN)));
+
+                var result = cut.searchAuthzFacets(
+                    QUERY_CONTEXT,
+                    new FacetsQuery(buildTimeRange(), List.of(topListApi()), metrics, List.of(Facet.AUTHZ_ACTION))
+                );
+
+                assertThat(result.metrics().getFirst().buckets()).satisfiesExactlyInAnyOrder(
+                    bucket -> {
+                        assertThat(bucket.key()).isEqualTo("read");
+                        assertThat(bucket.measures().get(Measure.MIN).doubleValue()).isCloseTo(0.001, offset(1e-9));
+                    },
+                    bucket -> {
+                        assertThat(bucket.key()).isEqualTo("write");
+                        assertThat(bucket.measures().get(Measure.MIN).doubleValue()).isZero();
+                    }
+                );
+            }
+
+            @Test
+            void should_leave_out_a_time_series_facet_bucket_the_scoped_metric_never_counted() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_FORBIDS, Set.of(Measure.COUNT)));
+
+                var result = cut.searchAuthzTimeSeries(
+                    QUERY_CONTEXT,
+                    new TimeSeriesQuery(
+                        buildTimeRange(),
+                        List.of(api()),
+                        Duration.ofHours(1).toMillis(),
+                        metrics,
+                        List.of(Facet.AUTHZ_ACTION),
+                        null,
+                        null
+                    )
+                );
+
+                var facetBuckets = result
+                    .metrics()
+                    .getFirst()
+                    .buckets()
+                    .stream()
+                    .flatMap(bucket -> bucket.buckets().stream())
+                    .toList();
+                assertThat(facetBuckets).satisfiesExactly(bucket -> {
+                    assertThat(bucket.key()).isEqualTo("write");
+                    assertThat(bucket.measures().get(Measure.COUNT).longValue()).isEqualTo(1L);
+                });
             }
 
             @Test
@@ -1679,6 +1992,45 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
                     assertThat(measure.measures().values()).hasSize(1);
                     assertThat(measure.measures().values().iterator().next()).satisfies(n -> assertThat(n.doubleValue()).isNotZero());
                 }
+            }
+        }
+
+        /**
+         * The fixture holds 34 documents in the default HTTP scope: 3 GET, 17 DELETE, 12 POST and 2 PUT. The gateway
+         * reports the method as its numeric code.
+         */
+        @Nested
+        class HTTPMethodFilters {
+
+            private static final MetricMeasuresQuery REQUESTS = new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT));
+
+            @Test
+            void should_count_the_requests_of_one_http_method() {
+                var filter = new Filter(Filter.Name.HTTP_METHOD, Filter.Operator.EQ, "POST");
+
+                var result = cut.searchHTTPMeasures(QUERY_CONTEXT, new MeasuresQuery(buildTimeRange(), List.of(filter), List.of(REQUESTS)));
+
+                assertThat(result.measures().getFirst().measures().get(Measure.COUNT).longValue()).isEqualTo(12L);
+            }
+
+            @Test
+            void should_count_the_requests_of_several_http_methods() {
+                var filter = new Filter(Filter.Name.HTTP_METHOD, Filter.Operator.IN, List.of("GET", "PUT"));
+
+                var result = cut.searchHTTPMeasures(QUERY_CONTEXT, new MeasuresQuery(buildTimeRange(), List.of(filter), List.of(REQUESTS)));
+
+                assertThat(result.measures().getFirst().measures().get(Measure.COUNT).longValue()).isEqualTo(5L);
+            }
+
+            @Test
+            void should_bucket_the_requests_by_http_method_name() {
+                var query = new FacetsQuery(buildTimeRange(), List.of(), List.of(REQUESTS), List.of(Facet.HTTP_METHOD));
+
+                var result = cut.searchHTTPFacets(QUERY_CONTEXT, query);
+
+                assertThat(result.metrics().getFirst().buckets())
+                    .extracting(bucket -> bucket.key(), bucket -> bucket.measures().get(Measure.COUNT).longValue())
+                    .containsExactlyInAnyOrder(tuple("GET", 3L), tuple("DELETE", 17L), tuple("POST", 12L), tuple("PUT", 2L));
             }
         }
 
@@ -1854,7 +2206,7 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
                 var total = timeSeriesBuckets
                     .stream()
                     .map(bucket -> bucket.measures().get(Measure.COUNT))
-                    .filter(java.util.Objects::nonNull)
+                    .filter(Objects::nonNull)
                     .mapToLong(Number::longValue)
                     .sum();
                 assertThat(total).isPositive();
@@ -1863,6 +2215,27 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
 
         @Nested
         class MessageMeasures {
+
+            /** The API the message fixture attributes almost every document to. */
+            static final String MESSAGE_API = "f1608475-dd77-4603-a084-75dd775603e9";
+
+            /** The second API of the fixture, carrying the two {@code publish} documents. */
+            static final String PUBLISH_API = "4a6895d5-a1bc-4041-a895-d5a1bce041ae";
+
+            /** Sum of {@code count-increment} over the fixture's 24 message documents for those APIs. */
+            static final long MESSAGES_IN_FULL_WINDOW = 410L;
+
+            static long messagesOf(MeasuresResult result) {
+                return result
+                    .measures()
+                    .stream()
+                    .filter(measure -> measure.metric() == Metric.MESSAGES)
+                    .findFirst()
+                    .orElseThrow()
+                    .measures()
+                    .get(Measure.COUNT)
+                    .longValue();
+            }
 
             static MeasuresQuery buildQuery() {
                 var timeRange = buildTimeRange();
@@ -1880,6 +2253,15 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
                 return new MeasuresQuery(timeRange, List.of(filter), metrics);
             }
 
+            /**
+             * The fixture's 24 message documents for these two APIs carry a {@code count-increment} of
+             * 410 in total, and {@code MESSAGES}/{@code COUNT} sums that field.
+             *
+             * <p>Asserted as a number rather than as "not negative": the earlier form could not see
+             * magnitude at all — zero is not negative either — so it passed whether the query matched
+             * every document, a handful, or none. That is exactly the blindness this change needed the
+             * test not to have, since it alters which documents are matched.
+             */
             @Test
             void should_return_message_measures() {
                 var query = buildQuery();
@@ -1890,10 +2272,227 @@ class AnalyticsElasticsearchRepositoryTest extends AbstractElasticsearchReposito
                 var measures = result.measures();
                 assertThat(measures).hasSize(query.metrics().size());
 
-                for (var measure : measures) {
-                    assertThat(measure.measures().values()).hasSize(1);
-                    assertThat(measure.measures().values().iterator().next()).satisfies(n -> assertThat(n.doubleValue()).isNotNegative());
-                }
+                var messages = measures
+                    .stream()
+                    .filter(m -> m.metric() == Metric.MESSAGES)
+                    .findFirst()
+                    .orElseThrow();
+                assertThat(messages.measures().get(Measure.COUNT).longValue()).isEqualTo(MESSAGES_IN_FULL_WINDOW);
+            }
+
+            /**
+             * The join and the direct path agree over the whole window — which is the claim this change
+             * rests on, and which could not be made before: the fixture pointed only 2 of its 9 message
+             * {@code request-id}s at a connection document, so the joined path matched almost nothing
+             * and the two paths were indistinguishable whichever was broken.
+             *
+             * <p>Adding an {@code ENTRYPOINT} condition forces the join back on — the entrypoint lives
+             * only on the connection document — while selecting every connection the fixture holds for
+             * these APIs, so the selected message set is unchanged and only the path differs.
+             */
+            @Test
+            void should_return_the_same_total_whether_or_not_the_join_runs() {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.MESSAGES, Set.of(Measure.COUNT)));
+                var api = new Filter(Filter.Name.API, Filter.Operator.IN, List.of(MESSAGE_API, PUBLISH_API));
+                var everyEntrypoint = new Filter(
+                    Filter.Name.ENTRYPOINT,
+                    Filter.Operator.IN,
+                    List.of("http-post", "http-get", "websocket", "sse")
+                );
+
+                var direct = cut.searchMessageMeasures(QUERY_CONTEXT, new MeasuresQuery(buildTimeRange(), List.of(api), metrics));
+                var joined = cut.searchMessageMeasures(
+                    QUERY_CONTEXT,
+                    new MeasuresQuery(buildTimeRange(), List.of(api, everyEntrypoint), metrics)
+                );
+
+                assertThat(messagesOf(direct)).isEqualTo(MESSAGES_IN_FULL_WINDOW);
+                assertThat(messagesOf(joined)).isEqualTo(MESSAGES_IN_FULL_WINDOW);
+            }
+
+            /**
+             * Pins the one behaviour this change does alter, which is not a filter restatement.
+             *
+             * <p>The join applied the query's time range to the <em>connection</em> document as well
+             * ({@code FilterAdapter#adaptForMessageConnexion} opens with it). Connection
+             * {@code 5fc3b3e5} opens at 06:54:30 and carries three messages at 06:55:39, 06:56:44 and
+             * 06:57:44 worth 31 messages between them. Queried from 06:55:00 the connection falls
+             * outside the window while its messages do not: the join dropped all 31, the direct path
+             * keeps them.
+             *
+             * <p>A stream opened before the window and still running is the normal case for SSE,
+             * WebSocket and {@code http-get} against a short dashboard window, so this is the
+             * difference operators will actually see. Adding the entrypoint condition restores the
+             * join, and with it the old number — which is also why a board can look inconsistent:
+             * adding a connection-side filter lowers the count for a reason unrelated to that filter.
+             */
+            @Test
+            void should_count_messages_whose_connection_opened_before_the_window() {
+                var from = NOW.plus(Duration.ofHours(6)).plus(Duration.ofMinutes(55));
+                var window = new io.gravitee.repository.analytics.engine.api.query.TimeRange(from, TOMORROW);
+                var metrics = List.of(new MetricMeasuresQuery(Metric.MESSAGES, Set.of(Measure.COUNT)));
+                var api = new Filter(Filter.Name.API, Filter.Operator.IN, List.of(MESSAGE_API, PUBLISH_API));
+                var everyEntrypoint = new Filter(
+                    Filter.Name.ENTRYPOINT,
+                    Filter.Operator.IN,
+                    List.of("http-post", "http-get", "websocket", "sse")
+                );
+
+                var direct = cut.searchMessageMeasures(QUERY_CONTEXT, new MeasuresQuery(window, List.of(api), metrics));
+                var joined = cut.searchMessageMeasures(QUERY_CONTEXT, new MeasuresQuery(window, List.of(api, everyEntrypoint), metrics));
+
+                assertThat(messagesOf(direct)).isEqualTo(405L);
+                assertThat(messagesOf(joined)).isEqualTo(374L);
+            }
+        }
+
+        /**
+         * The path the stamped documents unlock, and the one case the rest of this class cannot reach:
+         * every other message fixture predates the connection dimensions, so every other case joins.
+         *
+         * <p>The fixture holds four stamped documents on {@code stamped-api-001}, late in the day, two
+         * legs each: 20 messages on the gold plan, 10 on silver. A plan filter on them is answerable
+         * only from the message documents themselves — there is no connection document behind them at
+         * all, so a query that still joined would return nothing.
+         */
+        @Nested
+        class MessageDirectPath {
+
+            private static final String STAMPED_API = "stamped-api-001";
+
+            private static MeasuresQuery plannedQuery(io.gravitee.repository.analytics.engine.api.query.TimeRange window, String plan) {
+                var metrics = List.of(new MetricMeasuresQuery(Metric.MESSAGES, Set.of(Measure.COUNT)));
+                var filters = List.of(
+                    new Filter(Filter.Name.API, Filter.Operator.IN, List.of(STAMPED_API)),
+                    new Filter(Filter.Name.PLAN, Filter.Operator.IN, List.of(plan))
+                );
+                return new MeasuresQuery(window, filters, metrics);
+            }
+
+            /** A window holding only stamped documents: the plan is read straight off the messages. */
+            @Test
+            void should_filter_on_a_plan_without_the_connection_join() {
+                var from = NOW.plus(Duration.ofHours(8));
+                var window = new io.gravitee.repository.analytics.engine.api.query.TimeRange(from, TOMORROW);
+
+                var gold = cut.searchMessageMeasures(QUERY_CONTEXT, plannedQuery(window, "stamped-plan-gold"));
+                var silver = cut.searchMessageMeasures(QUERY_CONTEXT, plannedQuery(window, "stamped-plan-silver"));
+
+                assertThat(MessageMeasures.messagesOf(gold)).isEqualTo(20L);
+                assertThat(MessageMeasures.messagesOf(silver)).isEqualTo(10L);
+            }
+
+            /**
+             * The same filter over a window that reaches back into the unstamped documents. The
+             * watermark keeps that window on the join, and the join finds no connection document for
+             * this API — so the honest answer there is zero, not a number built from half the data.
+             *
+             * <p>That is the whole point of the gate: the two paths do not agree on data written
+             * before the dimensions existed, so the choice between them cannot be left to chance.
+             */
+            @Test
+            void should_keep_the_join_for_a_window_reaching_back_before_the_dimensions_existed() {
+                var gold = cut.searchMessageMeasures(QUERY_CONTEXT, plannedQuery(buildTimeRange(), "stamped-plan-gold"));
+
+                assertThat(MessageMeasures.messagesOf(gold)).isZero();
+            }
+        }
+
+        /**
+         * {@code searchMessageFacets} had no call site anywhere in the repository, so the skip added by
+         * this change was never executed under test. The expected splits come from the fixture: 308
+         * subscribe against 102 publish, and a perfect 205/205 across the two legs — the gateway writes
+         * one document per leg, which is why an unscoped message count reads double.
+         */
+        @Nested
+        class MessageFacets {
+
+            private static FacetsQuery query(Facet facet, List<Filter> filters) {
+                return new FacetsQuery(
+                    buildTimeRange(),
+                    filters,
+                    List.of(new MetricMeasuresQuery(Metric.MESSAGES, Set.of(Measure.COUNT))),
+                    List.of(facet)
+                );
+            }
+
+            private static Filter api() {
+                return new Filter(Filter.Name.API, Filter.Operator.IN, List.of(MessageMeasures.MESSAGE_API, MessageMeasures.PUBLISH_API));
+            }
+
+            @Test
+            void should_split_messages_by_operation() {
+                var result = cut.searchMessageFacets(QUERY_CONTEXT, query(Facet.MESSAGE_OPERATION_TYPE, List.of(api())));
+
+                assertThat(result.metrics()).hasSize(1);
+                assertThat(result.metrics().getFirst().buckets())
+                    .extracting(bucket -> bucket.key(), bucket -> bucket.measures().get(Measure.COUNT).longValue())
+                    .containsExactlyInAnyOrder(tuple("subscribe", 308L), tuple("publish", 102L));
+            }
+
+            @Test
+            void should_split_messages_by_leg() {
+                var result = cut.searchMessageFacets(QUERY_CONTEXT, query(Facet.MESSAGE_CONNECTOR_TYPE, List.of(api())));
+
+                assertThat(result.metrics().getFirst().buckets())
+                    .extracting(bucket -> bucket.key(), bucket -> bucket.measures().get(Measure.COUNT).longValue())
+                    .containsExactlyInAnyOrder(tuple("entrypoint", 205L), tuple("endpoint", 205L));
+            }
+
+            /** Same selection through the joined path, so the skip cannot quietly change a breakdown. */
+            @Test
+            void should_split_the_same_way_when_the_join_runs() {
+                var everyEntrypoint = new Filter(
+                    Filter.Name.ENTRYPOINT,
+                    Filter.Operator.IN,
+                    List.of("http-post", "http-get", "websocket", "sse")
+                );
+
+                var result = cut.searchMessageFacets(QUERY_CONTEXT, query(Facet.MESSAGE_OPERATION_TYPE, List.of(api(), everyEntrypoint)));
+
+                assertThat(result.metrics().getFirst().buckets())
+                    .extracting(bucket -> bucket.key(), bucket -> bucket.measures().get(Measure.COUNT).longValue())
+                    .containsExactlyInAnyOrder(tuple("subscribe", 308L), tuple("publish", 102L));
+            }
+        }
+
+        /**
+         * {@code searchMessageTimeSeries} had no call site either. The buckets span the window with
+         * empty intervals included, so the contract asserted here is the total across them, which must
+         * match what the measures query reports for the same window.
+         */
+        @Nested
+        class MessageTimeSeries {
+
+            @Test
+            void should_bucket_messages_over_time_and_total_the_full_window() {
+                var api = new Filter(
+                    Filter.Name.API,
+                    Filter.Operator.IN,
+                    List.of(MessageMeasures.MESSAGE_API, MessageMeasures.PUBLISH_API)
+                );
+                var query = new TimeSeriesQuery(
+                    buildTimeRange(),
+                    List.of(api),
+                    Duration.ofHours(1).toMillis(),
+                    List.of(new MetricMeasuresQuery(Metric.MESSAGES, Set.of(Measure.COUNT))),
+                    List.of()
+                );
+
+                var result = cut.searchMessageTimeSeries(QUERY_CONTEXT, query);
+
+                assertThat(result.metrics()).hasSize(1);
+                var buckets = result.metrics().getFirst().buckets();
+                assertThat(buckets).isNotEmpty();
+
+                var total = buckets
+                    .stream()
+                    .map(bucket -> bucket.measures().get(Measure.COUNT))
+                    .filter(Objects::nonNull)
+                    .mapToLong(Number::longValue)
+                    .sum();
+
+                assertThat(total).isEqualTo(MessageMeasures.MESSAGES_IN_FULL_WINDOW);
             }
         }
 

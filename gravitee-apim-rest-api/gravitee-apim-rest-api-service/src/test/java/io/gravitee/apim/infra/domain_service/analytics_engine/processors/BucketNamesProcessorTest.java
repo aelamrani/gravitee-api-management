@@ -19,23 +19,18 @@ import static io.gravitee.apim.core.analytics_engine.model.FacetSpec.Name.*;
 import static io.gravitee.apim.core.analytics_engine.model.MetricSpec.Measure.COUNT;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 import io.gravitee.apim.core.analytics_engine.domain_service.BucketNamesPostProcessor;
+import io.gravitee.apim.core.analytics_engine.domain_service.FilterValueNameResolver;
 import io.gravitee.apim.core.analytics_engine.model.*;
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.utils.CollectionUtils;
-import io.gravitee.common.data.domain.Page;
-import io.gravitee.repository.management.api.ApiRepository;
-import io.gravitee.repository.management.api.search.ApiCriteria;
-import io.gravitee.repository.management.api.search.ApiFieldFilter;
-import io.gravitee.rest.api.model.application.ApplicationListItem;
-import io.gravitee.rest.api.service.ApplicationService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
@@ -62,6 +57,14 @@ class BucketNamesProcessorTest {
     static final String APPLICATION_NAME1 = "app1";
     static final String APPLICATION_NAME2 = "app2";
 
+    static final String PLAN_ID1 = "plan-id1";
+    static final String PLAN_ID2 = "plan-id2";
+    static final String PLAN_NAME1 = "Keyless plan";
+    static final String PLAN_NAME2 = "Gold plan";
+
+    static final String API_PRODUCT_ID1 = "api-product-id1";
+    static final String API_PRODUCT_NAME1 = "Payments";
+
     static final int FIXED_COUNT_VALUE = 42;
     static final long FIXED_TIMESTAMP = 1234567890L;
     static final String FIXED_TIME_KEY = "2024-01-01T00:00:00.000Z";
@@ -69,10 +72,9 @@ class BucketNamesProcessorTest {
     final Map<String, String> apiNamesById = Map.of(API_ID1, API_NAME1, API_ID2, API_NAME2);
     final Map<String, String> applicationNamesById = Map.of(APPLICATION_ID1, APPLICATION_NAME1, APPLICATION_ID2, APPLICATION_NAME2);
 
-    private final ApiRepository apiRepository = mock(ApiRepository.class);
-    private final ApplicationService applicationService = mock(ApplicationService.class);
+    private final FilterValueNameResolver filterValueNameResolver = mock(FilterValueNameResolver.class);
 
-    private final BucketNamesPostProcessor processor = new BucketNamesPostProcessorImpl(apiRepository, applicationService);
+    private final BucketNamesPostProcessor processor = new BucketNamesPostProcessorImpl(filterValueNameResolver);
 
     private AnalyticsQueryContext context;
 
@@ -84,13 +86,20 @@ class BucketNamesProcessorTest {
             Set.of(API_ID1, API_ID2),
             apiNamesById,
             Map.of(),
-            Map.of()
+            Map.of(),
+            Optional.empty()
         );
 
-        when(apiRepository.search(any(ApiCriteria.class), any(ApiFieldFilter.class))).thenReturn(getApiList(API_ID1, API_ID2));
-
-        when(applicationService.search(any(), any(), isNull(), isNull())).thenReturn(
-            getApplicationListContent(APPLICATION_ID1, APPLICATION_ID2)
+        when(filterValueNameResolver.resolveNames(eq("DEFAULT"), eq(FilterSpec.Name.API), anyList())).thenReturn(apiNamesById);
+        // The resolver names the "1" application, which the gateway reports for unidentified consumers.
+        when(filterValueNameResolver.resolveNames(eq("DEFAULT"), eq(FilterSpec.Name.APPLICATION), anyList())).thenReturn(
+            Map.of(APPLICATION_ID1, APPLICATION_NAME1, APPLICATION_ID2, APPLICATION_NAME2, "1", "Unknown")
+        );
+        when(filterValueNameResolver.resolveNames(eq("DEFAULT"), eq(FilterSpec.Name.PLAN), anyList())).thenReturn(
+            Map.of(PLAN_ID1, PLAN_NAME1, PLAN_ID2, PLAN_NAME2)
+        );
+        when(filterValueNameResolver.resolveNames(eq("DEFAULT"), eq(FilterSpec.Name.API_PRODUCT), anyList())).thenReturn(
+            Map.of(API_PRODUCT_ID1, API_PRODUCT_NAME1)
         );
     }
 
@@ -99,13 +108,123 @@ class BucketNamesProcessorTest {
 
         @Test
         void should_map_unnamed_facets_to_the_key() {
-            var facetBucketResponse = newUnnamedBucketResponse("planId");
+            var facetBucketResponse = newUnnamedBucketResponse("api.example.com");
             var response = facetsResponse(facetBucketResponse);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(HOST), response);
+
+            var expectedResponse = facetsResponse(getBucketResponseWithDefaultName(facetBucketResponse));
+            assertThat(mappedResponse).isEqualTo(expectedResponse);
+            verifyNoInteractions(filterValueNameResolver);
+        }
+
+        @Test
+        void should_update_plan_names() {
+            var bucket1 = newUnnamedBucketResponse(PLAN_ID1);
+            var bucket2 = newUnnamedBucketResponse(PLAN_ID2);
+            var response = facetsResponse(bucket1, bucket2);
 
             var mappedResponse = processor.mapBucketNames(context, List.of(PLAN), response);
 
-            var expectedResponse = facetsResponse(getNamedApiBucketResponse(facetBucketResponse));
+            var expectedResponse = facetsResponse(
+                new FacetBucketResponse(PLAN_ID1, PLAN_NAME1, null, bucket1.measures()),
+                new FacetBucketResponse(PLAN_ID2, PLAN_NAME2, null, bucket2.measures())
+            );
             assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_update_api_product_names() {
+            var bucket = newUnnamedBucketResponse(API_PRODUCT_ID1);
+            var response = facetsResponse(bucket);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(API_PRODUCT), response);
+
+            var expectedResponse = facetsResponse(new FacetBucketResponse(API_PRODUCT_ID1, API_PRODUCT_NAME1, null, bucket.measures()));
+            assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_keep_the_key_of_a_plan_that_no_longer_exists() {
+            var bucket = newUnnamedBucketResponse("deleted-plan-id");
+            var response = facetsResponse(bucket);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(PLAN), response);
+
+            var expectedResponse = facetsResponse(getBucketResponseWithDefaultName(bucket));
+            assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_update_api_and_plan_facets() {
+            var innerBucket1 = newUnnamedBucketResponse(PLAN_ID1);
+            var innerBucket2 = newUnnamedBucketResponse(PLAN_ID2);
+            var facetBucketResponse = newUnnamedBucketResponse(API_ID1, List.of(innerBucket1, innerBucket2));
+            var response = facetsResponse(facetBucketResponse);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(API, PLAN), response);
+
+            var expectedResponse = facetsResponse(
+                getNamedApiBucketResponse(
+                    facetBucketResponse,
+                    List.of(
+                        new FacetBucketResponse(PLAN_ID1, PLAN_NAME1, null, innerBucket1.measures()),
+                        new FacetBucketResponse(PLAN_ID2, PLAN_NAME2, null, innerBucket2.measures())
+                    )
+                )
+            );
+            assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_resolve_plan_names_once_for_the_whole_bucket_tree() {
+            var apiBucket1 = newUnnamedBucketResponse(API_ID1, List.of(newUnnamedBucketResponse(PLAN_ID1)));
+            var apiBucket2 = newUnnamedBucketResponse(API_ID2, List.of(newUnnamedBucketResponse(PLAN_ID2)));
+            var response = facetsResponse(apiBucket1, apiBucket2);
+
+            processor.mapBucketNames(context, List.of(API, PLAN), response);
+
+            verify(filterValueNameResolver).resolveNames(
+                eq("DEFAULT"),
+                eq(FilterSpec.Name.PLAN),
+                argThat(ids -> Set.copyOf(ids).equals(Set.of(PLAN_ID1, PLAN_ID2)))
+            );
+            verifyNoMoreInteractions(filterValueNameResolver);
+        }
+
+        @Test
+        void should_keep_the_ids_when_the_name_lookup_fails() {
+            when(filterValueNameResolver.resolveNames(any(), eq(FilterSpec.Name.PLAN), anyList())).thenThrow(
+                new IllegalStateException("plan repository unavailable")
+            );
+            var bucket = newUnnamedBucketResponse(PLAN_ID1);
+            var response = facetsResponse(bucket);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(PLAN), response);
+
+            assertThat(mappedResponse).isEqualTo(facetsResponse(getBucketResponseWithDefaultName(bucket)));
+        }
+
+        @Test
+        void should_resolve_names_when_the_context_has_no_environment() {
+            var contextWithoutEnvironment = new AnalyticsQueryContext(
+                AuditInfo.builder().build(),
+                new ExecutionContext("DEFAULT"),
+                Set.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Optional.empty()
+            );
+            when(filterValueNameResolver.resolveNames(isNull(), eq(FilterSpec.Name.PLAN), anyList())).thenReturn(
+                Map.of(PLAN_ID1, PLAN_NAME1)
+            );
+            var bucket = newUnnamedBucketResponse(PLAN_ID1);
+            var response = facetsResponse(bucket);
+
+            var mappedResponse = processor.mapBucketNames(contextWithoutEnvironment, List.of(PLAN), response);
+
+            assertThat(mappedResponse).isEqualTo(facetsResponse(new FacetBucketResponse(PLAN_ID1, PLAN_NAME1, null, bucket.measures())));
         }
 
         @Test
@@ -331,8 +450,8 @@ class BucketNamesProcessorTest {
 
             var response = new FacetsResponse(
                 List.of(
-                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(bucket1)),
-                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(bucket2, bucket3))
+                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(bucket1), List.of()),
+                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(bucket2, bucket3), List.of())
                 )
             );
 
@@ -340,11 +459,12 @@ class BucketNamesProcessorTest {
 
             var expectedResponse = new FacetsResponse(
                 List.of(
-                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(getNamedApiBucketResponse(bucket1))),
+                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(getNamedApiBucketResponse(bucket1)), List.of()),
                     new MetricFacetsResponse(
                         MetricSpec.Name.HTTP_REQUESTS,
                         null,
-                        List.of(getNamedApiBucketResponse(bucket2), getNamedApiBucketResponse(bucket3))
+                        List.of(getNamedApiBucketResponse(bucket2), getNamedApiBucketResponse(bucket3)),
+                        List.of()
                     )
                 )
             );
@@ -352,8 +472,19 @@ class BucketNamesProcessorTest {
             assertThat(mappedResponse).isEqualTo(expectedResponse);
         }
 
+        @Test
+        void should_keep_the_filters_the_search_skipped() {
+            var response = facetsResponse(newUnnamedBucketResponse(API_ID1)).withIgnoredFilters(List.of(FilterSpec.Name.NATIVE_CLIENT_ID));
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(API), response);
+
+            assertThat(mappedResponse.metrics().get(0).ignoredFilters()).isEqualTo(List.of(FilterSpec.Name.NATIVE_CLIENT_ID));
+        }
+
         FacetsResponse facetsResponse(FacetBucketResponse... buckets) {
-            return new FacetsResponse(List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, Arrays.asList(buckets))));
+            return new FacetsResponse(
+                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, Arrays.asList(buckets), List.of()))
+            );
         }
     }
 
@@ -362,14 +493,90 @@ class BucketNamesProcessorTest {
 
         @Test
         void should_map_unnamed_time_series_to_the_key() {
-            var facetBucketResponse = newUnnamedBucketResponse("planId");
+            var facetBucketResponse = newUnnamedBucketResponse("api.example.com");
+
+            var response = timeSeriesResponse(FIXED_TIME_KEY, FIXED_TIMESTAMP, facetBucketResponse);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(HOST), response);
+
+            var expectedResponse = timeSeriesResponse(
+                FIXED_TIME_KEY,
+                FIXED_TIMESTAMP,
+                getBucketResponseWithDefaultName(facetBucketResponse)
+            );
+            assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_update_plan_names() {
+            var facetBucketResponse = newUnnamedBucketResponse(PLAN_ID1);
 
             var response = timeSeriesResponse(FIXED_TIME_KEY, FIXED_TIMESTAMP, facetBucketResponse);
 
             var mappedResponse = processor.mapBucketNames(context, List.of(PLAN), response);
 
-            var expectedResponse = timeSeriesResponse(FIXED_TIME_KEY, FIXED_TIMESTAMP, getNamedApiBucketResponse(facetBucketResponse));
+            var expectedResponse = timeSeriesResponse(
+                FIXED_TIME_KEY,
+                FIXED_TIMESTAMP,
+                new FacetBucketResponse(PLAN_ID1, PLAN_NAME1, null, facetBucketResponse.measures())
+            );
             assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_update_api_product_names() {
+            var facetBucketResponse = newUnnamedBucketResponse(API_PRODUCT_ID1);
+
+            var response = timeSeriesResponse(FIXED_TIME_KEY, FIXED_TIMESTAMP, facetBucketResponse);
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(API_PRODUCT), response);
+
+            var expectedResponse = timeSeriesResponse(
+                FIXED_TIME_KEY,
+                FIXED_TIMESTAMP,
+                new FacetBucketResponse(API_PRODUCT_ID1, API_PRODUCT_NAME1, null, facetBucketResponse.measures())
+            );
+            assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_name_nested_plans_of_every_time_bucket_with_a_single_lookup() {
+            var firstBucket = new TimeSeriesBucketResponse(
+                FIXED_TIME_KEY,
+                null,
+                FIXED_TIMESTAMP,
+                List.of(newUnnamedBucketResponse(API_ID1, List.of(newUnnamedBucketResponse(PLAN_ID1)))),
+                null
+            );
+            var secondBucket = new TimeSeriesBucketResponse(
+                "2024-01-01T00:01:00.000Z",
+                null,
+                FIXED_TIMESTAMP + 60_000,
+                List.of(newUnnamedBucketResponse(API_ID2, List.of(newUnnamedBucketResponse(PLAN_ID2)))),
+                null
+            );
+            var response = new TimeSeriesResponse(
+                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(firstBucket, secondBucket), List.of()))
+            );
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(API, PLAN), response);
+
+            var namedPlans = mappedResponse
+                .metrics()
+                .getFirst()
+                .buckets()
+                .stream()
+                .flatMap(timeBucket -> timeBucket.buckets().stream())
+                .flatMap(apiBucket -> apiBucket.buckets().stream())
+                .map(FacetBucketResponse::name)
+                .toList();
+            assertThat(namedPlans).isEqualTo(List.of(PLAN_NAME1, PLAN_NAME2));
+            verify(filterValueNameResolver).resolveNames(
+                eq("DEFAULT"),
+                eq(FilterSpec.Name.PLAN),
+                argThat(ids -> Set.copyOf(ids).equals(Set.of(PLAN_ID1, PLAN_ID2)))
+            );
+            verifyNoMoreInteractions(filterValueNameResolver);
         }
 
         @Test
@@ -595,7 +802,8 @@ class BucketNamesProcessorTest {
                     new TimeSeriesMetricResponse(
                         MetricSpec.Name.HTTP_REQUESTS,
                         null,
-                        List.of(timeSeriesBucketResponse1, timeSeriesBucketResponse2)
+                        List.of(timeSeriesBucketResponse1, timeSeriesBucketResponse2),
+                        List.of()
                     )
                 )
             );
@@ -618,11 +826,27 @@ class BucketNamesProcessorTest {
             );
             var expectedResponse = new TimeSeriesResponse(
                 List.of(
-                    new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(namedBucketResponse1, namedBucketResponse2))
+                    new TimeSeriesMetricResponse(
+                        MetricSpec.Name.HTTP_REQUESTS,
+                        null,
+                        List.of(namedBucketResponse1, namedBucketResponse2),
+                        List.of()
+                    )
                 )
             );
 
             assertThat(mappedResponse).isEqualTo(expectedResponse);
+        }
+
+        @Test
+        void should_keep_the_filters_the_search_skipped() {
+            var response = timeSeriesResponse(FIXED_TIME_KEY, FIXED_TIMESTAMP, newUnnamedBucketResponse(API_ID1)).withIgnoredFilters(
+                List.of(FilterSpec.Name.NATIVE_CLIENT_ID)
+            );
+
+            var mappedResponse = processor.mapBucketNames(context, List.of(API), response);
+
+            assertThat(mappedResponse.metrics().get(0).ignoredFilters()).isEqualTo(List.of(FilterSpec.Name.NATIVE_CLIENT_ID));
         }
 
         TimeSeriesResponse timeSeriesResponse(String key, long timestamp, FacetBucketResponse... buckets) {
@@ -639,7 +863,7 @@ class BucketNamesProcessorTest {
                 measures
             );
             return new TimeSeriesResponse(
-                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(timeSeriesBucketResponse)))
+                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(timeSeriesBucketResponse), List.of()))
             );
         }
     }
@@ -651,12 +875,12 @@ class BucketNamesProcessorTest {
         void should_use_pre_loaded_api_names_and_skip_db_for_facets() {
             var facetBucketResponse = newUnnamedBucketResponse(API_ID1);
             var response = new FacetsResponse(
-                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(facetBucketResponse)))
+                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(facetBucketResponse), List.of()))
             );
 
             processor.mapBucketNames(context, List.of(API), response);
 
-            verify(apiRepository, never()).search(any(ApiCriteria.class), any(ApiFieldFilter.class));
+            verify(filterValueNameResolver, never()).resolveNames(any(), eq(FilterSpec.Name.API), anyList());
         }
 
         @Test
@@ -667,21 +891,27 @@ class BucketNamesProcessorTest {
                 Set.of(API_ID1, API_ID2),
                 Map.of(),
                 Map.of(),
-                Map.of()
+                Map.of(),
+                Optional.empty()
             );
 
             var facetBucketResponse = newUnnamedBucketResponse(API_ID1);
             var response = new FacetsResponse(
-                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(facetBucketResponse)))
+                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(facetBucketResponse), List.of()))
             );
 
             var mappedResponse = processor.mapBucketNames(emptyApiNamesContext, List.of(API), response);
 
-            verify(apiRepository).search(any(ApiCriteria.class), any(ApiFieldFilter.class));
+            verify(filterValueNameResolver).resolveNames(eq("DEFAULT"), eq(FilterSpec.Name.API), eq(List.of(API_ID1)));
 
             var expectedResponse = new FacetsResponse(
                 List.of(
-                    new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(getNamedApiBucketResponse(facetBucketResponse)))
+                    new MetricFacetsResponse(
+                        MetricSpec.Name.HTTP_REQUESTS,
+                        null,
+                        List.of(getNamedApiBucketResponse(facetBucketResponse)),
+                        List.of()
+                    )
                 )
             );
             assertThat(mappedResponse).isEqualTo(expectedResponse);
@@ -689,16 +919,24 @@ class BucketNamesProcessorTest {
 
         @Test
         void should_use_pre_loaded_application_names_and_skip_db_for_facets() {
-            var contextWithApps = context.withApplicationNamesById(applicationNamesById);
+            var contextWithApps = new AnalyticsQueryContext(
+                context.auditInfo(),
+                context.executionContext(),
+                context.authorizedApiIds(),
+                apiNamesById,
+                applicationNamesById,
+                Map.of(),
+                Optional.empty()
+            );
 
             var facetBucketResponse = newUnnamedBucketResponse(APPLICATION_ID1);
             var response = new FacetsResponse(
-                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(facetBucketResponse)))
+                List.of(new MetricFacetsResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(facetBucketResponse), List.of()))
             );
 
             processor.mapBucketNames(contextWithApps, List.of(APPLICATION), response);
 
-            verify(applicationService, never()).search(any(), any(), any(), any());
+            verify(filterValueNameResolver, never()).resolveNames(any(), eq(FilterSpec.Name.APPLICATION), anyList());
         }
 
         @Test
@@ -709,7 +947,8 @@ class BucketNamesProcessorTest {
                 Set.of(API_ID1, API_ID2),
                 Map.of(),
                 Map.of(),
-                Map.of()
+                Map.of(),
+                Optional.empty()
             );
 
             var facetBucketResponse = newUnnamedBucketResponse(API_ID1);
@@ -721,12 +960,12 @@ class BucketNamesProcessorTest {
                 null
             );
             var response = new TimeSeriesResponse(
-                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(timeSeriesBucketResponse)))
+                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(timeSeriesBucketResponse), List.of()))
             );
 
             var mappedResponse = processor.mapBucketNames(emptyApiNamesContext, List.of(API), response);
 
-            verify(apiRepository).search(any(ApiCriteria.class), any(ApiFieldFilter.class));
+            verify(filterValueNameResolver).resolveNames(eq("DEFAULT"), eq(FilterSpec.Name.API), eq(List.of(API_ID1)));
 
             TimeSeriesBucketResponse expectedTimeBucket = new TimeSeriesBucketResponse(
                 FIXED_TIME_KEY,
@@ -736,7 +975,7 @@ class BucketNamesProcessorTest {
                 null
             );
             var expectedResponse = new TimeSeriesResponse(
-                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(expectedTimeBucket)))
+                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(expectedTimeBucket), List.of()))
             );
             assertThat(mappedResponse).isEqualTo(expectedResponse);
         }
@@ -752,12 +991,12 @@ class BucketNamesProcessorTest {
                 null
             );
             var response = new TimeSeriesResponse(
-                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(timeSeriesBucketResponse)))
+                List.of(new TimeSeriesMetricResponse(MetricSpec.Name.HTTP_REQUESTS, null, List.of(timeSeriesBucketResponse), List.of()))
             );
 
             processor.mapBucketNames(context, List.of(API), response);
 
-            verify(apiRepository, never()).search(any(ApiCriteria.class), any(ApiFieldFilter.class));
+            verify(filterValueNameResolver, never()).resolveNames(any(), eq(FilterSpec.Name.API), anyList());
         }
     }
 
@@ -776,30 +1015,6 @@ class BucketNamesProcessorTest {
             measures = List.of(new Measure(COUNT, FIXED_COUNT_VALUE));
         }
         return new FacetBucketResponse(apiId, null, innerBuckets, measures);
-    }
-
-    private List<io.gravitee.repository.management.model.Api> getApiList(String... apiIds) {
-        return Arrays.stream(apiIds).map(this::getRepositoryApi).toList();
-    }
-
-    private io.gravitee.repository.management.model.Api getRepositoryApi(String apiId) {
-        var api = new io.gravitee.repository.management.model.Api();
-        api.setId(apiId);
-        api.setName(apiNamesById.get(apiId));
-        return api;
-    }
-
-    private Page<ApplicationListItem> getApplicationListContent(String... applicationIds) {
-        var items = Arrays.stream(applicationIds).map(this::getApplicationListItem).toList();
-        return new Page<>(items, 0, items.size(), items.size());
-    }
-
-    private ApplicationListItem getApplicationListItem(String applicationId) {
-        var item = new ApplicationListItem();
-        item.setName(applicationNamesById.get(applicationId));
-        item.setId(applicationId);
-
-        return item;
     }
 
     private FacetBucketResponse getNamedApiBucketResponse(FacetBucketResponse bucketResponse) {

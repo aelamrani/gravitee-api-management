@@ -17,7 +17,9 @@ package io.gravitee.gamma.rest.core.observability.logs.use_case;
 
 import io.gravitee.apim.core.UseCase;
 import io.gravitee.apim.core.exception.ValidationDomainException;
+import io.gravitee.gamma.rest.core.observability.exception.InvalidObservabilityQueryException;
 import io.gravitee.gamma.rest.core.observability.filter.domain_service.ObservabilityFilterValidator;
+import io.gravitee.gamma.rest.core.observability.filter.exception.UnsupportedObservabilityFilterException;
 import io.gravitee.gamma.rest.core.observability.filter.model.ApiType;
 import io.gravitee.gamma.rest.core.observability.filter.model.ExtensibleFilters;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterCondition;
@@ -90,7 +92,7 @@ public class SearchObservabilityLogsUseCase {
         int page = resolvePage(input);
         int perPage = resolvePerPage(input);
 
-        var conditions = input.filters != null ? input.filters : List.<FilterCondition>of();
+        var conditions = withUriEqAsStartsWith(input.filters != null ? input.filters : List.<FilterCondition>of());
 
         filterValidator.validate(conditions, Signal.LOGS);
         validateTimeRange(input.from, input.to);
@@ -101,6 +103,7 @@ public class SearchObservabilityLogsUseCase {
         if (recordType == RecordType.AUTHZ_DECISION) {
             rejectConditionsTheDecisionSearchCannotApply(effectiveConditions);
         } else {
+            rejectDecisionFiltersOnTheRequestSearch(effectiveConditions);
             // Entrypoints only exist on request documents: a decision search carries no scope.
             entrypointScope = resolveEntrypointScope(effectiveConditions);
             effectiveConditions = removeEntrypointConditions(effectiveConditions);
@@ -110,7 +113,11 @@ public class SearchObservabilityLogsUseCase {
 
         var userApiFilter = extractApiFilter(conditions);
         var effectiveApiTypes = narrowApiTypes(conditions);
-        var scope = accessibleApiScope.computeScope(accessibleApis, effectiveApiTypes, userApiFilter);
+        // Only a request scoped by kind reads calls by entrypoint; decisions carry none.
+        var addingEntrypoints = recordType == RecordType.AUTHZ_DECISION || !hasApiTypeCondition(conditions)
+            ? Set.<String>of()
+            : entrypointScopeProvider.entrypointsAdding(effectiveApiTypes);
+        var scope = accessibleApiScope.computeScope(accessibleApis, effectiveApiTypes, userApiFilter, addingEntrypoints);
 
         if (scope.apiIds().isEmpty()) {
             return new Output(LogsPage.EMPTY, page, perPage);
@@ -120,16 +127,32 @@ public class SearchObservabilityLogsUseCase {
             .apiIds(scope.apiIds())
             .apisById(scope.apisById())
             .conditions(effectiveConditions)
-            .from(input.from != null ? input.from.toEpochMilli() : null)
-            .to(input.to != null ? input.to.toEpochMilli() : null)
+            .from(input.from.toEpochMilli())
+            .to(input.to.toEpochMilli())
             .page(page)
             .perPage(perPage)
             .recordType(recordType)
             .entrypointScope(entrypointScope)
+            .trafficScope(scope.trafficScope())
             .build();
 
         var result = logsDataPort.searchLogs(input.organizationId, input.environmentId, query);
         return new Output(result, page, perPage);
+    }
+
+    /**
+     * {@code EQ} on {@code URI} is the deprecated spelling of {@code STARTS_WITH}: the request URI has always been
+     * matched by prefix, and links saved while the catalog advertised {@code EQ} must keep resolving.
+     */
+    private static List<FilterCondition> withUriEqAsStartsWith(List<FilterCondition> conditions) {
+        return conditions
+            .stream()
+            .map(condition ->
+                StaticFilters.URI.name().equals(condition.name()) && condition.operator() == FilterOperator.EQ
+                    ? new FilterCondition(condition.name(), FilterOperator.STARTS_WITH, condition.values())
+                    : condition
+            )
+            .toList();
     }
 
     private static int resolvePage(Input input) {
@@ -141,8 +164,14 @@ public class SearchObservabilityLogsUseCase {
     }
 
     private static void validateTimeRange(Instant from, Instant to) {
-        if (from != null && to != null && from.isAfter(to)) {
-            throw new ValidationDomainException("Invalid time range: 'from' must be before 'to'.");
+        if (from == null) {
+            throw InvalidObservabilityQueryException.missingTimeRangeBound("from");
+        }
+        if (to == null) {
+            throw InvalidObservabilityQueryException.missingTimeRangeBound("to");
+        }
+        if (from.isAfter(to)) {
+            throw InvalidObservabilityQueryException.invalidTimeRange();
         }
     }
 
@@ -161,7 +190,8 @@ public class SearchObservabilityLogsUseCase {
             .toList();
         if (values.size() > 1) {
             throw new ValidationDomainException(
-                "Filter 'RECORD_TYPE' accepts a single value, was " + values + ". Search one record kind at a time."
+                "Filter 'RECORD_TYPE' accepts a single value, was " + values + ". Search one record kind at a time.",
+                "observability.filter.multiple_record_types"
             );
         }
         return values.stream().findFirst().map(RecordType::fromNameOrDefault).orElse(RecordType.REQUEST);
@@ -177,7 +207,8 @@ public class SearchObservabilityLogsUseCase {
         StaticFilters.AUTHZ_RESOURCE_ID.filterName(),
         StaticFilters.AUTHZ_CALLER.filterName(),
         StaticFilters.AUTHZ_STATUS.filterName(),
-        StaticFilters.AUTHZ_OPERATION.filterName(),
+        StaticFilters.AUTHZ_INDETERMINATE_CAUSE.filterName(),
+        StaticFilters.AUTHZ_ERROR_TYPE.filterName(),
         StaticFilters.AUTHZ_PDP.filterName(),
         StaticFilters.AUTHZ_MATCHED_POLICY.filterName(),
         StaticFilters.AUTHZ_REASON.filterName(),
@@ -203,9 +234,31 @@ public class SearchObservabilityLogsUseCase {
                     unsupported +
                     " do not apply to RECORD_TYPE=AUTHZ_DECISION. Supported: API, API_TYPE, " +
                     DECISION_SUPPORTED_FILTERS.stream().sorted().collect(Collectors.joining(", ")) +
-                    " and the time range."
+                    " and the time range.",
+                "observability.filter.not_applicable_to_decisions"
             );
         }
+    }
+
+    /** Filters only decision records carry; {@code REQUEST_ID} is the one the request search reads too. */
+    // Package-private so a test can assert set equality against the catalog, like the allowlist above.
+    static final Set<String> DECISION_ONLY_FILTERS = DECISION_SUPPORTED_FILTERS.stream()
+        .filter(name -> !StaticFilters.REQUEST_ID.filterName().equals(name))
+        .collect(Collectors.toUnmodifiableSet());
+
+    /**
+     * Request documents hold none of the decision fields, so such a condition can only mean the caller forgot
+     * to ask for decision records. Said so, rather than the translator's generic "not yet supported".
+     */
+    private static void rejectDecisionFiltersOnTheRequestSearch(List<FilterCondition> conditions) {
+        conditions
+            .stream()
+            .map(FilterCondition::name)
+            .filter(DECISION_ONLY_FILTERS::contains)
+            .findFirst()
+            .ifPresent(name -> {
+                throw UnsupportedObservabilityFilterException.requiresDecisionRecordType(name);
+            });
     }
 
     private static Set<String> extractApiFilter(List<FilterCondition> conditions) {
@@ -214,6 +267,10 @@ public class SearchObservabilityLogsUseCase {
             .filter(c -> "API".equals(c.name()))
             .flatMap(c -> c.values().stream())
             .collect(Collectors.toSet());
+    }
+
+    private static boolean hasApiTypeCondition(List<FilterCondition> conditions) {
+        return conditions.stream().anyMatch(c -> "API_TYPE".equals(c.name()));
     }
 
     /**
@@ -261,7 +318,7 @@ public class SearchObservabilityLogsUseCase {
         var explicitValues = conditions
             .stream()
             .filter(SearchObservabilityLogsUseCase::isEntrypointCondition)
-            .flatMap(SearchObservabilityLogsUseCase::selectedEntrypoints)
+            .flatMap(condition -> condition.values().stream())
             .toList();
         return explicitValues.isEmpty()
             ? EntrypointScope.excluding(entrypointScopeProvider.excludedFromLogs())
@@ -273,18 +330,6 @@ public class SearchObservabilityLogsUseCase {
             .stream()
             .filter(condition -> !isEntrypointCondition(condition))
             .toList();
-    }
-
-    /**
-     * The values one condition selects, read as the analytics engine reads the same condition: {@code EQ} names a
-     * single entrypoint, so both signals answer a given filter chip with the same set.
-     */
-    private static Stream<String> selectedEntrypoints(FilterCondition condition) {
-        var values = condition.values();
-        if (values.isEmpty()) {
-            return Stream.empty();
-        }
-        return condition.operator() == FilterOperator.EQ ? Stream.of(values.getFirst()) : values.stream();
     }
 
     private static boolean isEntrypointCondition(FilterCondition condition) {

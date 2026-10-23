@@ -14,22 +14,22 @@
  * limitations under the License.
  */
 import type { License } from '@gravitee/gamma-modules-sdk/types';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ComponentType } from 'react';
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom';
 
+import type * as GammaModulesSdk from '@gravitee/gamma-modules-sdk';
+
 import { AppRoutes } from './AppRoutes';
 import { ROUTES } from '../config/routes';
+import { useApiScoreEnabled } from '../features/api-score/hooks/useApiScoreEnabled';
 import { useEnvironmentDictionaries } from '../features/dictionaries/hooks/useEnvironmentDictionaries';
 import { useEnvironmentMetadata } from '../features/metadata/hooks/useEnvironmentMetadata';
-import { ApimApiError, resetApimClientForTests } from '../shared/api/apimClient';
+import { ApimApiError, loadApimBootstrap, resetApimClientForTests } from '../shared/api/apimClient';
 import { useEnvironmentPermissionsReady } from '../shared/hooks/useEnvironmentPermissions';
 import { markNavItemDenied, resetDeniedNavItemsForEnvironment } from '../shared/nav/deniedNavItems';
 import { notify } from '../shared/notify/notify';
-
-jest.mock('./PlatformToaster', () => ({
-    PlatformToaster: () => <div data-testid="platform-toaster" />,
-}));
 
 const mockUseModuleRouting = jest.fn(() => ({
     activeNavKey: 'applications',
@@ -37,11 +37,14 @@ const mockUseModuleRouting = jest.fn(() => ({
     rootPath: '/platform',
 }));
 
+const mockHrefForKey = (key: string) => `/${key}`;
+
 jest.mock('@gravitee/gamma-modules-sdk/routing', () => ({
-    useModuleRouting: () => mockUseModuleRouting(),
+    useModuleRouting: () => ({ hrefForKey: mockHrefForKey, ...mockUseModuleRouting() }),
 }));
 
 const mockUseLayoutConfig = jest.fn();
+const mockUseEnvironment = jest.fn<{ id: string } | undefined, []>();
 const mockUseHasPermission = jest.fn().mockReturnValue(true);
 const mockUseHasFeature = jest.fn().mockReturnValue(true);
 const mockUseHasEnvironmentPermission = jest.fn().mockReturnValue(true);
@@ -103,7 +106,8 @@ jest.mock('../shared/hooks/useEnvironmentPermissions', () => ({
 }));
 
 jest.mock('@gravitee/gamma-modules-sdk', () => ({
-    useEnvironment: () => ({ id: 'env-1' }),
+    normalizeCrudMapRecord: jest.requireActual<typeof GammaModulesSdk>('@gravitee/gamma-modules-sdk').normalizeCrudMapRecord,
+    useEnvironment: () => mockUseEnvironment(),
     useHasPermission: (options: unknown) => mockUseHasPermission(options),
     useHasFeature: (feature: unknown) => mockUseHasFeature(feature),
     permissionService: {
@@ -127,10 +131,12 @@ jest.mock('@gravitee/gamma-modules-sdk', () => ({
 
 jest.mock('../features/dictionaries/hooks/useEnvironmentDictionaries');
 jest.mock('../features/metadata/hooks/useEnvironmentMetadata');
+jest.mock('../features/api-score/hooks/useApiScoreEnabled');
 
 const mockUseEnvironmentDictionaries = jest.mocked(useEnvironmentDictionaries);
 const mockUseEnvironmentMetadata = jest.mocked(useEnvironmentMetadata);
 const mockUseEnvironmentPermissionsReady = jest.mocked(useEnvironmentPermissionsReady);
+const mockUseApiScoreEnabled = jest.mocked(useApiScoreEnabled);
 
 function denyPermissions(...denied: string[]) {
     mockUseHasPermission.mockImplementation(({ anyOf }: { anyOf: string[] }) => !anyOf.some(permission => denied.includes(permission)));
@@ -157,6 +163,26 @@ jest.mock('../pages/IntegrationsPage', () => {
     };
 });
 
+jest.mock('../features/api-score/pages/ApiScoreDashboardPage', () => ({
+    ApiScoreDashboardPage: () => <div data-testid="api-score-dashboard-page" />,
+}));
+
+jest.mock('../features/api-score/pages/ApiScoreRulesetsPage', () => ({
+    ApiScoreRulesetsPage: () => <div data-testid="api-score-rulesets-page" />,
+}));
+
+jest.mock('../features/api-score/pages/ImportApiScoreRulesetPage', () => ({
+    ImportApiScoreRulesetPage: () => <div data-testid="import-api-score-ruleset-page" />,
+}));
+
+jest.mock('../features/api-score/pages/ImportScoringFunctionPage', () => ({
+    ImportScoringFunctionPage: () => <div data-testid="import-scoring-function-page" />,
+}));
+
+jest.mock('../features/api-score/pages/EditApiScoreRulesetPage', () => ({
+    EditApiScoreRulesetPage: () => <div data-testid="edit-api-score-ruleset-page" />,
+}));
+
 jest.mock('../pages/UsersPage', () => ({
     UsersPage: () => <div data-testid="users-page" />,
 }));
@@ -175,6 +201,10 @@ jest.mock('../pages/GroupDetailPage', () => ({
 
 jest.mock('../pages/RolesPage', () => ({
     RolesPage: () => <div data-testid="roles-page" />,
+}));
+
+jest.mock('../pages/UserFieldsPage', () => ({
+    UserFieldsPage: () => <div data-testid="user-fields-page" />,
 }));
 
 jest.mock('../pages/RoleFormPage', () => ({
@@ -256,6 +286,10 @@ jest.mock('../pages/EnvironmentCorsSettingsPage', () => ({
     EnvironmentCorsSettingsPage: () => <div data-testid="environment-cors-settings-page" />,
 }));
 
+jest.mock('../pages/PrimaryOwnerModePage', () => ({
+    PrimaryOwnerModePage: () => <div data-testid="primary-owner-mode-page" />,
+}));
+
 jest.mock('../pages/NotificationTemplatesPage', () => ({
     NotificationTemplatesPage: () => <div data-testid="notification-templates-page" />,
 }));
@@ -274,6 +308,10 @@ jest.mock('../pages/EntrypointsAndShardingTagsPage', () => ({
 
 jest.mock('../features/security-plan-types/SecurityPlanTypesPage', () => ({
     SecurityPlanTypesPage: () => <div data-testid="security-plan-types-page" />,
+}));
+
+jest.mock('../pages/ApiReviewSettingsPage', () => ({
+    ApiReviewSettingsPage: () => <div data-testid="api-review-settings-page" />,
 }));
 
 jest.mock('../pages/ApiHealthCheckPage', () => ({
@@ -321,6 +359,14 @@ jest.mock('../pages/BroadcastsPage', () => ({
     BroadcastsPage: () => <div data-testid="broadcasts-page" />,
 }));
 
+jest.mock('../pages/ClientRegistrationPage', () => ({
+    ClientRegistrationPage: () => <div data-testid="client-registration-page" />,
+}));
+
+jest.mock('../pages/ClientRegistrationProviderPage', () => ({
+    ClientRegistrationProviderPage: () => <div data-testid="client-registration-provider-page" />,
+}));
+
 function LocationProbe() {
     return <div data-testid="location">{useLocation().pathname}</div>;
 }
@@ -339,6 +385,20 @@ function renderIntegrationsUrl() {
     );
 }
 
+function renderApiScoreUrl(path = '/api-score') {
+    render(
+        <MemoryRouter initialEntries={[path]}>
+            <AppRoutes />
+            <LocationProbe />
+            <NavigationTypeProbe />
+        </MemoryRouter>,
+    );
+}
+
+function enableApiScore() {
+    mockUseApiScoreEnabled.mockReturnValue({ enabled: true, isFetched: true });
+}
+
 function renderPlatform(path = '/applications') {
     render(
         <MemoryRouter initialEntries={[path]}>
@@ -347,10 +407,10 @@ function renderPlatform(path = '/applications') {
     );
 }
 
-type NavGroupProps = { label?: string; items: { key: string; access?: string }[] };
+type NavGroupProps = { label?: string; items: { key: string; title?: string; access?: string; href?: string }[] };
 
 type LayoutConfig = {
-    navigation?: { props?: { items?: { key: string; title: string }[]; onItemSelect?: (key: string) => void } };
+    navigation?: { props?: { groups?: NavGroupProps[]; onItemSelect?: (key: string) => void } };
     contextSidebar?: {
         props?: {
             groups?: NavGroupProps[];
@@ -405,8 +465,18 @@ function navItemAccess(key: string): string | undefined {
         .find(item => item.key === key)?.access;
 }
 
+function primaryNavItems() {
+    return primaryNav()?.props?.groups?.flatMap(group => group.items) ?? [];
+}
+
 function primaryNavKeys(): string[] {
-    return primaryNav()?.props?.items?.map(item => item.key) ?? [];
+    return primaryNavItems().map(item => item.key);
+}
+
+function navItemHref(key: string): string | undefined {
+    return contextGroups()
+        .flatMap(group => group.items)
+        .find(item => item.key === key)?.href;
 }
 
 const APIM_BOOTSTRAP = {
@@ -448,8 +518,75 @@ function spyOnApimFetch(integrationsResponse: () => Promise<Response> = okIntegr
     });
 }
 
+const GATEWAY_INTEGRATION = { id: 'integration-gateway', name: 'Payments gateway', provider: 'aws-api-gateway', agentStatus: 'CONNECTED' };
+
+const A2A_INTEGRATION = { id: 'integration-a2a', name: 'Support agents', provider: 'A2A', agentStatus: 'CONNECTED' };
+
+function emptyFederatedApisResponse() {
+    return jsonResponse({ data: [], pagination: { page: 1, perPage: 10, pageCount: 0, pageItemsCount: 0, totalCount: 0 } });
+}
+
+function spyOnIntegrationOverviewFetch(
+    integration: { id: string },
+    permissionsResponse: () => Promise<Response>,
+    detailResponse: () => Promise<Response> = () => jsonResponse(integration),
+) {
+    resetApimClientForTests();
+    return jest.spyOn(global, 'fetch').mockImplementation(input => {
+        const url = String(input);
+        if (url.endsWith('/constants.json')) return jsonResponse({ gammaBaseURL: APIM_BOOTSTRAP.gammaBaseURL });
+        if (url.endsWith('/ui/bootstrap')) return jsonResponse(APIM_BOOTSTRAP);
+        if (url.endsWith(`/integrations/${integration.id}/permissions`)) return permissionsResponse();
+        if (url.includes(`/integrations/${integration.id}/apis?`)) return emptyFederatedApisResponse();
+        if (url.endsWith(`/integrations/${integration.id}`)) return detailResponse();
+        return jsonResponse({ httpStatus: 404, message: 'Not found' }, 404);
+    });
+}
+
+function spyOnIntegrationCreateAndListFetch(created: { id: string }) {
+    resetApimClientForTests();
+    let createRequested = false;
+    return jest.spyOn(global, 'fetch').mockImplementation((input, init) => {
+        const url = String(input);
+        if (url.endsWith('/constants.json')) return jsonResponse({ gammaBaseURL: APIM_BOOTSTRAP.gammaBaseURL });
+        if (url.endsWith('/ui/bootstrap')) return jsonResponse(APIM_BOOTSTRAP);
+        if (init?.method === 'POST' && url.endsWith('/integrations')) {
+            createRequested = true;
+            return jsonResponse(created);
+        }
+        if (url === INTEGRATIONS_REQUEST_URL) {
+            return createRequested
+                ? jsonResponse({ data: [created], pagination: { page: 1, perPage: 10, pageCount: 1, pageItemsCount: 1, totalCount: 1 } })
+                : okIntegrationsResponse();
+        }
+        if (url.endsWith(`/integrations/${created.id}/permissions`)) return jsonResponse({ DEFINITION: 'R' });
+        if (url.includes(`/integrations/${created.id}/apis?`)) return emptyFederatedApisResponse();
+        if (url.endsWith(`/integrations/${created.id}`)) return jsonResponse(created);
+        return jsonResponse({ httpStatus: 404, message: 'Not found' }, 404);
+    });
+}
+
+function renderIntegrationOverviewUrl(integrationId: string) {
+    renderIntegrationPath(`/integrations/${integrationId}`);
+}
+
+function renderIntegrationPath(path: string) {
+    return render(
+        <MemoryRouter initialEntries={[path]}>
+            <AppRoutes />
+            <LocationProbe />
+        </MemoryRouter>,
+    );
+}
+
 function integrationsRequestUrls(fetchSpy: ReturnType<typeof spyOnApimFetch>): string[] {
     return fetchSpy.mock.calls.map(([input]) => String(input)).filter(url => /integration/i.test(url));
+}
+
+function integrationCreateRequestUrls(fetchSpy: ReturnType<typeof spyOnApimFetch>): string[] {
+    return fetchSpy.mock.calls
+        .filter(([input, init]) => init?.method === 'POST' && /\/integrations(\?|$)/.test(String(input)))
+        .map(([input]) => String(input));
 }
 
 describe('AppRoutes', () => {
@@ -461,6 +598,7 @@ describe('AppRoutes', () => {
             rootPath: '/platform',
         });
         mockUseRealIntegrationsPage = false;
+        mockUseEnvironment.mockReset().mockReturnValue({ id: 'env-1' });
         mockUseHasPermission.mockReset().mockReturnValue(true);
         mockUseHasFeature.mockReset().mockReturnValue(true);
         mockUseHasEnvironmentPermission.mockReset().mockReturnValue(true);
@@ -487,12 +625,12 @@ describe('AppRoutes', () => {
             isError: false,
             error: null,
         } as unknown as ReturnType<typeof useEnvironmentMetadata>);
+        mockUseApiScoreEnabled.mockReturnValue({ enabled: false, isFetched: true });
     });
 
-    it('mounts PlatformToaster for module-wide toast feedback', () => {
+    it('routes to the Applications page under the platform module', () => {
         renderPlatform();
 
-        expect(screen.getByTestId('platform-toaster')).not.toBeNull();
         expect(screen.getByTestId('applications-page')).not.toBeNull();
     });
 
@@ -581,10 +719,133 @@ describe('AppRoutes', () => {
             'integrations',
             'metadata',
             'dictionaries',
+            'user-fields',
             'shared-policy-groups',
             'broadcasts',
         ]);
         expect(navItemAccess('integrations')).toBeUndefined();
+    });
+
+    it('shows the API Score nav item immediately after Applications when scoring is enabled', () => {
+        enableApiScore();
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderPlatform();
+
+        expect(navGroupItemKeys('APIs & Assets')).toEqual([
+            'applications',
+            'api-score',
+            'integrations',
+            'metadata',
+            'dictionaries',
+            'user-fields',
+            'shared-policy-groups',
+            'broadcasts',
+        ]);
+    });
+
+    it('hides the API Score nav item when apiScore.enabled is false', () => {
+        renderPlatform();
+
+        expect(visibleNavKeys()).not.toContain('api-score');
+    });
+
+    it('hides the API Score nav item when the user lacks environment-integration-r', () => {
+        enableApiScore();
+        denyPermissions('environment-integration-r');
+
+        renderPlatform();
+
+        expect(visibleNavKeys()).not.toContain('api-score');
+    });
+
+    it('routes a direct API Score URL visit to the Overview tab when scoring is enabled', () => {
+        enableApiScore();
+
+        renderApiScoreUrl();
+
+        expect(screen.getByTestId('api-score-dashboard-page')).not.toBeNull();
+        expect(screen.getByRole('heading', { name: 'API Score' })).not.toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/api-score');
+        expect(screen.getByRole('link', { name: 'Rulesets & Functions' })).not.toBeNull();
+    });
+
+    it('routes the Rulesets & Functions tab under API Score', () => {
+        enableApiScore();
+
+        renderApiScoreUrl('/api-score/rulesets');
+
+        expect(screen.getByTestId('api-score-rulesets-page')).not.toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/api-score/rulesets');
+        expect(screen.getByRole('link', { name: 'Overview' })).not.toBeNull();
+    });
+
+    it('opens ruleset import outside the Overview/Rulesets tabs', () => {
+        enableApiScore();
+
+        renderApiScoreUrl('/api-score/rulesets/import');
+
+        expect(screen.getByTestId('import-api-score-ruleset-page')).not.toBeNull();
+        expect(screen.queryByTestId('api-score-rulesets-page')).toBeNull();
+        expect(screen.queryByRole('link', { name: 'Rulesets & Functions' })).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/api-score/rulesets/import');
+    });
+
+    it('opens function import outside the Overview/Rulesets tabs', () => {
+        enableApiScore();
+
+        renderApiScoreUrl('/api-score/rulesets/import-function');
+
+        expect(screen.getByTestId('import-scoring-function-page')).not.toBeNull();
+        expect(screen.queryByRole('link', { name: 'Overview' })).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/api-score/rulesets/import-function');
+    });
+
+    it('opens ruleset edit outside the Overview/Rulesets tabs', () => {
+        enableApiScore();
+
+        renderApiScoreUrl('/api-score/rulesets/rs-1/edit');
+
+        expect(screen.getByTestId('edit-api-score-ruleset-page')).not.toBeNull();
+        expect(screen.queryByRole('link', { name: 'Rulesets & Functions' })).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/api-score/rulesets/rs-1/edit');
+    });
+
+    it('redirects a direct API Score URL visit to Applications when scoring is disabled', () => {
+        renderApiScoreUrl();
+
+        expect(screen.queryByTestId('api-score-dashboard-page')).toBeNull();
+        expect(screen.getByTestId('applications-page')).not.toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/applications');
+        expect(screen.getByTestId('navigation-type').textContent).toBe('REPLACE');
+    });
+
+    it('redirects a direct API Score URL visit to Applications when the user lacks environment-integration-r', () => {
+        enableApiScore();
+        denyPermissions('environment-integration-r');
+
+        renderApiScoreUrl();
+
+        expect(screen.queryByTestId('api-score-dashboard-page')).toBeNull();
+        expect(screen.getByTestId('applications-page')).not.toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/applications');
+    });
+
+    it('lands on the API Score page from the platform index when API Score is the only visible item', () => {
+        grantOnlyPermissions('environment-integration-r');
+        enableApiScore();
+
+        render(
+            <MemoryRouter initialEntries={['/']}>
+                <AppRoutes />
+                <LocationProbe />
+            </MemoryRouter>,
+        );
+
+        expect(screen.getByTestId('location').textContent).toBe('/api-score');
+        expect(screen.getByTestId('api-score-dashboard-page')).not.toBeNull();
+        expect(screen.queryByTestId('platform-no-access-page')).toBeNull();
     });
 
     it('hides the Integrations nav item when Federation is not enabled for the organization', () => {
@@ -819,6 +1080,406 @@ describe('AppRoutes', () => {
         fetchSpy.mockRestore();
     });
 
+    it('opens a gateway-style integration overview on the shared integration id route, showing its name and provider', async () => {
+        const integration = GATEWAY_INTEGRATION;
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'R' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(integration.id);
+
+        const overview = await screen.findByTestId('integration-overview-page');
+        expect(await within(overview).findByRole('heading', { name: integration.name })).not.toBeNull();
+        expect(within(overview).getByText('AWS API Gateway')).not.toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}`);
+        fetchSpy.mockRestore();
+    });
+
+    it('redirects a direct visit to an A2A integration overview back to the Integrations list', async () => {
+        const fetchSpy = spyOnIntegrationOverviewFetch(A2A_INTEGRATION, () => jsonResponse({ DEFINITION: 'R' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(A2A_INTEGRATION.id);
+
+        await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/integrations'));
+        expect(screen.queryByTestId('integration-overview-page')).toBeNull();
+        expect(screen.getByTestId('integrations-page')).not.toBeNull();
+        expect(screen.queryByText(A2A_INTEGRATION.name)).toBeNull();
+        fetchSpy.mockRestore();
+    });
+
+    it('opens the create-integration page on its provider-selection step instead of reading new as an integration id', async () => {
+        const fetchSpy = spyOnApimFetch();
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationPath('/integrations/new');
+
+        expect(await screen.findByRole('heading', { name: 'Create a new integration' })).not.toBeNull();
+        expect(
+            ['API gateways', 'Event brokers'].flatMap(group => within(screen.getByRole('region', { name: group })).getAllByRole('button')),
+        ).toHaveLength(9);
+        expect(screen.queryByTestId('integration-overview-page')).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/integrations/new');
+        expect(integrationsRequestUrls(fetchSpy)).toEqual([]);
+        fetchSpy.mockRestore();
+    });
+
+    it.each([
+        ['the installed license tier is oss', { federation: { enabled: true } }, OSS_LICENSE],
+        ['the license has expired', { federation: { enabled: true } }, EXPIRED_LICENSE],
+        ['Federation is not enabled for the organization', { federation: { enabled: false } }, ENTITLED_LICENSE],
+    ])('keeps a user allowed to create integrations off the create-integration page when %s', async (_case, consoleSettings, license) => {
+        const fetchSpy = spyOnApimFetch();
+        mockUseConsoleSettings.mockReturnValue(consoleSettings);
+        mockSetLicense(license);
+
+        renderIntegrationPath('/integrations/new');
+        await act(async () => {});
+
+        expect(screen.queryByRole('heading', { name: 'Create a new integration' })).toBeNull();
+        expect(screen.queryByRole('textbox', { name: 'Filter providers' })).toBeNull();
+        expect(screen.getByTestId('location').textContent).not.toBe('/integrations/new');
+        fetchSpy.mockRestore();
+    });
+
+    it('redirects a direct create-integration visit to the Integrations list when the user lacks environment-integration-c', async () => {
+        const fetchSpy = spyOnApimFetch();
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+        denyPermissions('environment-integration-c');
+
+        renderIntegrationPath('/integrations/new');
+        await act(async () => {});
+
+        expect(screen.queryByRole('heading', { name: 'Create a new integration' })).toBeNull();
+        expect(screen.queryByRole('textbox', { name: 'Filter providers' })).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe('/integrations');
+        fetchSpy.mockRestore();
+    });
+
+    // The list stays mounted while the create runs so only the create's invalidation, not a remount, can refetch it.
+    it('shows the created integration in the Integrations list under the entered name after a successful create', async () => {
+        mockUseRealIntegrationsPage = true;
+        const user = userEvent.setup();
+        const created = { id: 'created-1', name: 'My integration', provider: 'mulesoft', agentStatus: 'CONNECTED' };
+        const fetchSpy = spyOnIntegrationCreateAndListFetch(created);
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        const listView = render(
+            <MemoryRouter initialEntries={['/integrations']}>
+                <AppRoutes />
+            </MemoryRouter>,
+        );
+        expect(await within(listView.container).findByText('No integrations yet')).not.toBeNull();
+
+        const createView = renderIntegrationPath('/integrations/new');
+        await user.click(await screen.findByRole('button', { name: /^MuleSoft/ }));
+        await user.type(screen.getByRole('textbox', { name: /^Name/ }), created.name);
+        await user.click(within(createView.container).getByRole('button', { name: 'Create integration' }));
+        await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(`/integrations/${created.id}`));
+
+        expect(integrationCreateRequestUrls(fetchSpy)).toEqual(['https://apim.test/management/v2/environments/env-1/integrations']);
+        expect(await within(listView.container).findByRole('link', { name: created.name })).not.toBeNull();
+        fetchSpy.mockRestore();
+    });
+
+    it('returns to the Integrations list from the create-integration page Back button', async () => {
+        const user = userEvent.setup();
+        const fetchSpy = spyOnApimFetch();
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationPath('/integrations/new');
+        await user.click(await screen.findByRole('button', { name: 'Back to Integrations' }));
+
+        expect(screen.getByTestId('location').textContent).toBe('/integrations');
+        fetchSpy.mockRestore();
+    });
+
+    // Each row uses its own integration id because AppRoutes shares one QueryClient across tests: a cached
+    // grant for the same id from the test above would otherwise let the overview mount before the refetch.
+    it.each([
+        [
+            'a gateway-style integration with no permissions',
+            { ...GATEWAY_INTEGRATION, id: 'gateway-no-permissions' },
+            () => jsonResponse({}),
+        ],
+        [
+            'a gateway-style integration without definition read',
+            { ...GATEWAY_INTEGRATION, id: 'gateway-definition-create-only' },
+            () => jsonResponse({ DEFINITION: 'C' }),
+        ],
+        [
+            'a gateway-style integration whose permissions request fails',
+            { ...GATEWAY_INTEGRATION, id: 'gateway-permissions-failed' },
+            forbiddenIntegrationsResponse,
+        ],
+    ])(
+        'redirects a direct visit to %s back to the Integrations list without loading its details',
+        async (_case, integration, permissionsResponse) => {
+            const fetchSpy = spyOnIntegrationOverviewFetch(integration, permissionsResponse);
+            mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+            mockSetLicense(ENTITLED_LICENSE);
+
+            renderIntegrationOverviewUrl(integration.id);
+
+            await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/integrations'));
+            expect(screen.queryByTestId('integration-overview-page')).toBeNull();
+            expect(screen.getByTestId('integrations-page')).not.toBeNull();
+            expect(
+                fetchSpy.mock.calls.map(([input]) => String(input)).filter(url => url.endsWith(`/integrations/${integration.id}`)),
+            ).toEqual([]);
+            fetchSpy.mockRestore();
+        },
+    );
+
+    it('keeps a direct overview visit on its URL without loading details while the integration permissions request is pending', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-permissions-pending' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => new Promise<Response>(() => undefined));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(integration.id);
+
+        await waitFor(() =>
+            expect(
+                fetchSpy.mock.calls
+                    .map(([input]) => String(input))
+                    .filter(url => url.endsWith(`/integrations/${integration.id}/permissions`)),
+            ).toHaveLength(1),
+        );
+        expect(screen.queryByTestId('integration-overview-page')).toBeNull();
+        expect(screen.queryByTestId('integrations-page')).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}`);
+        expect(fetchSpy.mock.calls.map(([input]) => String(input)).filter(url => url.endsWith(`/integrations/${integration.id}`))).toEqual(
+            [],
+        );
+        fetchSpy.mockRestore();
+    });
+
+    it('keeps a direct overview visit on its URL without requesting permissions or details while no environment is selected', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-no-environment' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'R' }));
+        mockUseEnvironment.mockReturnValue(undefined);
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        // Bootstrap up front so a permissions request built from a missing environment would be sent right after
+        // mount instead of waiting on the client bootstrap, and the flush below lets it land.
+        await loadApimBootstrap();
+
+        renderIntegrationOverviewUrl(integration.id);
+
+        await act(() => new Promise(resolve => setTimeout(resolve, 0)));
+        expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}`);
+        expect(screen.queryByTestId('integration-overview-page')).toBeNull();
+        expect(screen.queryByTestId('integrations-page')).toBeNull();
+        expect(screen.queryByText(integration.name)).toBeNull();
+        const requestedUrls = fetchSpy.mock.calls.map(([input]) => String(input));
+        expect(requestedUrls.filter(url => url.endsWith(`/integrations/${integration.id}/permissions`))).toEqual([]);
+        expect(requestedUrls.filter(url => url.endsWith(`/integrations/${integration.id}`))).toEqual([]);
+        fetchSpy.mockRestore();
+    });
+
+    it('warns once with the integration id when the overview permissions request fails', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-permissions-failed-warning' };
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, forbiddenIntegrationsResponse);
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(integration.id);
+
+        await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/integrations'));
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0][0])).toContain(integration.id);
+        fetchSpy.mockRestore();
+        warn.mockRestore();
+    });
+
+    it('does not warn when the overview permissions request resolves without definition read', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-definition-create-only-no-warning' };
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'C' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(integration.id);
+
+        await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/integrations'));
+        expect(warn).not.toHaveBeenCalled();
+        fetchSpy.mockRestore();
+        warn.mockRestore();
+    });
+
+    it.each([
+        [
+            'a gateway-style integration when the user lacks environment-integration-r',
+            { ...GATEWAY_INTEGRATION, id: 'gateway-no-environment-read' },
+            { federation: { enabled: true } },
+            ENTITLED_LICENSE,
+            ['environment-integration-r'],
+        ],
+        [
+            'a gateway-style integration when Federation is not enabled for the organization',
+            { ...GATEWAY_INTEGRATION, id: 'gateway-federation-disabled' },
+            { federation: { enabled: false } },
+            ENTITLED_LICENSE,
+            [],
+        ],
+        [
+            'a gateway-style integration when the installed license tier is oss',
+            { ...GATEWAY_INTEGRATION, id: 'gateway-oss-license' },
+            { federation: { enabled: true } },
+            OSS_LICENSE,
+            [],
+        ],
+    ])(
+        'redirects a direct overview visit to %s the same way as the list, without any integration request',
+        async (_case, integration, consoleSettings, license, deniedPermissions) => {
+            const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'R' }));
+            mockUseConsoleSettings.mockReturnValue(consoleSettings);
+            mockSetLicense(license);
+            denyPermissions(...deniedPermissions);
+
+            renderIntegrationOverviewUrl(integration.id);
+
+            await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/applications'));
+            expect(screen.queryByTestId('integration-overview-page')).toBeNull();
+            expect(screen.getByTestId('applications-page')).not.toBeNull();
+            expect(integrationsRequestUrls(fetchSpy)).toEqual([]);
+            fetchSpy.mockRestore();
+        },
+    );
+
+    it('raises one error notification and shows no name, provider or agent status when the overview details request returns 404', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-details-not-found' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(
+            integration,
+            () => jsonResponse({ DEFINITION: 'R' }),
+            () => jsonResponse({ httpStatus: 404, message: 'Integration not found' }, 404),
+        );
+        const notifyError = jest.spyOn(notify, 'error').mockImplementation(() => undefined);
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(integration.id);
+
+        await waitFor(() =>
+            expect(notifyError).toHaveBeenCalledWith(
+                expect.any(ApimApiError),
+                'Integration could not be loaded. Please refresh and try again.',
+            ),
+        );
+        expect(notifyError).toHaveBeenCalledTimes(1);
+        const overview = screen.getByTestId('integration-overview-page');
+        await waitFor(() => expect(overview.textContent).toBe('Integration could not be loaded. Please refresh and try again.'));
+        expect(within(overview).queryByRole('heading')).toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}`);
+        notifyError.mockRestore();
+        fetchSpy.mockRestore();
+    });
+
+    it.each([
+        ['CONNECTED', 'Connected', 'Disconnected', false],
+        ['DISCONNECTED', 'Disconnected', 'Connected', true],
+    ])(
+        'shows the agent connection state a gateway-style integration reports as %s on its overview',
+        async (agentStatus, shownLabel, hiddenLabel, showsGuidance) => {
+            const integration = { ...GATEWAY_INTEGRATION, id: `gateway-agent-${agentStatus.toLowerCase()}`, agentStatus };
+            const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'R' }));
+            mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+            mockSetLicense(ENTITLED_LICENSE);
+
+            renderIntegrationOverviewUrl(integration.id);
+
+            const section = await screen.findByTestId('integration-agent-connection');
+            expect(within(section).getByRole('heading', { name: 'Agent Connection' })).not.toBeNull();
+            expect(within(section).getByText(shownLabel)).not.toBeNull();
+            expect(within(section).queryByText(hiddenLabel)).toBeNull();
+            expect(screen.queryByTestId('integration-agent-disconnected-banner') !== null).toBe(showsGuidance);
+            if (showsGuidance) {
+                expect(screen.getByText(/Check your agent status/)).not.toBeNull();
+            } else {
+                expect(screen.queryByText(/Check your agent status/)).toBeNull();
+            }
+            fetchSpy.mockRestore();
+        },
+    );
+
+    it('opens the Configuration page from the Configuration entry on the detail page of an integration the user can update', async () => {
+        const user = userEvent.setup();
+        const integration = { ...GATEWAY_INTEGRATION, id: 'integration-1' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'RU' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationOverviewUrl(integration.id);
+        await user.click(await screen.findByRole('link', { name: 'Configuration' }));
+
+        expect(screen.getByTestId('location').textContent).toBe('/integrations/integration-1/configuration');
+        fetchSpy.mockRestore();
+    });
+
+    it('lists a General tab on the Configuration page of an integration the user can update', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-definition-update' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'RU' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationPath(`/integrations/${integration.id}/configuration`);
+
+        expect(await screen.findByRole('tab', { name: 'General' })).not.toBeNull();
+        expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}/configuration`);
+        fetchSpy.mockRestore();
+    });
+
+    it('redirects a direct Configuration visit to the Integrations list when the user can neither update nor delete the integration', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'gateway-definition-read-only' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'R' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationPath(`/integrations/${integration.id}/configuration`);
+
+        await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/integrations'));
+        expect(screen.getByTestId('integrations-page')).not.toBeNull();
+        expect(screen.queryByRole('tab', { name: 'General' })).toBeNull();
+        fetchSpy.mockRestore();
+    });
+
+    it('redirects a direct User Permissions visit to the Configuration page when the user can update the integration but not read its members', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'integration-definition-update-only' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'RU' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationPath(`/integrations/${integration.id}/configuration/members`);
+
+        await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}/configuration`));
+        expect(await screen.findByRole('tab', { name: 'General' })).not.toBeNull();
+        fetchSpy.mockRestore();
+    });
+
+    it('opens the User Permissions tab on a direct Configuration visit when the user can read the integration members but can neither update nor delete it', async () => {
+        const integration = { ...GATEWAY_INTEGRATION, id: 'integration-definition-read-member-read' };
+        const fetchSpy = spyOnIntegrationOverviewFetch(integration, () => jsonResponse({ DEFINITION: 'R', MEMBER: 'R' }));
+        mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
+        mockSetLicense(ENTITLED_LICENSE);
+
+        renderIntegrationPath(`/integrations/${integration.id}/configuration`);
+
+        await waitFor(() =>
+            expect(screen.getByTestId('location').textContent).toBe(`/integrations/${integration.id}/configuration/members`),
+        );
+        expect(await screen.findByRole('tab', { name: 'User Permissions' })).not.toBeNull();
+        expect(screen.queryByRole('tab', { name: 'General' })).toBeNull();
+        fetchSpy.mockRestore();
+    });
+
     it('adds the Integrations nav item when the license lands after the first render', () => {
         mockUseConsoleSettings.mockReturnValue({ federation: { enabled: true } });
         renderPlatform();
@@ -850,7 +1511,33 @@ describe('AppRoutes', () => {
         renderPlatform();
 
         expect(primaryNavKeys()).toEqual(['organization', 'environment', 'team']);
-        expect(primaryNav()?.props?.items?.map(item => item.title)).toEqual(['Organization', 'Environment', 'Team']);
+        expect(primaryNavItems().map(item => item.title)).toEqual(['Organization', 'Environment', 'Team']);
+    });
+
+    it('groups the primary sidebar sections under a Manage heading', () => {
+        renderPlatform();
+
+        expect(primaryNav()?.props?.groups?.map(group => group.label)).toEqual(['Manage']);
+    });
+
+    it('links each primary section to its first visible item, the page selecting it opens, so it can be opened in a new tab', () => {
+        const navigateToKey = jest.fn();
+        mockUseModuleRouting.mockReturnValue({ activeNavKey: 'not-a-nav-item', navigateToKey, rootPath: '/platform' });
+        renderPlatform();
+
+        expect(primaryNavItems().map(item => item.href)).toEqual(['/tenants', '/applications', '/users']);
+        for (const item of primaryNavItems()) {
+            primaryNav()?.props?.onItemSelect?.(item.key);
+
+            expect(item.href).toBe(mockHrefForKey(navigateToKey.mock.lastCall?.[0]));
+        }
+    });
+
+    it('links each context sidebar item to its page, so it can be opened in a new tab', () => {
+        renderPlatform();
+
+        expect(navItemHref('applications')).toBe('/applications');
+        expect(navItemHref('metadata')).toBe('/metadata');
     });
 
     it('does not show a General primary nav item', () => {
@@ -943,6 +1630,37 @@ describe('AppRoutes', () => {
         renderPlatform();
 
         expect(visibleNavKeys()).not.toContain('dictionaries');
+    });
+
+    it('routes to the User Fields page under the platform module', () => {
+        mockUseModuleRouting.mockReturnValue({
+            activeNavKey: 'user-fields',
+            navigateToKey: jest.fn(),
+            rootPath: '/platform',
+        });
+        renderPlatform('/user-fields');
+
+        expect(screen.getByTestId('user-fields-page')).not.toBeNull();
+    });
+
+    it('shows the User Fields nav item when the user has read permission', () => {
+        renderPlatform();
+
+        expect(visibleNavKeys()).toContain('user-fields');
+    });
+
+    it('hides the User Fields nav item and bounces a direct visit when the user lacks organization-custom_user_fields-r', () => {
+        mockUseModuleRouting.mockReturnValue({
+            activeNavKey: 'user-fields',
+            navigateToKey: jest.fn(),
+            rootPath: '/platform',
+        });
+        mockUseHasPermission.mockImplementation(({ anyOf }: { anyOf: string[] }) => !anyOf.includes('organization-custom_user_fields-r'));
+
+        renderPlatform('/user-fields');
+
+        expect(visibleNavKeys()).not.toContain('user-fields');
+        expect(screen.queryByTestId('user-fields-page')).toBeNull();
     });
 
     it('shows the Metadata nav item when the user has read permission', () => {
@@ -1584,6 +2302,29 @@ describe('AppRoutes', () => {
         expect(screen.getByTestId('environment-cors-settings-page')).not.toBeNull();
     });
 
+    it('routes to the environment API Review settings', () => {
+        renderPlatform('/api-review');
+        expect(screen.getByTestId('api-review-settings-page')).not.toBeNull();
+    });
+
+    it('blocks API Review without environment-settings-r', () => {
+        denyPermissions('environment-settings-r');
+        renderPlatform('/api-review');
+        expect(screen.queryByTestId('api-review-settings-page')).toBeNull();
+        expect(screen.getByTestId('applications-page')).not.toBeNull();
+    });
+
+    it('shows API Review in the Environment nav section', () => {
+        mockUseModuleRouting.mockReturnValue({
+            activeNavKey: 'api-review',
+            navigateToKey: jest.fn(),
+            rootPath: '/platform',
+        });
+        renderPlatform('/api-review');
+
+        expect(visibleNavKeys()).toContain('api-review');
+    });
+
     it('shows environment SMTP in the Environment nav section', () => {
         mockUseModuleRouting.mockReturnValue({
             activeNavKey: 'environment-smtp',
@@ -1769,6 +2510,109 @@ describe('AppRoutes', () => {
         renderPlatform();
 
         expect(visibleNavKeys()).not.toContain('security-plan-types');
+    });
+
+    it('routes to Primary Owner Mode', () => {
+        renderPlatform('/primary-owner-mode');
+        expect(screen.getByTestId('primary-owner-mode-page')).not.toBeNull();
+    });
+
+    it('does not render Primary Owner Mode for a pasted URL without environment-settings-r', () => {
+        denyPermissions('environment-settings-r');
+        renderPlatform('/primary-owner-mode');
+
+        expect(screen.queryByTestId('primary-owner-mode-page')).toBeNull();
+        expect(screen.getByTestId('applications-page')).not.toBeNull();
+    });
+
+    it('hides Primary Owner Mode without environment-settings-r', () => {
+        denyPermissions('environment-settings-r');
+        renderPlatform();
+
+        expect(visibleNavKeys()).not.toContain('primary-owner-mode');
+    });
+
+    it('shows Primary Owner Mode in the Environment nav section', () => {
+        mockUseModuleRouting.mockReturnValue({
+            activeNavKey: 'primary-owner-mode',
+            navigateToKey: jest.fn(),
+            rootPath: '/platform',
+        });
+        renderPlatform('/primary-owner-mode');
+
+        expect(visibleNavKeys()).toContain('primary-owner-mode');
+        expect(navGroupItemKeys('System & Security')[0]).toBe('primary-owner-mode');
+    });
+
+    it('renders Client Registration from a pasted URL', () => {
+        renderPlatform('/client-registration');
+        expect(screen.getByTestId('client-registration-page')).not.toBeNull();
+    });
+
+    it('renders create Client Registration provider when the user can create', () => {
+        renderPlatform('/client-registration/new');
+        expect(screen.getByTestId('client-registration-provider-page')).not.toBeNull();
+    });
+
+    it('redirects create Client Registration provider without environment-client_registration_provider-c', () => {
+        mockUseHasPermission.mockImplementation(
+            ({ anyOf }: { anyOf: string[] }) => !anyOf.includes('environment-client_registration_provider-c'),
+        );
+        renderPlatform('/client-registration/new');
+        expect(screen.queryByTestId('client-registration-provider-page')).toBeNull();
+        expect(screen.getByTestId('client-registration-page')).not.toBeNull();
+    });
+
+    it('renders edit Client Registration provider from a pasted URL', () => {
+        renderPlatform('/client-registration/prov-1');
+        expect(screen.getByTestId('client-registration-provider-page')).not.toBeNull();
+    });
+
+    it('does not render Client Registration without environment-client_registration_provider-r', () => {
+        denyPermissions('environment-client_registration_provider-r');
+        renderPlatform('/client-registration');
+
+        expect(screen.queryByTestId('client-registration-page')).toBeNull();
+        expect(screen.getByTestId('applications-page')).not.toBeNull();
+    });
+
+    it('hides Client Registration without environment-client_registration_provider-r', () => {
+        denyPermissions('environment-client_registration_provider-r');
+        renderPlatform();
+
+        expect(visibleNavKeys()).not.toContain('client-registration');
+    });
+
+    it('locks the Client Registration nav item when DCR is unlicensed', () => {
+        mockUseHasFeature.mockImplementation((feature: string) => feature !== 'apim-dcr-registration');
+
+        renderPlatform();
+
+        expect(visibleNavKeys()).toContain('client-registration');
+        expect(navItemAccess('client-registration')).toBe('locked');
+    });
+
+    it('still renders the Client Registration list when DCR is unlicensed', () => {
+        mockUseHasFeature.mockImplementation((feature: string) => feature !== 'apim-dcr-registration');
+        renderPlatform('/client-registration');
+
+        expect(screen.getByTestId('client-registration-page')).not.toBeNull();
+    });
+
+    it('redirects create Client Registration provider when DCR is unlicensed', () => {
+        mockUseHasFeature.mockImplementation((feature: string) => feature !== 'apim-dcr-registration');
+        renderPlatform('/client-registration/new');
+
+        expect(screen.queryByTestId('client-registration-provider-page')).toBeNull();
+        expect(screen.getByTestId('client-registration-page')).not.toBeNull();
+    });
+
+    it('redirects edit Client Registration provider when DCR is unlicensed', () => {
+        mockUseHasFeature.mockImplementation((feature: string) => feature !== 'apim-dcr-registration');
+        renderPlatform('/client-registration/prov-1');
+
+        expect(screen.queryByTestId('client-registration-provider-page')).toBeNull();
+        expect(screen.getByTestId('client-registration-page')).not.toBeNull();
     });
 
     it('does not render API Health Check for a pasted URL without environment-api-r', () => {

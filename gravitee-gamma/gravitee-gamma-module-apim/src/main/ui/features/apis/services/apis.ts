@@ -13,7 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { apimFetchBlobV2, apimFetchJsonV2 } from '../../../shared/api/apimClient';
+import {
+    apimFetchBlobV2,
+    apimFetchJsonOrg,
+    apimFetchJsonV1Env,
+    apimFetchJsonV2,
+    apimFetchJsonV2WithMeta,
+} from '../../../shared/api/apimClient';
 import type {
     Analytics,
     ApiDetailDto,
@@ -25,7 +31,10 @@ import type {
     Failover,
     ImportSwaggerDescriptor,
     ImportWsdlDescriptor,
+    Promotion,
+    PromotionTarget,
     Property,
+    ResponseTemplatesMap,
 } from '../types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -61,6 +70,16 @@ export async function getApiEvents(
         environmentId,
         `/apis/${encodeURIComponent(apiId)}/events?page=${options.page}&perPage=${options.perPage}&types=PUBLISH_API`,
     );
+}
+
+/** Definition that would be deployed now. Classic `ApiV2Service.getCurrentDeployment`. */
+export async function getCurrentDeployment(environmentId: string, apiId: string): Promise<unknown> {
+    return apimFetchJsonV2(environmentId, `/apis/${encodeURIComponent(apiId)}/deployments/current`);
+}
+
+/** Classic `ApiV2Service.verifyDeploy`. `ok: false` means the licence blocks start. */
+export async function verifyApiDeploy(environmentId: string, apiId: string): Promise<{ ok?: boolean }> {
+    return apimFetchJsonV2(environmentId, `/apis/${encodeURIComponent(apiId)}/deployments/_verify`);
 }
 
 export async function rollbackApi(environmentId: string, apiId: string, eventId: string): Promise<void> {
@@ -109,6 +128,29 @@ export async function duplicateApi(environmentId: string, apiId: string, options
         method: 'POST',
         headers: JSON_HEADERS,
         body: JSON.stringify(options),
+    });
+}
+
+export async function getPromotionTargets(environmentId: string): Promise<PromotionTarget[]> {
+    return apimFetchJsonV1Env<PromotionTarget[]>(environmentId, '/promotion-targets');
+}
+
+export async function getPendingPromotions(apiId: string): Promise<Promotion[]> {
+    return apimFetchJsonOrg<Promotion[]>(
+        `/promotions/_search?apiId=${encodeURIComponent(apiId)}&statuses=CREATED&statuses=TO_BE_VALIDATED`,
+        { method: 'POST' },
+    );
+}
+
+export async function promoteApi(
+    environmentId: string,
+    apiId: string,
+    target: { targetEnvCockpitId: string; targetEnvName: string },
+): Promise<void> {
+    await apimFetchJsonV2(environmentId, `/apis/${encodeURIComponent(apiId)}/_promote`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(target),
     });
 }
 
@@ -242,10 +284,37 @@ export async function updateApiFailover(environmentId: string, apiId: string, fa
     });
 }
 
-export async function updateApiCors(environmentId: string, apiId: string, cors: Cors): Promise<void> {
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function applyHttpListenerCors(
+    listener: Record<string, unknown>,
+    cors: Cors,
+    requestValidation: { rejectNullByte: boolean } | undefined,
+): Record<string, unknown> {
+    if (listener['type'] !== 'HTTP') return listener;
+
+    const existing = isJsonObject(listener['requestValidation']) ? listener['requestValidation'] : undefined;
+    const hasRequestValidation = existing !== undefined || requestValidation?.rejectNullByte === true;
+    const writeRequestValidation = requestValidation !== undefined && hasRequestValidation;
+
+    return {
+        ...listener,
+        cors,
+        ...(writeRequestValidation ? { requestValidation: { ...existing, ...requestValidation } } : {}),
+    };
+}
+
+export async function updateApiCors(
+    environmentId: string,
+    apiId: string,
+    cors: Cors,
+    requestValidation?: { rejectNullByte: boolean },
+): Promise<void> {
     const current = await apimFetchJsonV2<Record<string, unknown>>(environmentId, `/apis/${encodeURIComponent(apiId)}`);
     const listeners = (current.listeners as Record<string, unknown>[]) ?? [];
-    const updatedListeners = listeners.map(l => (l['type'] === 'HTTP' ? { ...l, cors } : l));
+    const updatedListeners = listeners.map(listener => applyHttpListenerCors(listener, cors, requestValidation));
     await apimFetchJsonV2(environmentId, `/apis/${encodeURIComponent(apiId)}`, {
         method: 'PUT',
         headers: JSON_HEADERS,
@@ -292,4 +361,41 @@ export async function updateDynamicProperties(environmentId: string, apiId: stri
         headers: JSON_HEADERS,
         body: JSON.stringify({ ...current, services: { ...services, dynamicProperty: config } }),
     });
+}
+
+/** MAPI ETag is `updatedAt` epoch millis; use when the `ETag` header is unavailable. */
+function ifMatchFromUpdatedAt(updatedAt: unknown): string | null {
+    if (typeof updatedAt === 'number' && Number.isFinite(updatedAt)) {
+        return `"${updatedAt}"`;
+    }
+    if (typeof updatedAt === 'string' && updatedAt.trim()) {
+        const ms = Date.parse(updatedAt);
+        return Number.isFinite(ms) ? `"${ms}"` : null;
+    }
+    return null;
+}
+
+export async function updateApiResponseTemplates(
+    environmentId: string,
+    apiId: string,
+    updater: (current: ResponseTemplatesMap) => ResponseTemplatesMap,
+): Promise<ApiDetailDto> {
+    const { data: current, etag } = await apimFetchJsonV2WithMeta<{
+        responseTemplates?: ResponseTemplatesMap;
+        updatedAt?: string | number;
+    }>(environmentId, `/apis/${encodeURIComponent(apiId)}`, { cache: 'no-store' });
+    const responseTemplates = updater(current.responseTemplates ?? {});
+    const ifMatch = etag ?? ifMatchFromUpdatedAt(current.updatedAt);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json-patch+json' };
+    if (ifMatch) {
+        headers['If-Match'] = ifMatch;
+    }
+    return apimFetchJsonV2<ApiDetailDto>(environmentId, `/apis/${encodeURIComponent(apiId)}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify([{ op: 'add', path: '/responseTemplates', value: responseTemplates }]),
+    }).then(patched => ({
+        ...patched,
+        responseTemplates: patched.responseTemplates ?? responseTemplates,
+    }));
 }

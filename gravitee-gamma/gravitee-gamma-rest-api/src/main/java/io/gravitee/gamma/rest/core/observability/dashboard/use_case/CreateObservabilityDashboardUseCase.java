@@ -19,7 +19,10 @@ import io.gravitee.apim.core.UseCase;
 import io.gravitee.common.utils.TimeProvider;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.Dashboard;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardContent;
+import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardFilter;
+import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardModule;
 import io.gravitee.gamma.rest.core.observability.dashboard.port.repository.DashboardRepository;
+import io.gravitee.gamma.rest.core.observability.filter.domain_service.ObservabilityFilterValidator;
 import java.time.Instant;
 import lombok.AllArgsConstructor;
 
@@ -27,7 +30,8 @@ import lombok.AllArgsConstructor;
  * Creates a dashboard from author-supplied {@link DashboardContent} (OBS-16). The id is
  * client-supplied (AGENTS.md §9 — resource-creation ids come from the request); every server-owned
  * field is derived here: {@code version} starts at 1, {@code createdBy} is the authenticated caller,
- * {@code createdAt}/{@code updatedAt} are stamped now. Version is maintained but not enforced — the
+ * {@code createdAt}/{@code updatedAt} are stamped now. {@code module} is required, or the new
+ * dashboard would show in no module's view (OBS-106). Version is maintained but not enforced — the
  * optimistic-locking guard is OBS-17.
  *
  * @author GraviteeSource Team
@@ -39,17 +43,21 @@ public class CreateObservabilityDashboardUseCase {
     private static final int INITIAL_VERSION = 1;
 
     private final DashboardRepository dashboardRepository;
+    private final ObservabilityFilterValidator filterValidator;
 
-    public record Input(String environmentId, String createdBy, String dashboardId, DashboardContent content) {}
+    public record Input(String environmentId, String createdBy, String dashboardId, String module, DashboardContent content) {}
 
     public record Output(Dashboard dashboard) {}
 
     public Output execute(Input input) {
         input.content().validate();
+        DashboardModule.requireValid(input.module());
+        filterValidator.validateDashboardFilters(input.content().filters().stream().map(DashboardFilter::condition).toList());
         Instant now = TimeProvider.instantNow();
         Dashboard dashboard = new Dashboard(
             input.dashboardId(),
             input.environmentId(),
+            input.module(),
             input.content().title(),
             input.content().description(),
             input.content().filters(),

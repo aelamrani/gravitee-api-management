@@ -15,11 +15,34 @@
  */
 export type IntegrationAgentStatus = 'CONNECTED' | 'DISCONNECTED';
 
+export type IngestionJobStatus = 'PENDING' | 'SUCCESS' | 'ERROR' | 'TIMEOUT';
+
+export interface IntegrationIngestionJob {
+    id: string;
+    startedAt?: string;
+    status: IngestionJobStatus;
+}
+
 export interface Integration {
     id: string;
     name: string;
+    description?: string;
     provider: string;
+    groups?: string[];
     agentStatus?: IntegrationAgentStatus;
+    pendingJob?: IntegrationIngestionJob;
+}
+
+export interface UpdateIntegrationRequest {
+    name: string;
+    description: string;
+    groups: string[];
+}
+
+export interface CreateIntegrationRequest {
+    name: string;
+    description?: string;
+    provider: string;
 }
 
 export interface IntegrationsPagination {
@@ -28,6 +51,44 @@ export interface IntegrationsPagination {
     pageCount: number;
     pageItemsCount: number;
     totalCount: number;
+}
+
+export interface IntegrationFederatedApi {
+    id: string;
+    name: string;
+    version: string;
+}
+
+export interface IntegrationFederatedApisResponse {
+    data: IntegrationFederatedApi[];
+    pagination: IntegrationsPagination;
+}
+
+export type IntegrationPreviewApiState = 'NEW' | 'UPDATE';
+
+export interface IntegrationPreviewApi extends IntegrationFederatedApi {
+    state: IntegrationPreviewApiState;
+}
+
+export interface IntegrationPreview {
+    totalCount: number;
+    newCount: number;
+    updateCount: number;
+    apis: IntegrationPreviewApi[];
+    isPartiallyDiscovered: boolean;
+}
+
+export type IntegrationIngestionStatus = 'SUCCESS' | 'PENDING' | 'ERROR';
+
+export interface IntegrationIngestionResponse {
+    status: IntegrationIngestionStatus;
+    message?: string;
+}
+
+export interface IntegrationDeletedFederatedApisResponse {
+    deleted: number;
+    skipped: number;
+    errors: number;
 }
 
 export interface IntegrationsResponse {

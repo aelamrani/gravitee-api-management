@@ -18,6 +18,7 @@ import { ArrowLeftIcon } from '@gravitee/graphene-core/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { planListSearchForStatus } from '../planListStatusSearch';
 import { PlanFormStepIndicator, buildWizardSteps } from './PlanFormStepIndicator';
 import { PlanGeneralStep } from './PlanGeneralStep';
 import { PlanRestrictionsStep } from './PlanRestrictionsStep';
@@ -28,6 +29,7 @@ import type {
     PlanContext,
     PlanFormValue,
     PlanSecurityType,
+    PlanStatus,
     RestrictionsFormData,
     SecurityFormData,
 } from '../../../../types/plan';
@@ -60,13 +62,32 @@ interface PlanFormWizardProps {
     readOnly?: boolean;
     /** Sharding tags of the parent API / API Product — a plan's tags must be a subset of these. */
     referenceTags?: string[];
+    /** Classic console skips the Restrictions step for TCP Proxy APIs. */
+    skipRestrictions?: boolean;
 }
 
-export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, referenceTags }: Readonly<PlanFormWizardProps>) {
+export function PlanFormWizard({
+    ctx,
+    securityType,
+    planId,
+    readOnly = false,
+    referenceTags,
+    skipRestrictions = false,
+}: Readonly<PlanFormWizardProps>) {
     const navigate = useNavigate();
     const isEdit = Boolean(planId);
 
+    // Route-relative, which is what react-router does by default: the create route is two URL segments
+    // (`new/:securityType`) and a path-relative `..` would strip only one, landing on `plans/new` — which
+    // the sibling `:planId` route then matches with planId="new".
+    const backToPlans = (status: PlanStatus) => {
+        navigate({ pathname: '..', search: planListSearchForStatus(status) });
+    };
+
     const { data: existingPlan, isLoading: isLoadingPlan } = usePlan(ctx, planId);
+    // The bucket the list should open on when leaving this form. `usePlan` is disabled without a planId,
+    // so a create form always reads PUBLISHED; an edit form returns to the bucket the plan is in.
+    const listStatus: PlanStatus = existingPlan?.status ?? 'PUBLISHED';
 
     const [form, setForm] = useState<PlanFormValue>({
         securityType,
@@ -77,6 +98,7 @@ export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, re
     const [stepIndex, setStepIndex] = useState(0);
     const [generalErrors, setGeneralErrors] = useState<Partial<Record<keyof GeneralFormData, string>>>({});
     const [securityErrors, setSecurityErrors] = useState<SecurityStepErrors>({});
+    const [submitError, setSubmitError] = useState<string | null>(null);
     const initialized = useRef(false);
 
     useEffect(() => {
@@ -88,11 +110,13 @@ export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, re
 
     const createMutation = useCreatePlan(ctx);
     const updateMutation = useUpdatePlan(ctx);
-    const mutationError = (createMutation.error ?? updateMutation.error)?.message ?? null;
+    const formError = submitError ?? (createMutation.error ?? updateMutation.error)?.message ?? null;
     const isPending = createMutation.isPending || updateMutation.isPending;
 
-    const steps = buildWizardSteps(securityType, ctx.type, stepIndex);
+    const isFederatedPlan = existingPlan?.definitionVersion === 'FEDERATED';
+    const steps = buildWizardSteps(securityType, ctx.type, stepIndex, isFederatedPlan, skipRestrictions);
     const totalSteps = steps.length;
+    const securityStepIndex = steps.findIndex(step => step.label === 'Security');
 
     const handleNext = () => {
         if (!readOnly) {
@@ -119,19 +143,35 @@ export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, re
     const handleBack = () => setStepIndex(prev => Math.max(prev - 1, 0));
 
     const handleSubmit = () => {
-        if (!readOnly) {
+        if (!readOnly && securityStepIndex >= 0) {
             const errors = validateSecurityStep(securityType, form.security);
             if (Object.keys(errors).length > 0) {
                 setSecurityErrors(errors);
-                const securityStepIndex = steps.findIndex(s => s.label === 'Security');
-                if (securityStepIndex >= 0) setStepIndex(securityStepIndex);
+                setStepIndex(securityStepIndex);
                 return;
             }
         }
         if (isEdit && planId) {
-            updateMutation.mutate({ planId, form }, { onSuccess: () => navigate('..') });
+            const fetchedVersion = existingPlan?.definitionVersion;
+            // Only an API's plan carries a definitionVersion: the API Product plan response never serializes one
+            // (openapi-api-products.yaml), and its update endpoint ignores the field, so V4 is what it has always sent.
+            if (ctx.type === 'api' && !fetchedVersion) {
+                console.error('[PlanForm] Plan data unavailable or missing its definition version, update blocked:', planId);
+                setSubmitError('This plan could not be loaded completely, so it cannot be saved. Reload the page and try again.');
+                return;
+            }
+            if (fetchedVersion === 'V2') {
+                console.error('[PlanForm] V2 plan editing is not supported, update blocked:', planId);
+                setSubmitError('V2 plans cannot be edited here. Use the classic Console to edit this plan.');
+                return;
+            }
+            setSubmitError(null);
+            updateMutation.mutate(
+                { planId, form, definitionVersion: fetchedVersion ?? 'V4', order: existingPlan?.order },
+                { onSuccess: () => backToPlans(listStatus) },
+            );
         } else {
-            createMutation.mutate(form, { onSuccess: () => navigate('..') });
+            createMutation.mutate(form, { onSuccess: () => backToPlans('STAGING') });
         }
     };
 
@@ -157,7 +197,7 @@ export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, re
             <div className="flex flex-col gap-6">
                 {/* Header */}
                 <div className="flex items-center gap-3">
-                    <Button type="button" variant="ghost" size="icon" onClick={() => navigate('..')}>
+                    <Button type="button" variant="ghost" size="icon" onClick={() => backToPlans(listStatus)}>
                         <ArrowLeftIcon className="size-4" aria-hidden />
                         <span className="sr-only">Back to plans</span>
                     </Button>
@@ -184,6 +224,7 @@ export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, re
                         errors={generalErrors}
                         readOnly={readOnly}
                         referenceTags={referenceTags}
+                        shardingTagsReadOnly={isFederatedPlan}
                     />
                 )}
 
@@ -209,22 +250,21 @@ export function PlanFormWizard({ ctx, securityType, planId, readOnly = false, re
                     />
                 )}
 
-                {/* Mutation error */}
-                {mutationError && (
+                {formError && (
                     <Alert variant="destructive">
-                        <AlertDescription>{mutationError}</AlertDescription>
+                        <AlertDescription>{formError}</AlertDescription>
                     </Alert>
                 )}
 
                 {/* Navigation */}
                 <div className="flex items-center justify-between pt-2">
-                    <Button type="button" variant="outline" onClick={stepIndex === 0 ? () => navigate('..') : handleBack}>
+                    <Button type="button" variant="outline" onClick={stepIndex === 0 ? () => backToPlans(listStatus) : handleBack}>
                         {stepIndex === 0 ? 'Cancel' : 'Previous'}
                     </Button>
 
                     {readOnly ? (
                         isLastStep ? (
-                            <Button type="button" variant="outline" onClick={() => navigate('..')}>
+                            <Button type="button" variant="outline" onClick={() => backToPlans(listStatus)}>
                                 Close
                             </Button>
                         ) : (

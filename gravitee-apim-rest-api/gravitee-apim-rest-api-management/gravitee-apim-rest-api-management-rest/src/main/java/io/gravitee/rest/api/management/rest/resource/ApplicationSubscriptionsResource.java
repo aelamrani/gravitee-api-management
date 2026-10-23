@@ -25,6 +25,7 @@ import io.gravitee.rest.api.management.rest.model.Subscription;
 import io.gravitee.rest.api.management.rest.model.wrapper.SubscriptionEntityPageResult;
 import io.gravitee.rest.api.management.rest.resource.param.ListStringParam;
 import io.gravitee.rest.api.management.rest.resource.param.ListSubscriptionStatusParam;
+import io.gravitee.rest.api.model.MembershipReferenceType;
 import io.gravitee.rest.api.model.NewSubscriptionEntity;
 import io.gravitee.rest.api.model.SubscriptionEntity;
 import io.gravitee.rest.api.model.permissions.RolePermission;
@@ -36,11 +37,13 @@ import io.gravitee.rest.api.model.v4.api.GenericApiEntity;
 import io.gravitee.rest.api.model.v4.plan.GenericPlanEntity;
 import io.gravitee.rest.api.rest.annotation.Permission;
 import io.gravitee.rest.api.rest.annotation.Permissions;
+import io.gravitee.rest.api.service.AccessControlService;
 import io.gravitee.rest.api.service.ApplicationService;
 import io.gravitee.rest.api.service.SubscriptionService;
 import io.gravitee.rest.api.service.UserService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
+import io.gravitee.rest.api.service.exceptions.ApiNotFoundException;
 import io.gravitee.rest.api.service.v4.PlanSearchService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -93,6 +96,9 @@ public class ApplicationSubscriptionsResource extends AbstractResource {
     @Inject
     private GetApiProductsUseCase getApiProductsUseCase;
 
+    @Inject
+    private AccessControlService accessControlService;
+
     @SuppressWarnings("UnresolvedRestParam")
     @PathParam("application")
     @Parameter(name = "application", hidden = true)
@@ -121,6 +127,13 @@ public class ApplicationSubscriptionsResource extends AbstractResource {
         GenericPlanEntity planEntity = planSearchService.findById(executionContext, plan);
 
         if (
+            planEntity.getReferenceType() != GenericPlanEntity.ReferenceType.API_PRODUCT &&
+            !canSubscribeToApi(executionContext, planEntity.getReferenceId())
+        ) {
+            throw new ApiNotFoundException(planEntity.getReferenceId());
+        }
+
+        if (
             planEntity.isCommentRequired() && (newSubscriptionEntity.getRequest() == null || newSubscriptionEntity.getRequest().isEmpty())
         ) {
             return Response.status(Response.Status.BAD_REQUEST).entity("Plan requires a consumer comment when subscribing").build();
@@ -132,6 +145,17 @@ public class ApplicationSubscriptionsResource extends AbstractResource {
         return Response.created(this.getRequestUriBuilder().path(subscription.getId()).replaceQueryParam("plan", null).build())
             .entity(subscription)
             .build();
+    }
+
+    private boolean canSubscribeToApi(ExecutionContext executionContext, String apiId) {
+        // Admins and members subscribe from the Console, even to an API exposed in no portal
+        return (
+            isAdmin() ||
+            accessControlService.canConsumeApiFromPortal(executionContext, apiId) ||
+            !membershipService
+                .getUserMemberPermissions(executionContext, MembershipReferenceType.API, apiId, getAuthenticatedUser())
+                .isEmpty()
+        );
     }
 
     @GET

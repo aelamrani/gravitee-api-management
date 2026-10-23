@@ -15,7 +15,7 @@
  */
 import { GraviteeMarkdownEditorComponent, GraviteeMarkdownEditorModule } from '@gravitee/gravitee-markdown';
 
-import { load, YAMLException } from 'js-yaml';
+import { YAMLException } from 'js-yaml';
 import {
   GIO_DIALOG_WIDTH,
   GioBannerModule,
@@ -105,6 +105,7 @@ import { confirmDiscardChanges, normalizeContent } from '../../shared/utils/cont
 import { PortalNavigationItemIconPipe } from '../icon/portal-navigation-item-icon.pipe';
 import { AsyncApiEditorComponent } from '../components/asyncapi-editor/asyncapi-editor.component';
 import { OpenApiEditorComponent } from '../components/openapi-editor/openapi-editor.component';
+import { loadYaml } from '../../util/yaml';
 
 type AsyncApiSpecValidationError = {
   message: string;
@@ -361,14 +362,6 @@ export class PortalNavigationItemsComponent implements HasUnsavedChanges {
     const sourcedContainer = nodeItem.type === 'FOLDER' && nodeItem.source ? nodeItem : sourcedParent;
     if (event.action === 'create' && sourcedContainer) {
       this.snackBarService.error(`Folder "${sourcedContainer.title}" is managed by an external source: items cannot be created inside it`);
-      return true;
-    }
-    if (
-      event.action === 'delete' &&
-      (nodeItem.type === 'PAGE' || nodeItem.type === 'FOLDER') &&
-      (nodeItem as PortalNavigationPage | PortalNavigationFolder).source
-    ) {
-      this.snackBarService.error(`"${nodeItem.title}" is bound to an external source: remove the source before deleting it`);
       return true;
     }
     return false;
@@ -917,7 +910,7 @@ export class PortalNavigationItemsComponent implements HasUnsavedChanges {
     }
 
     try {
-      const doc = load(value) as Record<string, unknown>;
+      const doc = loadYaml(value) as Record<string, unknown>;
       // eslint-disable-next-line angular/typecheck-object
       if (!doc || typeof doc !== 'object' || !('asyncapi' in doc)) {
         return { message: 'Invalid AsyncAPI spec: missing asyncapi version field' };

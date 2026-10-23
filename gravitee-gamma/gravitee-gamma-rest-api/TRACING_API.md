@@ -37,11 +37,13 @@ on `gravitee.api.id` server-side gives module-correct results without a redundan
 filter. `module` stays on the filter-discovery endpoints because their entire purpose is "which
 filters does this module's contributor expose?" — different from query scoping.
 
-**Why `apiId` is required, not optional.** Per-user authorization is at the per-API level (users
-see APIs they created or were granted access to). The backend cannot enumerate a user's accessible
-APIs into a wide OR-filter at search time because that pattern doesn't work for Tempo (which
-doesn't efficiently OR over hundreds of api-ids). Instead the API picker is on the UI side — the
-user picks one of their visible APIs from a mandatory dropdown before any search runs. On the
+**Why `apiId` is required, not optional.** Per-user authorization is at the per-API level: search
+and detail require `API_LOG:READ` on `apiId`, checked before any trace-store query, and answer
+`404` without it (the same answer as for an unknown API). The backend cannot enumerate a user's
+accessible APIs into a wide OR-filter at search time because that pattern doesn't work for Tempo
+(which doesn't efficiently OR over hundreds of api-ids), so the UI asks the user to pick one API
+before any search runs. The filter discovery endpoints (`/filters/...`) need no
+permission: they serve static catalogs (enum values only). On the
 detail endpoint `apiId` is an additional security defense: a known trace id from API_B can't be
 fetched via API_A's scope, because the server-side resource-attribute filter rejects spans from
 the wrong API and the endpoint returns 404 (collapsing "doesn't exist" and "wrong scope" so
@@ -172,6 +174,7 @@ Example response:
   - `tracing.filter.unsupported_operator` — the operator is listed for the filter but the
     translator doesn't handle it yet. Today the MVP only translates `EQ`; the follow-up PR
     adds `IN` / range / etc.
+- **404 Not Found** — the API doesn't exist, or the caller lacks `API_LOG:READ` on it.
 
 ---
 
@@ -217,6 +220,40 @@ Example (MVP — what the server returns today):
   ]
 }
 ```
+
+### Per-module filters
+
+`module` selects **one** contributor on top of the cross-module ones, matched on an exact id
+(`SpiTraceFilterRegistry#getFiltersForModule`). Shipped today:
+
+| `module` | Contributor | Filters |
+| --- | --- | --- |
+| *(any / omitted)* | `CommonTraceFilterContributor` | `HTTP_METHOD`, `HTTP_STATUS_CODE`, `HTTP_ROUTE` |
+| `esm` | `EsmTraceFilterContributor` | `KAFKA_API_KEY`, `KAFKA_CLIENT_ID` |
+
+The ESM filters map to the span attributes the native Kafka reactor emits (`kafka.api.key`,
+`messaging.client.id`) — see `KafkaTracingHelper` in `gravitee-reactor-native-kafka`.
+
+**Why so few.** Attribute filters are ANDed inside one span document (`bool.filter` of terms) and the
+matching spans are then grouped by `trace_id`, so two filters that are never carried by one and the
+same span can never match together. A filter is therefore only admitted when its attribute is on
+*every* per-request span. Three candidates fail that rule and are deliberately absent:
+
+| Candidate | Why it is out |
+| --- | --- |
+| `messaging.destination.name` (topic) | Joined with commas for batched requests, and `id:<uuid>` when the request carries topic ids (fetch v12+). An exact term misses those spans. |
+| `messaging.consumer.group.name` | Set for `JOIN_GROUP`, `HEARTBEAT`, `OFFSET_COMMIT`, `LEAVE_GROUP`, `SYNC_GROUP` only — so "consumer group + operation = FETCH" is structurally empty. |
+| `gravitee.error.origin` (failure origin) | Written on the root `Kafka connection` span, never on a per-request one. |
+
+All three want trace-scoped evaluation — resolve matching `trace_id`s per filter, then intersect —
+rather than a per-document AND. That is a repository-level change.
+
+Both contributors live in this module rather than in their gamma module plugin, because gamma
+modules load in isolated plugin classloaders while the registry's `ServiceLoader` scans the
+rest-api classpath. Move them out once the plugin handler grows a registration hook.
+
+`TraceFilterContributorContractTest` pins every advertised filter against the translator, so the
+discovery and search surfaces cannot drift apart.
 
 ### MVP scope
 
@@ -370,7 +407,8 @@ interface PayloadLog {
 ### Errors
 
 - **400** if `apiId` is missing.
-- **404** if the trace doesn't exist OR exists but in a different `apiId` scope (collapsed).
+- **404** if the trace doesn't exist, exists but in a different `apiId` scope, or the caller lacks
+  `API_LOG:READ` on `apiId` (collapsed).
 
 ---
 

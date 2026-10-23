@@ -13,8 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { licenseService } from '@gravitee/gamma-modules-sdk';
 import type { License } from '@gravitee/gamma-modules-sdk/types';
+
+import { licenseService } from '@gravitee/gamma-modules-sdk';
 
 import { managementV2OrganizationApi } from '../../shared/api/api-client';
 
@@ -22,8 +23,8 @@ import { managementV2OrganizationApi } from '../../shared/api/api-client';
  * Fetches the current organization license and pushes it to the SDK licenseService
  * singleton so federated modules can gate features via useHasFeature() / useHasPack().
  *
- * The organization is fixed for the lifetime of the control plane session, so this is
- * loaded once at bootstrap.
+ * Loaded at bootstrap and again after a local form login, because a session started from
+ * the login form has no license until the user is authenticated.
  */
 export async function loadOrganizationLicense(): Promise<void> {
     const license = await managementV2OrganizationApi.get<License>('/license');

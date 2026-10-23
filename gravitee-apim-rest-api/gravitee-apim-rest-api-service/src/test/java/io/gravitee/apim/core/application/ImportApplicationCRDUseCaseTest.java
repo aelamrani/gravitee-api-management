@@ -16,6 +16,7 @@
 package io.gravitee.apim.core.application;
 
 import static io.gravitee.apim.core.member.model.SystemRole.PRIMARY_OWNER;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -24,6 +25,7 @@ import inmemory.ApplicationCrudServiceInMemory;
 import inmemory.ApplicationMetadataCrudServiceInMemory;
 import inmemory.ApplicationMetadataQueryServiceInMemory;
 import inmemory.CRDMembersDomainServiceInMemory;
+import inmemory.ClientCertificateCrudServiceInMemory;
 import inmemory.GroupQueryServiceInMemory;
 import inmemory.ImportApplicationCRDDomainServiceInMemory;
 import inmemory.RoleQueryServiceInMemory;
@@ -35,12 +37,14 @@ import io.gravitee.apim.core.application.use_case.ImportApplicationCRDUseCase;
 import io.gravitee.apim.core.application_certificate.domain_service.MtlsSubscriptionSyncDomainService;
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.group.domain_service.ValidateGroupsDomainService;
+import io.gravitee.apim.core.group.model.Group;
 import io.gravitee.apim.core.member.domain_service.ValidateCRDMembersDomainService;
 import io.gravitee.apim.core.member.model.crd.MemberCRD;
 import io.gravitee.apim.core.membership.model.Role;
 import io.gravitee.apim.core.user.model.BaseUserEntity;
 import io.gravitee.apim.core.user.model.IdpSource;
 import io.gravitee.apim.infra.domain_service.application.ValidateApplicationSettingsDomainServiceImpl;
+import io.gravitee.apim.infra.domain_service.application_certificates.ClientCertificateValidationDomainServiceImpl;
 import io.gravitee.common.utils.TimeProvider;
 import io.gravitee.definition.model.Origin;
 import io.gravitee.repository.management.api.ApplicationRepository;
@@ -51,6 +55,7 @@ import io.gravitee.rest.api.model.application.ApplicationSettings;
 import io.gravitee.rest.api.model.application.SimpleApplicationSettings;
 import io.gravitee.rest.api.service.ParameterService;
 import io.gravitee.rest.api.service.common.UuidString;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.gravitee.rest.api.service.impl.configuration.application.ApplicationTypeServiceImpl;
 import java.time.Clock;
 import java.time.Instant;
@@ -113,7 +118,15 @@ class ImportApplicationCRDUseCaseTest {
     private final ValidateApplicationCRDDomainService crdValidator = new ValidateApplicationCRDDomainService(
         new ValidateGroupsDomainService(groupQueryService),
         new ValidateCRDMembersDomainService(userDomainService, roleQueryService),
-        new ValidateApplicationSettingsDomainServiceImpl(applicationRepository, new ApplicationTypeServiceImpl(), parameterService)
+        new ValidateApplicationSettingsDomainServiceImpl(
+            applicationRepository,
+            new ApplicationTypeServiceImpl(),
+            parameterService,
+            new ClientCertificateValidationDomainServiceImpl(new ClientCertificateCrudServiceInMemory()),
+            new ClientCertificateCrudServiceInMemory()
+        ),
+        applicationCrudService,
+        membersDomainService
     );
 
     ImportApplicationCRDUseCase useCase;
@@ -249,6 +262,68 @@ class ImportApplicationCRDUseCaseTest {
         }
 
         @Test
+        void should_keep_existing_groups_when_ignoring_groups() {
+            var existing = anApplicationCRD();
+            existing.setGroups(Set.of("console-group"));
+            applicationCrudService.initWith(List.of(existing));
+
+            ApplicationCRDSpec crd = anApplicationCRD();
+            crd.setGroups(Set.of("spec-group"));
+            crd.setIgnoreGroups(true);
+            var result = useCase.execute(new ImportApplicationCRDUseCase.Input(AUDIT_INFO, crd));
+
+            SoftAssertions.assertSoftly(soft -> {
+                soft
+                    .assertThat(importApplicationCRDDomainService.storage())
+                    .extracting(BaseApplicationEntity::getGroups)
+                    .containsExactly(Set.of("console-group"));
+                soft.assertThat(result.status().getErrors().warning()).isEmpty();
+            });
+        }
+
+        @Test
+        void should_apply_spec_groups_when_not_ignoring_groups() {
+            var existing = anApplicationCRD();
+            existing.setGroups(Set.of("console-group"));
+            applicationCrudService.initWith(List.of(existing));
+
+            ApplicationCRDSpec crd = anApplicationCRD();
+            crd.setGroups(Set.of("spec-group"));
+            var result = useCase.execute(new ImportApplicationCRDUseCase.Input(AUDIT_INFO, crd));
+
+            SoftAssertions.assertSoftly(soft -> {
+                soft
+                    .assertThat(importApplicationCRDDomainService.storage())
+                    .extracting(BaseApplicationEntity::getGroups)
+                    .containsExactly(Set.of());
+                soft
+                    .assertThat(result.status().getErrors().warning())
+                    .containsExactly("Group [spec-group] could not be found in environment [" + ENVIRONMENT_ID + "]");
+            });
+        }
+
+        @Test
+        void should_not_attach_a_group_of_another_environment() {
+            groupQueryService.initWith(
+                List.of(Group.builder().id("other-environment-group-id").environmentId("other-environment-id").build())
+            );
+
+            ApplicationCRDSpec crd = anApplicationCRD();
+            crd.setGroups(Set.of("other-environment-group-id"));
+            var result = useCase.execute(new ImportApplicationCRDUseCase.Input(AUDIT_INFO, crd));
+
+            SoftAssertions.assertSoftly(soft -> {
+                soft
+                    .assertThat(importApplicationCRDDomainService.storage())
+                    .extracting(BaseApplicationEntity::getGroups)
+                    .containsExactly(Set.of());
+                soft
+                    .assertThat(result.status().getErrors().warning())
+                    .containsExactly("Group [other-environment-group-id] could not be found in environment [" + ENVIRONMENT_ID + "]");
+            });
+        }
+
+        @Test
         void should_update_existing_application_and_its_metadata() {
             var expectedApp = expectedApplication();
             ApplicationCRDSpec crd = anApplicationCRD();
@@ -264,6 +339,23 @@ class ImportApplicationCRDUseCaseTest {
                 ApplicationMetadataEntity applicationMetadataEntity = expectedApplicationMetadata();
                 applicationMetadataEntity.setValue(newAppMetadataDescription);
                 soft.assertThat(applicationMetadataCrudService.storage()).contains(applicationMetadataEntity);
+            });
+        }
+
+        @Test
+        void should_write_nothing_when_the_members_update_is_refused() {
+            membersDomainService.denyApplicationMembersUpdate(APP_ID);
+            var crd = anApplicationCRD();
+            crd.setDescription("new_app_description");
+            crd.setMembers(applicationMembers());
+
+            assertThatThrownBy(() -> useCase.execute(new ImportApplicationCRDUseCase.Input(AUDIT_INFO, crd))).isInstanceOf(
+                ForbiddenAccessException.class
+            );
+
+            SoftAssertions.assertSoftly(soft -> {
+                soft.assertThat(importApplicationCRDDomainService.storage()).extracting("description").containsExactly(APP_DESCRIPTION);
+                soft.assertThat(membersDomainService.getApplicationMembers(APP_ID)).isEmpty();
             });
         }
 

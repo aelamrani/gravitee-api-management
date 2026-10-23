@@ -59,6 +59,7 @@ import io.gravitee.rest.api.service.common.UuidString;
 import io.gravitee.rest.api.service.exceptions.BridgeOperationException;
 import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.gravitee.rest.api.service.exceptions.PromotionAlreadyInProgressException;
+import io.gravitee.rest.api.service.exceptions.PromotionNotAwaitingValidationException;
 import io.gravitee.rest.api.service.exceptions.PromotionNotFoundException;
 import io.gravitee.rest.api.service.exceptions.TechnicalManagementException;
 import io.gravitee.rest.api.service.impl.AbstractService;
@@ -69,10 +70,12 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import lombok.CustomLog;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -147,15 +150,14 @@ public class PromotionServiceImpl extends AbstractService implements PromotionSe
         PromotionRequestEntity promotionRequest,
         String userId
     ) {
-        // TODO: do we have to use filteredFields like for duplicate (i think no need members and groups)
         // FIXME: can we get the version from target environment
+        // Groups are exported as names and resolved (or auto-created) on the target, matching V2 import.
         EnvironmentEntity currentEnvironmentEntity = environmentService.findById(sourceEnvironmentId);
         String apiDefinition = apiExportService.exportAsJson(
             new ExecutionContext(currentEnvironmentEntity.getOrganizationId(), currentEnvironmentEntity.getId()),
             apiId,
             ApiSerializer.Version.DEFAULT.getVersion(),
-            "members",
-            "groups"
+            "members"
         );
         UserEntity author = userService.findById(executionContext, userId);
 
@@ -261,17 +263,33 @@ public class PromotionServiceImpl extends AbstractService implements PromotionSe
      * environment that starts it and by the Cockpit bridge that receives it, and when both share a database the
      * check can miss a row the other transaction has not committed yet, which surfaced as a raw primary key
      * violation. Treat the conflict as what it means - somebody else got there first - and update instead.
+     *
+     * The conflict is recognised from the exception alone: reading the row back to confirm it exists repeats the
+     * very lookup that already missed it. The UPDATE statement resolves against the committed row, but update()
+     * hands back what a read finds afterwards, and that read can miss the row just as the first one did - so
+     * return the promotion that was written instead of the one read back.
      */
     private Promotion createOrUpdateOnConflict(Promotion promotion) throws TechnicalException {
         try {
             return promotionRepository.create(promotion);
         } catch (Exception e) {
-            if (promotionRepository.findById(promotion.getId()).isEmpty()) {
+            if (!isDuplicateKey(e)) {
                 throw e;
             }
             log.debug("Promotion {} was created concurrently, updating it instead", promotion.getId());
-            return promotionRepository.update(promotion);
+            promotionRepository.update(promotion);
+            return promotion;
         }
+    }
+
+    /** The JDBC repositories wrap the conflict into a TechnicalException, the Mongo one lets it escape as is. */
+    private static boolean isDuplicateKey(Throwable throwable) {
+        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
+            if (cause instanceof DuplicateKeyException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -301,7 +319,20 @@ public class PromotionServiceImpl extends AbstractService implements PromotionSe
                 .orElseThrow(() -> new PromotionNotFoundException(promotionId));
 
             EnvironmentEntity environment = environmentService.findByCockpitId(promotion.getTargetEnvCockpitId());
+            if (!Objects.equals(environment.getOrganizationId(), executionContext.getOrganizationId())) {
+                throw new PromotionNotFoundException(promotionId);
+            }
+            if (promotion.getStatus() != PromotionStatus.TO_BE_VALIDATED) {
+                throw new PromotionNotAwaitingValidationException(promotionId);
+            }
             ExecutionContext targetExecutionContext = new ExecutionContext(executionContext.getOrganizationId(), environment.getId());
+            if (
+                !accepted &&
+                !permissionService.hasPermission(targetExecutionContext, ENVIRONMENT_API, environment.getId(), CREATE) &&
+                !permissionService.hasPermission(targetExecutionContext, ENVIRONMENT_API, environment.getId(), UPDATE)
+            ) {
+                throw new ForbiddenAccessException();
+            }
 
             promotion.setStatus(accepted ? PromotionStatus.ACCEPTED : PromotionStatus.REJECTED);
 

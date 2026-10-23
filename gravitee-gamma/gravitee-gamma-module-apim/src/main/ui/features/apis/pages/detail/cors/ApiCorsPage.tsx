@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import { useEnvironment, useHasPermission } from '@gravitee/gamma-modules-sdk';
+import { CORS_DEFAULT_HTTP_HEADERS, CORS_HTTP_METHODS } from '@gravitee/gamma-ui-shared/cors';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Skeleton, Switch, TooltipProvider } from '@gravitee/graphene-core';
 import { GlobeIcon, TriangleAlertIcon } from '@gravitee/graphene-core/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -26,15 +27,9 @@ import { ToggleRow } from './ToggleRow';
 import { useApiDetail } from '../../../hooks/useApiDetail';
 import { updateApiCors } from '../../../services/apis';
 import type { Cors } from '../../../types';
+import { hasTcpListeners } from '../../../utils/apiHttpProxy';
 import { apiDetailKeys } from '../../../utils/queryKeys';
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
-
-const COMMON_ALLOW_HEADERS = ['Accept', 'Authorization', 'Content-Type', 'Origin', 'X-API-Key', 'X-Requested-With'];
-
-const COMMON_EXPOSE_HEADERS = ['Content-Length', 'Content-Range', 'X-Request-Id'];
+import { TcpProxyUnavailableNotice } from '../response-templates/TcpProxyUnavailableNotice';
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -46,7 +41,9 @@ export function ApiCorsPage() {
     const canEdit = useHasPermission({ anyOf: ['api-definition-u'] });
     const { data: api, isLoading, isError } = useApiDetail(apiId);
 
-    const savedCors = useMemo(() => api?.listeners?.find(l => l.type === 'HTTP')?.cors ?? null, [api?.listeners]);
+    const httpListener = useMemo(() => api?.listeners?.find(l => l.type === 'HTTP'), [api?.listeners]);
+    const savedCors = useMemo(() => httpListener?.cors ?? null, [httpListener]);
+    const savedRejectNullByte = useMemo(() => httpListener?.requestValidation?.rejectNullByte ?? false, [httpListener]);
 
     // ─── Form state ───────────────────────────────────────────────────────────
     const [enabled, setEnabled] = useState(false);
@@ -55,20 +52,24 @@ export function ApiCorsPage() {
     const [allowHeaders, setAllowHeaders] = useState<string[]>([]);
     const [exposeHeaders, setExposeHeaders] = useState<string[]>([]);
     const [allowCredentials, setAllowCredentials] = useState(false);
+    const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(false);
     const [runPolicies, setRunPolicies] = useState(false);
     const [maxAge, setMaxAge] = useState('');
+    const [rejectNullByte, setRejectNullByte] = useState(false);
     const [isDirty, setIsDirty] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
 
-    const applyCorsToForm = useCallback((cors: Cors | null | undefined) => {
+    const applyCorsToForm = useCallback((cors: Cors | null | undefined, nextRejectNullByte = false) => {
         setEnabled(cors?.enabled ?? false);
         setOrigins(cors?.allowOrigin ?? []);
         setMethods(cors?.allowMethods ?? []);
         setAllowHeaders(cors?.allowHeaders ?? []);
         setExposeHeaders(cors?.exposeHeaders ?? []);
         setAllowCredentials(cors?.allowCredentials ?? false);
+        setAllowPrivateNetwork(cors?.allowPrivateNetwork ?? false);
         setRunPolicies(cors?.runPolicies ?? false);
         setMaxAge(cors?.maxAge !== undefined ? String(cors.maxAge) : '');
+        setRejectNullByte(nextRejectNullByte);
         setIsDirty(false);
         setSaveError(null);
     }, []);
@@ -82,18 +83,19 @@ export function ApiCorsPage() {
     const initializedForApiIdRef = useRef<string | undefined>(undefined);
 
     useEffect(() => {
-        if (initializedForApiIdRef.current === apiId) return;
+        if (!api || api.id !== apiId || initializedForApiIdRef.current === apiId) return;
         initializedForApiIdRef.current = apiId;
-        applyCorsToForm(savedCors);
-    }, [savedCors, apiId, applyCorsToForm]);
+        applyCorsToForm(savedCors, savedRejectNullByte);
+    }, [api, savedCors, savedRejectNullByte, apiId, applyCorsToForm]);
 
     function handleDiscard() {
-        applyCorsToForm(savedCors);
+        applyCorsToForm(savedCors, savedRejectNullByte);
     }
 
     // ─── Mutation ─────────────────────────────────────────────────────────────
     const mutation = useMutation({
-        mutationFn: (cors: Cors) => updateApiCors(env!.id, apiId!, cors),
+        mutationFn: ({ cors, requestValidation }: { cors: Cors; requestValidation: { rejectNullByte: boolean } }) =>
+            updateApiCors(env!.id, apiId!, cors, requestValidation),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: apiDetailKeys.detail(env?.id ?? '', apiId ?? '') });
             initializedForApiIdRef.current = undefined;
@@ -108,14 +110,18 @@ export function ApiCorsPage() {
     const handleSave = () => {
         const parsedMaxAge = maxAge.trim() !== '' ? Number(maxAge) : undefined;
         mutation.mutate({
-            enabled,
-            allowOrigin: origins,
-            allowMethods: methods,
-            allowHeaders,
-            exposeHeaders,
-            allowCredentials,
-            runPolicies,
-            ...(parsedMaxAge !== undefined && !Number.isNaN(parsedMaxAge) ? { maxAge: parsedMaxAge } : {}),
+            cors: {
+                enabled,
+                allowOrigin: origins,
+                allowMethods: methods,
+                allowHeaders,
+                exposeHeaders,
+                allowCredentials,
+                allowPrivateNetwork,
+                runPolicies,
+                ...(parsedMaxAge !== undefined && !Number.isNaN(parsedMaxAge) ? { maxAge: parsedMaxAge } : {}),
+            },
+            requestValidation: { rejectNullByte },
         });
     };
 
@@ -149,6 +155,10 @@ export function ApiCorsPage() {
                 </Card>
             </div>
         );
+    }
+
+    if (hasTcpListeners(api)) {
+        return <TcpProxyUnavailableNotice feature="CORS settings" />;
     }
 
     return (
@@ -263,7 +273,7 @@ export function ApiCorsPage() {
                             hint="HTTP methods that may be used in cross-origin requests."
                             values={methods}
                             disabled={fieldsDisabled || !canEdit}
-                            suggestions={HTTP_METHODS}
+                            suggestions={CORS_HTTP_METHODS}
                             placeholder="GET, POST, …"
                             onChange={v => {
                                 setMethods(v);
@@ -276,7 +286,8 @@ export function ApiCorsPage() {
                             hint="Headers the client is allowed to send in the actual request."
                             values={allowHeaders}
                             disabled={fieldsDisabled || !canEdit}
-                            suggestions={COMMON_ALLOW_HEADERS}
+                            suggestions={CORS_DEFAULT_HTTP_HEADERS}
+                            addOnBlur={false}
                             placeholder="Content-Type, Authorization, …"
                             onChange={v => {
                                 setAllowHeaders(v);
@@ -289,7 +300,8 @@ export function ApiCorsPage() {
                             hint="Headers from the response that the browser is allowed to surface to JavaScript."
                             values={exposeHeaders}
                             disabled={fieldsDisabled || !canEdit}
-                            suggestions={COMMON_EXPOSE_HEADERS}
+                            suggestions={CORS_DEFAULT_HTTP_HEADERS}
+                            addOnBlur={false}
                             placeholder="X-Request-Id, …"
                             onChange={v => {
                                 setExposeHeaders(v);
@@ -321,6 +333,26 @@ export function ApiCorsPage() {
                             disabled={fieldsDisabled || !canEdit}
                             onCheckedChange={v => {
                                 setAllowCredentials(v);
+                                markDirty();
+                            }}
+                        />
+
+                        <ToggleRow
+                            id="cors-allow-private-network"
+                            label="Access-Control-Allow-Private-Network"
+                            description="Allow public websites to reach private-network resources."
+                            hint={
+                                <>
+                                    When enabled, the gateway responds with{' '}
+                                    <span className="font-mono text-xs">Access-Control-Allow-Private-Network: true</span> to preflight
+                                    requests that include{' '}
+                                    <span className="font-mono text-xs">Access-Control-Request-Private-Network: true</span>.
+                                </>
+                            }
+                            checked={allowPrivateNetwork}
+                            disabled={fieldsDisabled || !canEdit}
+                            onCheckedChange={v => {
+                                setAllowPrivateNetwork(v);
                                 markDirty();
                             }}
                         />
@@ -371,6 +403,32 @@ export function ApiCorsPage() {
                                 className="w-36"
                             />
                         </div>
+                    </CardContent>
+                </Card>
+
+                {/* ─── Request validation ───────────────────────────────────────── */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2 text-base">Request validation</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <ToggleRow
+                            id="cors-reject-null-byte"
+                            label="Reject requests containing null bytes"
+                            description="Return HTTP 400 when a query parameter, header, or path parameter contains a null character."
+                            hint={
+                                <>
+                                    Rejects requests that contain <span className="font-mono text-xs">{'\\u0000'}</span> in query
+                                    parameters, headers, or path parameters.
+                                </>
+                            }
+                            checked={rejectNullByte}
+                            disabled={!canEdit}
+                            onCheckedChange={v => {
+                                setRejectNullByte(v);
+                                markDirty();
+                            }}
+                        />
                     </CardContent>
                 </Card>
             </div>

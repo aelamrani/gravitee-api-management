@@ -21,8 +21,11 @@ export const TEST_CONFIG: BootstrapConfig = {
     managementBaseURL: 'http://api.test/management',
     organizationId: 'test-org',
     gammaBaseURL: 'http://api.test/gamma',
+    consoleUrl: 'http://console.test',
     identityProviders: [],
     localLoginEnabled: true,
+    registrationEnabled: false,
+    automaticValidationEnabled: false,
 };
 
 export const TEST_MANAGEMENT_BASE = `${TEST_CONFIG.managementBaseURL}/organizations/${TEST_CONFIG.organizationId}`;
@@ -37,10 +40,15 @@ export const TEST_MANAGEMENT_V2_ORGANIZATION_BASE = `${TEST_CONFIG.managementBas
 
 export function buildUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
     return {
+        id: 'user-1',
         displayName: 'Test User',
         email: 'test@gravitee.io',
         firstname: 'Test',
         lastname: 'User',
+        source: 'gravitee',
+        primaryOwner: false,
+        customFields: {},
+        groupsByEnvironment: {},
         ...overrides,
     };
 }
@@ -65,3 +73,30 @@ export const TEST_ENVIRONMENTS: Environment[] = [
     buildEnvironment(),
     buildEnvironment({ id: 'env-2-id', hrids: ['env-2'], name: 'Environment 2' }),
 ];
+
+/** What the bundler throws when a file of a module cannot be fetched, as during a rolling restart. */
+export function buildChunkLoadError(chunkId = 8201): Error {
+    return Object.assign(new Error(`Loading chunk ${chunkId} failed.`), { name: 'ChunkLoadError' });
+}
+
+/** What a module's own code can throw while it starts, here React 18's runtime against the console's React 19. */
+export function buildModuleCodeError(): TypeError {
+    return new TypeError("Cannot read properties of undefined (reading 'ReactCurrentOwner')");
+}
+
+/**
+ * What Module Federation throws when a module's entry file loads but throws while it runs: the script error, wrapped
+ * in the RUNTIME-008 it also gives to an entry file it could not load.
+ */
+export function buildEntryExecutionError(): Error {
+    const url = 'http://api.test/gamma/organizations/test-org/modules/aim/assets/remoteEntry.js';
+    return new Error(
+        [
+            '[ Federation Runtime ]: Failed to load script resources. #RUNTIME-008',
+            `args: {"remoteName":"aim","resourceUrl":"${url}"}`,
+            'View the docs to see how to solve: https://module-federation.io/guide/troubleshooting/runtime#runtime-008',
+            'Original Error Message:',
+            ` ScriptExecutionError: Script "${url}" loaded but threw a runtime error during execution: Uncaught TypeError: render is not a function (${url}:1:42)`,
+        ].join('\n'),
+    );
+}

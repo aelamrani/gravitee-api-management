@@ -56,7 +56,7 @@
             The two still move together in a full release, which is the one command releasing both
             reactors at once. That ends when the distribution gets a lane of its own.
         -->
-        <revision>4.13.0</revision>
+        <revision>4.14.0</revision>
         <sha1 />
         <changelist>-SNAPSHOT</changelist>
 
@@ -75,7 +75,7 @@
             -Dapim.core.version=<root triplet>, to assemble the core currently being worked on —
             the Taskfile handles it for you.
         -->
-        <apim.core.version>4.13.0-SNAPSHOT</apim.core.version>
+        <apim.core.version>4.14.0-SNAPSHOT</apim.core.version>
 
         <!--
             Versions shared with the engine. They are declared here as well because the distribution
@@ -83,16 +83,13 @@
             Copies on purpose, not moves: the engine still needs its own. Keep them aligned when
             bumping either side.
         -->
-        <gravitee-connector-http.version>6.0.0</gravitee-connector-http.version>
-        <gravitee-node.version>9.10.1</gravitee-node.version>
-        <grpc-java.version>1.65.0</grpc-java.version>
-        <jna.version>5.16.0</jna.version>
-        <mariadb-java-client.version>3.5.6</mariadb-java-client.version>
-        <mongo.version>5.3.1</mongo.version>
-        <mssql-jdbc.version>12.10.2.jre11</mssql-jdbc.version>
-        <postgresql.version>42.7.11</postgresql.version>
-        <protobuf-java.version>3.25.5</protobuf-java.version>
-        <vertx.version>5.0.12</vertx.version>
+        <gravitee-connector-http.version>6.0.5</gravitee-connector-http.version>
+        <gravitee-node.version>9.14.2</gravitee-node.version>
+        <jna.version>5.19.1</jna.version>
+        <mariadb-java-client.version>3.5.10</mariadb-java-client.version>
+        <mongo.version>5.11.1</mongo.version>
+        <mssql-jdbc.version>13.6.0.jre11</mssql-jdbc.version>
+        <postgresql.version>42.7.13</postgresql.version>
 
         <!--
             Assembly poms are not published. They were deployed because the distribution happened to
@@ -106,189 +103,193 @@
         <maven.deploy.skip>true</maven.deploy.skip>
 
         <!-- Build plugins the distribution drives itself -->
-        <maven-dependency-plugin.version>3.8.1</maven-dependency-plugin.version>
-        <maven-antrun-plugin.version>3.1.0</maven-antrun-plugin.version>
-        <maven-clean-plugin.version>3.2.0</maven-clean-plugin.version>
-        <flatten-maven-plugin.version>1.7.2</flatten-maven-plugin.version>
+        <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
+        <maven-antrun-plugin.version>3.2.0</maven-antrun-plugin.version>
+        <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
+        <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
+        <gravitee-apim-release-manifest-maven-plugin.version>3.0.0</gravitee-apim-release-manifest-maven-plugin.version>
 
         <!-- ===== Bundled plugin version catalog (moved from the root pom) ===== -->
         <!-- This is the plugin contract: bumping a bundled plugin = editing one line here. -->
-    <gravitee-alert-engine-connectors-ws.version>3.0.0</gravitee-alert-engine-connectors-ws.version>
-    <gravitee-policy-apikey.version>6.0.2</gravitee-policy-apikey.version>
+    <gravitee-alert-engine-connectors-ws.version>3.0.1</gravitee-alert-engine-connectors-ws.version>
+    <gravitee-policy-apikey.version>6.0.3</gravitee-policy-apikey.version>
     <gravitee-policy-assign-attributes.version>3.2.0</gravitee-policy-assign-attributes.version>
     <gravitee-policy-assign-content.version>3.1.1</gravitee-policy-assign-content.version>
     <gravitee-policy-assign-metrics.version>5.0.0</gravitee-policy-assign-metrics.version>
-    <gravitee-policy-basic-authentication.version>1.6.0</gravitee-policy-basic-authentication.version>
-    <gravitee-policy-cache.version>4.0.0</gravitee-policy-cache.version>
-    <gravitee-policy-callout-http.version>7.0.0</gravitee-policy-callout-http.version>
+    <gravitee-policy-basic-authentication.version>2.0.0</gravitee-policy-basic-authentication.version>
+    <gravitee-policy-cache.version>4.0.1</gravitee-policy-cache.version>
+    <gravitee-policy-callout-http.version>7.0.2</gravitee-policy-callout-http.version>
     <gravitee-policy-circuit-breaker.version>2.1.0</gravitee-policy-circuit-breaker.version>
-    <gravitee-policy-custom-query-parameters.version>2.0.0</gravitee-policy-custom-query-parameters.version>
-    <gravitee-policy-cloud-events.version>1.1.0</gravitee-policy-cloud-events.version>
+    <gravitee-policy-custom-query-parameters-parser.version>3.0.0</gravitee-policy-custom-query-parameters-parser.version>
+    <gravitee-policy-cloud-events.version>2.0.0</gravitee-policy-cloud-events.version>
     <gravitee-policy-data-cache.version>2.0.0</gravitee-policy-data-cache.version>
-    <gravitee-policy-data-logging-masking.version>3.1.5</gravitee-policy-data-logging-masking.version>
-    <gravitee-policy-dynamic-routing.version>2.1.0</gravitee-policy-dynamic-routing.version>
-    <gravitee-policy-generate-http-signature.version>1.5.1</gravitee-policy-generate-http-signature.version>
-    <gravitee-policy-generate-jwt.version>1.9.0-alpha.3</gravitee-policy-generate-jwt.version>
-    <gravitee-policy-generate-wssecurity.version>1.0.0</gravitee-policy-generate-wssecurity.version>
-    <gravitee-policy-geoip-filtering.version>2.2.3</gravitee-policy-geoip-filtering.version>
+    <gravitee-policy-data-logging-masking.version>4.0.0</gravitee-policy-data-logging-masking.version>
+    <gravitee-policy-dynamic-routing.version>3.0.0</gravitee-policy-dynamic-routing.version>
+    <gravitee-policy-generate-http-signature.version>2.0.0</gravitee-policy-generate-http-signature.version>
+    <gravitee-policy-generate-jwt.version>2.1.0</gravitee-policy-generate-jwt.version>
+    <gravitee-policy-generate-wssecurity.version>1.0.2</gravitee-policy-generate-wssecurity.version>
+    <gravitee-policy-geoip-filtering.version>3.0.0</gravitee-policy-geoip-filtering.version>
     <gravitee-policy-groovy.version>5.1.1</gravitee-policy-groovy.version>
-    <gravitee-policy-html-json.version>1.6.3</gravitee-policy-html-json.version>
-    <gravitee-policy-http-signature.version>1.8.0</gravitee-policy-http-signature.version>
+    <gravitee-policy-html-json.version>2.0.0</gravitee-policy-html-json.version>
+    <gravitee-policy-http-signature.version>2.0.1</gravitee-policy-http-signature.version>
     <gravitee-policy-interrupt.version>2.2.1</gravitee-policy-interrupt.version>
     <gravitee-policy-ipfiltering.version>3.0.1</gravitee-policy-ipfiltering.version>
-    <gravitee-policy-js.version>1.2.0</gravitee-policy-js.version>
-    <gravitee-policy-json-threat-protection.version>2.1.1</gravitee-policy-json-threat-protection.version>
+    <gravitee-policy-js.version>2.0.0</gravitee-policy-js.version>
+    <gravitee-policy-json-threat-protection.version>3.0.0</gravitee-policy-json-threat-protection.version>
     <gravitee-policy-json-to-json.version>3.1.0</gravitee-policy-json-to-json.version>
     <gravitee-policy-json-to-toon.version>1.0.2</gravitee-policy-json-to-toon.version>
-    <gravitee-policy-json-validation.version>3.0.0</gravitee-policy-json-validation.version>
-    <gravitee-policy-json-xml.version>3.0.3</gravitee-policy-json-xml.version>
-    <gravitee-policy-jws.version>2.0.0</gravitee-policy-jws.version>
-    <gravitee-policy-jwt.version>8.1.0</gravitee-policy-jwt.version>
-    <gravitee-policy-keyless.version>4.0.0</gravitee-policy-keyless.version>
-    <gravitee-policy-latency.version>2.0.1</gravitee-policy-latency.version>
-    <gravitee-policy-metrics-reporter.version>3.0.1</gravitee-policy-metrics-reporter.version>
-    <gravitee-policy-message-filtering.version>1.1.4</gravitee-policy-message-filtering.version>
+    <gravitee-policy-json-validation.version>3.0.2</gravitee-policy-json-validation.version>
+    <gravitee-policy-json-xml.version>4.0.0</gravitee-policy-json-xml.version>
+    <gravitee-policy-jws.version>3.0.0</gravitee-policy-jws.version>
+    <gravitee-policy-jwt.version>8.1.3</gravitee-policy-jwt.version>
+    <gravitee-policy-keyless.version>5.0.0</gravitee-policy-keyless.version>
+    <gravitee-policy-latency.version>3.1.0</gravitee-policy-latency.version>
+    <gravitee-policy-metrics-reporter.version>4.0.1</gravitee-policy-metrics-reporter.version>
+    <gravitee-policy-message-filtering.version>2.0.0</gravitee-policy-message-filtering.version>
     <gravitee-policy-mock.version>2.0.0</gravitee-policy-mock.version>
     <gravitee-policy-mtls.version>3.0.0</gravitee-policy-mtls.version>
-    <gravitee-policy-oauth2.version>5.3.1</gravitee-policy-oauth2.version>
-    <gravitee-policy-oas-validation.version>2.0.3</gravitee-policy-oas-validation.version>
-    <gravitee-policy-openid-connect-userinfo.version>1.7.0</gravitee-policy-openid-connect-userinfo.version>
-    <gravitee-policy-override-http-method.version>2.2.1</gravitee-policy-override-http-method.version>
+    <gravitee-policy-oauth2.version>6.0.0</gravitee-policy-oauth2.version>
+    <gravitee-policy-oas-validation.version>3.0.1</gravitee-policy-oas-validation.version>
+    <gravitee-policy-openid-connect-userinfo.version>2.0.0</gravitee-policy-openid-connect-userinfo.version>
+    <gravitee-policy-override-http-method.version>2.2.2</gravitee-policy-override-http-method.version>
     <!--    Version of policy-ratelimit is also used for policy-quota, policy-spikearrest,
     policy-token-bucket-ratelimit and gateway-services-ratelimit    -->
     <!--    <gravitee-policy-quota.version>5.0.2</gravitee-policy-quota.version>    -->
     <!--    <gravitee-policy-spikearrest.version>5.0.2</gravitee-policy-spikearrest.version>    -->
-    <!--
-    <gravitee-policy-token-bucket-ratelimit.version>5.0.0</gravitee-policy-token-bucket-ratelimit.version>    -->
-    <gravitee-policy-ratelimit.version>5.0.2</gravitee-policy-ratelimit.version>
-    <gravitee-policy-regex-threat-protection.version>1.6.0</gravitee-policy-regex-threat-protection.version>
-    <gravitee-policy-request-content-limit.version>1.8.1</gravitee-policy-request-content-limit.version>
-    <gravitee-policy-request-validation.version>1.16.0</gravitee-policy-request-validation.version>
-    <gravitee-policy-resource-filtering.version>2.0.2</gravitee-policy-resource-filtering.version>
-    <gravitee-policy-rest-to-soap.version>1.15.0</gravitee-policy-rest-to-soap.version>
-    <gravitee-policy-retry.version>5.0.0</gravitee-policy-retry.version>
+    <gravitee-policy-ratelimit.version>5.0.3</gravitee-policy-ratelimit.version>
+    <gravitee-policy-regex-threat-protection.version>2.0.0</gravitee-policy-regex-threat-protection.version>
+    <gravitee-policy-request-content-limit.version>2.0.0</gravitee-policy-request-content-limit.version>
+    <gravitee-policy-request-validation.version>2.0.0</gravitee-policy-request-validation.version>
+    <gravitee-policy-resource-filtering.version>2.0.3</gravitee-policy-resource-filtering.version>
+    <gravitee-policy-rest-to-soap.version>2.0.0</gravitee-policy-rest-to-soap.version>
+    <gravitee-policy-retry.version>5.0.1</gravitee-policy-retry.version>
     <gravitee-policy-role-based-access-control.version>2.1.0</gravitee-policy-role-based-access-control.version>
-    <gravitee-policy-ssl-enforcement.version>1.7.0</gravitee-policy-ssl-enforcement.version>
+    <gravitee-policy-ssl-enforcement.version>2.0.0</gravitee-policy-ssl-enforcement.version>
     <gravitee-policy-traffic-shadowing.version>3.0.3</gravitee-policy-traffic-shadowing.version>
-    <gravitee-policy-transform-avro-json.version>5.2.4</gravitee-policy-transform-avro-json.version>
-    <gravitee-policy-transform-avro-protobuf.version>1.0.9</gravitee-policy-transform-avro-protobuf.version>
-    <gravitee-policy-transform-protobuf-json.version>2.0.1</gravitee-policy-transform-protobuf-json.version>
+    <gravitee-policy-transform-avro-json.version>5.2.5</gravitee-policy-transform-avro-json.version>
+    <gravitee-policy-transform-avro-protobuf.version>2.0.0</gravitee-policy-transform-avro-protobuf.version>
+    <gravitee-policy-transform-protobuf-json.version>2.0.2</gravitee-policy-transform-protobuf-json.version>
     <gravitee-policy-transformheaders.version>5.2.1</gravitee-policy-transformheaders.version>
     <gravitee-policy-transformqueryparams.version>2.0.0</gravitee-policy-transformqueryparams.version>
-    <gravitee-policy-transform-status-code.version>1.0.2</gravitee-policy-transform-status-code.version>
-    <gravitee-policy-url-rewriting.version>1.7.0</gravitee-policy-url-rewriting.version>
-    <gravitee-policy-xml-json.version>2.0.1</gravitee-policy-xml-json.version>
-    <gravitee-policy-xml-threat-protection.version>1.5.1</gravitee-policy-xml-threat-protection.version>
-    <gravitee-policy-xml-validation.version>1.2.1</gravitee-policy-xml-validation.version>
-    <gravitee-policy-xslt.version>3.1.2</gravitee-policy-xslt.version>
-    <gravitee-policy-wssecurity-authentication.version>2.0.2</gravitee-policy-wssecurity-authentication.version>
+    <gravitee-policy-transform-status-code.version>2.0.0</gravitee-policy-transform-status-code.version>
+    <gravitee-policy-url-rewriting.version>2.0.0</gravitee-policy-url-rewriting.version>
+    <gravitee-policy-xml-json.version>3.0.0</gravitee-policy-xml-json.version>
+    <gravitee-policy-xml-threat-protection.version>2.0.0</gravitee-policy-xml-threat-protection.version>
+    <gravitee-policy-xml-validation.version>2.1.3</gravitee-policy-xml-validation.version>
+    <gravitee-policy-xslt.version>4.0.0</gravitee-policy-xslt.version>
+    <gravitee-policy-wssecurity-authentication.version>4.0.0</gravitee-policy-wssecurity-authentication.version>
     <gravitee-policy-http-redirect.version>1.0.2</gravitee-policy-http-redirect.version>
 
-    <gravitee-resource-cache.version>3.1.0</gravitee-resource-cache.version>
-    <gravitee-resource-oauth2-provider-am.version>5.0.0</gravitee-resource-oauth2-provider-am.version>
+    <gravitee-resource-cache.version>4.0.0</gravitee-resource-cache.version>
+    <gravitee-resource-oauth2-provider-am.version>6.0.0</gravitee-resource-oauth2-provider-am.version>
     <gravitee-resource-oauth2-provider-auth0.version>2.0.0</gravitee-resource-oauth2-provider-auth0.version>
     <gravitee-resource-oauth2-provider-entra-id.version>2.0.0</gravitee-resource-oauth2-provider-entra-id.version>
-    <gravitee-resource-oauth2-provider-generic.version>6.0.0</gravitee-resource-oauth2-provider-generic.version>
-    <gravitee-resource-content-provider-inline.version>1.1.1</gravitee-resource-content-provider-inline.version>
-    <gravitee-service-discovery-consul.version>1.3.0</gravitee-service-discovery-consul.version>
+    <gravitee-resource-oauth2-provider-generic.version>7.0.0</gravitee-resource-oauth2-provider-generic.version>
+    <gravitee-resource-content-provider-inline.version>2.0.0</gravitee-resource-content-provider-inline.version>
+    <gravitee-service-discovery-consul.version>3.0.0</gravitee-service-discovery-consul.version>
     <!-- Management API Only -->
-    <gravitee-cockpit-connectors-ws.version>6.0.0</gravitee-cockpit-connectors-ws.version>
-    <gravitee-fetcher-bitbucket.version>3.0.2</gravitee-fetcher-bitbucket.version>
-    <gravitee-fetcher-git.version>3.0.1</gravitee-fetcher-git.version>
-    <gravitee-fetcher-github.version>3.0.1</gravitee-fetcher-github.version>
-    <gravitee-fetcher-gitlab.version>3.0.1</gravitee-fetcher-gitlab.version>
-    <gravitee-fetcher-http.version>3.0.1</gravitee-fetcher-http.version>
+    <gravitee-cockpit-connectors-ws.version>6.0.1</gravitee-cockpit-connectors-ws.version>
+    <gravitee-fetcher-bitbucket.version>3.0.3</gravitee-fetcher-bitbucket.version>
+    <gravitee-fetcher-git.version>3.1.0</gravitee-fetcher-git.version>
+    <gravitee-fetcher-github.version>3.0.2</gravitee-fetcher-github.version>
+    <gravitee-fetcher-gitlab.version>3.0.2</gravitee-fetcher-gitlab.version>
+    <gravitee-fetcher-http.version>3.0.2</gravitee-fetcher-http.version>
     <gravitee-notifier-email.version>4.0.1</gravitee-notifier-email.version>
     <gravitee-notifier-slack.version>3.0.0</gravitee-notifier-slack.version>
     <gravitee-notifier-webhook.version>3.0.0</gravitee-notifier-webhook.version>
     <!-- Gateway Only -->
-    <gravitee-reporter-tcp.version>5.0.0</gravitee-reporter-tcp.version>
+    <gravitee-reporter-tcp.version>5.0.3</gravitee-reporter-tcp.version>
     <gravitee-reporter-cloud.version>4.0.0</gravitee-reporter-cloud.version>
     <gravitee-reporter-otel.version>1.4.0</gravitee-reporter-otel.version>
+    <gravitee-reporter-datadog.version>8.2.0</gravitee-reporter-datadog.version>
     <!--    Version of policy-ratelimit is also used for policy-quota, policy-spikearrest and
     gateway-services-ratelimit    -->
-    <!--
-    <gravitee-gateway-services-ratelimit.version>3.0.0</gravitee-gateway-services-ratelimit.version>    -->
 
     <!-- Versions of the plugins for the full distribution on dev environment-->
     <!-- Management API & Gateway -->
     <!-- Community plugins -->
-    <gravitee-policy-aws-lambda.version>3.4.1</gravitee-policy-aws-lambda.version>
-    <gravitee-resource-auth-provider-http.version>2.0.0</gravitee-resource-auth-provider-http.version>
-    <gravitee-resource-auth-provider-inline.version>1.4.0</gravitee-resource-auth-provider-inline.version>
-    <gravitee-resource-auth-provider-ldap.version>2.0.1</gravitee-resource-auth-provider-ldap.version>
+    <gravitee-policy-aws-lambda.version>3.4.2</gravitee-policy-aws-lambda.version>
+    <gravitee-resource-auth-provider-http.version>2.0.1</gravitee-resource-auth-provider-http.version>
+    <gravitee-resource-auth-provider-inline.version>3.0.0</gravitee-resource-auth-provider-inline.version>
+    <gravitee-resource-auth-provider-ldap.version>3.0.0</gravitee-resource-auth-provider-ldap.version>
     <gravitee-resource-cache-redis.version>5.0.1</gravitee-resource-cache-redis.version>
-    <gravitee-resource-oauth2-provider-keycloak.version>4.0.0</gravitee-resource-oauth2-provider-keycloak.version>
-    <gravitee-resource-ai-model-text-classification.version>2.2.1</gravitee-resource-ai-model-text-classification.version>
+    <gravitee-resource-cache-cloud-redis.version>2.0.0</gravitee-resource-cache-cloud-redis.version>
+    <gravitee-resource-oauth2-provider-keycloak.version>5.0.0</gravitee-resource-oauth2-provider-keycloak.version>
+    <gravitee-resource-ai-model-text-classification.version>2.3.0</gravitee-resource-ai-model-text-classification.version>
     <gravitee-service-geoip.version>3.0.0</gravitee-service-geoip.version>
-    <gravitee-inference-service.version>2.0.0</gravitee-inference-service.version>
-    <gravitee-secretprovider-kubernetes.version>2.0.0</gravitee-secretprovider-kubernetes.version>
+    <gravitee-inference-service.version>3.0.0</gravitee-inference-service.version>
+    <!-- Empty: the Linux zip. Pass -Dgravitee-inference-service.classifier=macos to run the plugin natively on macOS. Never for images. -->
+    <gravitee-inference-service.classifier/>
+    <gravitee-secret-provider-kubernetes.version>3.0.0</gravitee-secret-provider-kubernetes.version>
     <gravitee-policy-ai-prompt-token-tracking.version>2.0.0</gravitee-policy-ai-prompt-token-tracking.version>
-    <gravitee-policy-ai-prompt-guard-rails.version>4.0.1</gravitee-policy-ai-prompt-guard-rails.version>
+    <gravitee-policy-ai-prompt-guard-rails.version>5.2.0</gravitee-policy-ai-prompt-guard-rails.version>
 
     <!-- Enterprise plugins -->
     <gravitee-entrypoint-http-get.version>3.0.0</gravitee-entrypoint-http-get.version>
     <gravitee-entrypoint-http-post.version>3.0.0</gravitee-entrypoint-http-post.version>
     <gravitee-entrypoint-sse.version>6.0.0</gravitee-entrypoint-sse.version>
-    <gravitee-entrypoint-webhook.version>8.0.2</gravitee-entrypoint-webhook.version>
+    <gravitee-entrypoint-webhook.version>8.0.4</gravitee-entrypoint-webhook.version>
     <gravitee-entrypoint-websocket.version>3.0.0</gravitee-entrypoint-websocket.version>
-    <gravitee-entrypoint-agent-to-agent.version>2.0.1</gravitee-entrypoint-agent-to-agent.version>
-    <gravitee-entrypoint-mcp-tool-server.version>2.0.3</gravitee-entrypoint-mcp-tool-server.version>
-    <gravitee-endpoint-jms.version>2.0.2</gravitee-endpoint-jms.version>
-    <gravitee-endpoint-kafka.version>6.1.5</gravitee-endpoint-kafka.version>
+    <gravitee-entrypoint-agent-to-agent.version>2.0.2</gravitee-entrypoint-agent-to-agent.version>
+    <gravitee-entrypoint-mcp-tool-server.version>2.0.5</gravitee-entrypoint-mcp-tool-server.version>
+    <gravitee-endpoint-jms.version>2.0.3</gravitee-endpoint-jms.version>
+    <gravitee-endpoint-kafka.version>7.0.0-alpha.2</gravitee-endpoint-kafka.version>
     <gravitee-endpoint-mqtt5.version>5.0.0</gravitee-endpoint-mqtt5.version>
-    <gravitee-endpoint-rabbitmq.version>4.0.0</gravitee-endpoint-rabbitmq.version>
+    <gravitee-endpoint-rabbitmq.version>4.0.2</gravitee-endpoint-rabbitmq.version>
     <gravitee-endpoint-solace.version>4.1.1</gravitee-endpoint-solace.version>
-    <gravitee-endpoint-azure-service-bus.version>2.0.2</gravitee-endpoint-azure-service-bus.version>
+    <gravitee-endpoint-azure-service-bus.version>2.0.3</gravitee-endpoint-azure-service-bus.version>
     <gravitee-endpoint-agent-to-agent.version>2.0.0</gravitee-endpoint-agent-to-agent.version>
-    <gravitee-policy-graphql-rate-limit.version>1.0.2</gravitee-policy-graphql-rate-limit.version>
+    <gravitee-policy-graphql-rate-limit.version>2.0.0</gravitee-policy-graphql-rate-limit.version>
     <gravitee-resource-schema-registry-confluent.version>6.0.0</gravitee-resource-schema-registry-confluent.version>
-    <gravitee-resource-schema-registry-embedded.version>1.0.0</gravitee-resource-schema-registry-embedded.version>
+    <gravitee-resource-schema-registry-embedded.version>1.0.3</gravitee-resource-schema-registry-embedded.version>
+    <gravitee-resource-schema-registry-http.version>1.0.2</gravitee-resource-schema-registry-http.version>
     <gravitee-resource-storage-azure-blob.version>1.1.1</gravitee-resource-storage-azure-blob.version>
-    <gravitee-reactor-message.version>11.0.0</gravitee-reactor-message.version>
-    <gravitee-reactor-native-kafka.version>7.1.0</gravitee-reactor-native-kafka.version>
-    <gravitee-reactor-mcp-proxy.version>4.0.0</gravitee-reactor-mcp-proxy.version>
-    <gravitee-reactor-llm-proxy.version>4.2.0-alpha.8</gravitee-reactor-llm-proxy.version>
-    <gravitee-reactor-a2a-proxy.version>2.1.1</gravitee-reactor-a2a-proxy.version>
-    <gravitee-reactor-authz.version>1.2.0</gravitee-reactor-authz.version>
-    <gravitee-reactor-edge.version>2.0.0-alpha.2</gravitee-reactor-edge.version>
+    <gravitee-reactor-message.version>11.1.0</gravitee-reactor-message.version>
+    <gravitee-reactor-native-kafka.version>9.0.0-alpha.1</gravitee-reactor-native-kafka.version>
+    <gravitee-reactor-mcp-proxy.version>4.12.0</gravitee-reactor-mcp-proxy.version>
+    <gravitee-reactor-llm-proxy.version>5.0.1</gravitee-reactor-llm-proxy.version>
+    <gravitee-reactor-a2a-proxy.version>2.1.3</gravitee-reactor-a2a-proxy.version>
+    <gravitee-reactor-authz.version>3.0.2</gravitee-reactor-authz.version>
+    <gravitee-reactor-edge.version>2.0.0-alpha.5</gravitee-reactor-edge.version>
     <gravitee-resource-ai-vector-store-redis.version>2.0.0</gravitee-resource-ai-vector-store-redis.version>
-    <gravitee-resource-ai-vector-store-aws-s3.version>1.0.0</gravitee-resource-ai-vector-store-aws-s3.version>
+    <gravitee-resource-ai-vector-store-aws-s3.version>2.0.0</gravitee-resource-ai-vector-store-aws-s3.version>
     <gravitee-resource-ai-model-text-embedding.version>2.0.0</gravitee-resource-ai-model-text-embedding.version>
-    <gravitee-policy-ai-semantic-caching.version>2.0.0</gravitee-policy-ai-semantic-caching.version>
-    <gravitee-policy-ai-routing.version>1.0.0</gravitee-policy-ai-routing.version>
-    <gravitee-apim-repository-bridge.version>9.0.0</gravitee-apim-repository-bridge.version>
-    <gravitee-secretprovider-hc-vault.version>2.1.0</gravitee-secretprovider-hc-vault.version>
-    <gravitee-secretprovider-aws.version>2.0.0</gravitee-secretprovider-aws.version>
-    <gravitee-secretprovider-azure-keyvault.version>1.0.0</gravitee-secretprovider-azure-keyvault.version>
-    <gravitee-service-secrets.version>3.0.2</gravitee-service-secrets.version>
-    <gravitee-policy-interops.version>1.2.0</gravitee-policy-interops.version>
-    <gravitee-policy-kafka-quota.version>1.2.2</gravitee-policy-kafka-quota.version>
+    <gravitee-policy-ai-semantic-caching.version>3.1.1</gravitee-policy-ai-semantic-caching.version>
+    <gravitee-policy-ai-routing.version>1.1.0</gravitee-policy-ai-routing.version>
+    <gravitee-policy-ai-token-compression.version>1.0.0</gravitee-policy-ai-token-compression.version>
+    <gravitee-apim-repository-bridge.version>9.0.1</gravitee-apim-repository-bridge.version>
+    <gravitee-secret-provider-hc-vault.version>3.0.0</gravitee-secret-provider-hc-vault.version>
+    <gravitee-secret-provider-aws.version>3.0.0</gravitee-secret-provider-aws.version>
+    <gravitee-secret-provider-azure-keyvault.version>1.0.0</gravitee-secret-provider-azure-keyvault.version>
+    <gravitee-service-secrets.version>4.0.2</gravitee-service-secrets.version>
+    <gravitee-policy-interops.version>2.0.0</gravitee-policy-interops.version>
+    <gravitee-policy-kafka-quota.version>2.0.1</gravitee-policy-kafka-quota.version>
     <gravitee-policy-kafka-topic-mapping.version>2.2.0</gravitee-policy-kafka-topic-mapping.version>
     <gravitee-policy-kafka-acl.version>3.0.3</gravitee-policy-kafka-acl.version>
     <gravitee-policy-kafka-transform-key.version>1.1.0</gravitee-policy-kafka-transform-key.version>
-    <gravitee-policy-kafka-message-filtering.version>1.1.1</gravitee-policy-kafka-message-filtering.version>
-    <gravitee-policy-kafka-message-encryption-decryption.version>1.0.0</gravitee-policy-kafka-message-encryption-decryption.version>
-    <gravitee-policy-kafka-rules.version>1.1.2</gravitee-policy-kafka-rules.version>
-    <gravitee-policy-kafka-namespace.version>1.0.0</gravitee-policy-kafka-namespace.version>
-    <gravitee-policy-offloading.version>1.2.0</gravitee-policy-offloading.version>
-    <gravitee-policy-token-ratelimit.version>1.1.3</gravitee-policy-token-ratelimit.version>
-    <gravitee-policy-cost-ratelimit.version>1.1.3</gravitee-policy-cost-ratelimit.version>
-    <gravitee-policy-mcp-acl.version>2.0.0</gravitee-policy-mcp-acl.version>
-    <gravitee-policy-pii-filtering.version>2.3.0</gravitee-policy-pii-filtering.version>
+    <gravitee-policy-kafka-message-filtering.version>1.1.2</gravitee-policy-kafka-message-filtering.version>
+    <gravitee-policy-kafka-message-encryption-decryption.version>1.0.2</gravitee-policy-kafka-message-encryption-decryption.version>
+    <gravitee-policy-kafka-rules.version>1.1.3</gravitee-policy-kafka-rules.version>
+    <gravitee-policy-kafka-namespace.version>1.0.1</gravitee-policy-kafka-namespace.version>
+    <gravitee-policy-kafka-offloading.version>1.2.0</gravitee-policy-kafka-offloading.version>
+    <gravitee-policy-token-ratelimit.version>3.0.0</gravitee-policy-token-ratelimit.version>
+    <gravitee-policy-cost-ratelimit.version>3.0.0</gravitee-policy-cost-ratelimit.version>
+    <gravitee-policy-mcp-acl.version>2.1.1</gravitee-policy-mcp-acl.version>
+    <gravitee-policy-oauth2-token-exchange.version>1.1.0</gravitee-policy-oauth2-token-exchange.version>
+    <gravitee-policy-pii-filtering.version>3.1.0</gravitee-policy-pii-filtering.version>
     <gravitee-policy-native-ipfiltering.version>1.0.1</gravitee-policy-native-ipfiltering.version>
-    <gravitee-resource-ai-model-token-classification.version>1.0.0</gravitee-resource-ai-model-token-classification.version>
+    <gravitee-resource-ai-model-token-classification.version>2.0.0</gravitee-resource-ai-model-token-classification.version>
 
     <!-- Gamma plugins -->
-    <gravitee-gamma-module-aim.version>4.3.0-alpha.45</gravitee-gamma-module-aim.version>
-    <gravitee-gamma-module-authz.version>2.2.0</gravitee-gamma-module-authz.version>
-    <gravitee-gamma-module-edge.version>2.0.0-alpha.13</gravitee-gamma-module-edge.version>
-    <gravitee-gamma-module-esm.version>1.5.0-alpha.14</gravitee-gamma-module-esm.version>
+    <gravitee-gamma-module-aim.version>5.1.0-alpha.5</gravitee-gamma-module-aim.version>
+    <gravitee-gamma-module-authz.version>3.9.1</gravitee-gamma-module-authz.version>
+    <gravitee-gamma-module-edge.version>3.0.0-alpha.2</gravitee-gamma-module-edge.version>
+    <gravitee-gamma-module-esm.version>1.6.6</gravitee-gamma-module-esm.version>
 
     <!-- Authz plugins -->
-    <gravitee-service-authz-pdp.version>3.0.1</gravitee-service-authz-pdp.version>
-    <gravitee-policy-authz-pep.version>1.4.0</gravitee-policy-authz-pep.version>
-    <gravitee-policy-authz-pdp-authzen.version>1.2.0</gravitee-policy-authz-pdp-authzen.version>
+    <gravitee-service-authz-pdp.version>4.2.3</gravitee-service-authz-pdp.version>
+    <gravitee-policy-authz-pep.version>3.0.2</gravitee-policy-authz-pep.version>
+    <gravitee-policy-authz-pdp-authzen.version>4.0.1</gravitee-policy-authz-pdp-authzen.version>
     </properties>
 
     <dependencyManagement>
@@ -366,6 +367,10 @@
                         <owner>The Gravitee team</owner>
                         <email>http://gravitee.io</email>
                     </properties>
+                    <mapping>
+                        <!-- Flavor files: their names are read line by line, a header has to be a "#" comment -->
+                        <txt>SCRIPT_STYLE</txt>
+                    </mapping>
                     <licenseSets>
                         <licenseSet>
                             <header>com/mycila/maven/plugin/license/templates/APACHE-2.txt</header>

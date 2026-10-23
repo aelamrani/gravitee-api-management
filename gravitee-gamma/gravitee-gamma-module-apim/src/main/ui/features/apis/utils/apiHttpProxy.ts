@@ -17,11 +17,46 @@ import type { ApiDetailDto, TcpTarget } from '../types';
 
 /** Structural — matches both `ApiDetailDto` and the narrower `PolicyStudioApiDetail`. */
 interface ApiWithListeners {
-    listeners?: { type?: string }[];
+    listeners?: {
+        type?: string;
+        entrypoints?: { type?: string }[];
+    }[];
+    endpointGroups?: { type?: string }[];
+}
+
+function isTcpListenerType(type: string | undefined): boolean {
+    return type?.toUpperCase() === 'TCP';
+}
+
+function listenerUsesTcpProxyEntrypoint(listener: { entrypoints?: { type?: string }[] }): boolean {
+    return Boolean(listener.entrypoints?.some(ep => ep.type === 'tcp-proxy'));
+}
+
+function hasTcpEndpointGroup(api: ApiWithListeners): boolean {
+    return Boolean(api.endpointGroups?.some(group => group.type === 'tcp-proxy'));
+}
+
+export function hasTcpListener(api: ApiWithListeners | null | undefined): boolean {
+    return Boolean(api?.listeners?.some(listener => isTcpListenerType(listener.type)));
 }
 
 export function hasTcpListeners(api: ApiWithListeners | null | undefined): boolean {
-    return Boolean(api?.listeners?.some(l => l.type === 'TCP'));
+    if (!api) return false;
+    if (api.listeners?.some(listener => isTcpListenerType(listener.type) || listenerUsesTcpProxyEntrypoint(listener))) {
+        return true;
+    }
+    return hasTcpEndpointGroup(api);
+}
+
+export function areAllListenersTcp(api: ApiWithListeners | null | undefined): boolean {
+    const listeners = api?.listeners;
+    if (!listeners?.length) return false;
+    return listeners.every(listener => isTcpListenerType(listener.type));
+}
+
+/** Classic `api-list.component.ts` `getLabelType` for V4 PROXY APIs. */
+export function getApiProxyTypeLabel(api: ApiWithListeners | null | undefined): 'TCP Proxy' | 'HTTP Proxy' {
+    return hasTcpListeners(api) ? 'TCP Proxy' : 'HTTP Proxy';
 }
 
 /** HTTP PROXY API without TCP listeners — health-check is available (legacy console rule). */
@@ -29,6 +64,24 @@ export function isHttpProxyApi(api: ApiDetailDto | null | undefined): boolean {
     if (!api) return false;
     if (api.type !== 'PROXY') return false;
     return !hasTcpListeners(api);
+}
+
+/** False for MCP_PROXY / LLM_PROXY. */
+export function supportsResponseTemplates(api: { type?: string } | null | undefined): boolean {
+    const type = api?.type;
+    return type !== 'MCP_PROXY' && type !== 'LLM_PROXY';
+}
+
+/** Normalises a TCP listener host entry — backend returns `string[]`, some fixtures use `{ host }`. */
+export function normalizeTcpHost(host: string | { host?: string } | undefined): string {
+    if (host === undefined) return '';
+    if (typeof host === 'string') return host;
+    return host.host ?? '';
+}
+
+/** tcp-proxy endpoint groups use a different shared-configuration schema than http-proxy. */
+export function isTcpEndpointGroup(group: { type?: string } | null | undefined): boolean {
+    return group?.type === 'tcp-proxy';
 }
 
 /** An endpoint's `configuration.target` is a plain URL for http-proxy, or a {host,port,secured} object for tcp-proxy. */

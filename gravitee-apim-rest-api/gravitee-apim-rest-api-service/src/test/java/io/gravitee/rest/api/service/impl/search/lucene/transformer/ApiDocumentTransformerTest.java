@@ -17,6 +17,7 @@ package io.gravitee.rest.api.service.impl.search.lucene.transformer;
 
 import static io.gravitee.rest.api.service.impl.search.lucene.transformer.ApiDocumentTransformer.FIELD_ALLOW_IN_API_PRODUCTS;
 import static io.gravitee.rest.api.service.impl.search.lucene.transformer.ApiDocumentTransformer.FIELD_API_TYPE;
+import static io.gravitee.rest.api.service.impl.search.lucene.transformer.ApiDocumentTransformer.FIELD_ID_SORTED;
 import static io.gravitee.rest.api.service.impl.search.lucene.transformer.ApiDocumentTransformer.FIELD_STATUS;
 import static io.gravitee.rest.api.service.impl.search.lucene.transformer.ApiDocumentTransformer.FIELD_STATUS_SORTED;
 import static io.gravitee.rest.api.service.impl.search.lucene.transformer.ApiDocumentTransformer.FIELD_VISIBILITY;
@@ -42,6 +43,7 @@ import io.gravitee.rest.api.model.UserEntity;
 import io.gravitee.rest.api.model.Visibility;
 import io.gravitee.rest.api.model.api.ApiEntity;
 import io.gravitee.rest.api.model.api.ApiLifecycleState;
+import io.gravitee.rest.api.model.federation.FederatedApiAgentEntity;
 import io.gravitee.rest.api.service.impl.ApiServiceImpl;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -58,7 +60,6 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.util.BytesRef;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -100,6 +101,7 @@ class ApiDocumentTransformerTest {
         Document doc = cut.transform(api);
         assertThat(doc.get("id")).isEqualTo(api.getId());
         assertThat(doc.get("type")).isEqualTo("api");
+        assertThat(doc.getField(FIELD_ID_SORTED).binaryValue()).isEqualTo(new BytesRef(api.getId()));
     }
 
     @Test
@@ -113,6 +115,18 @@ class ApiDocumentTransformerTest {
 
         Document doc = cut.transform(api);
         assertThat(doc.get("id")).isEqualTo(api.getId());
+    }
+
+    @Test
+    void shouldTransformWithoutError_FederatedAgentWithIdOnly() {
+        // A delete replayed from another node rebuilds the entity with its no-arg constructor, so only the id is set
+        FederatedApiAgentEntity agent = new FederatedApiAgentEntity();
+        agent.setId("agent-uuid");
+
+        Document doc = cut.transform(agent);
+
+        assertThat(doc.get("id")).isEqualTo(agent.getId());
+        assertThat(doc.get("type")).isEqualTo("api");
     }
 
     @Test
@@ -328,7 +342,6 @@ class ApiDocumentTransformerTest {
         }
     }
 
-    @NotNull
     private ApiEntity getApiEntity() {
         ApiEntity toTransform = new ApiEntity();
         toTransform.setId("apiId");

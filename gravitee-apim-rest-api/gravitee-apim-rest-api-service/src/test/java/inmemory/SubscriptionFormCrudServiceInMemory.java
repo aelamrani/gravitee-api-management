@@ -15,7 +15,6 @@
  */
 package inmemory;
 
-import io.gravitee.apim.core.portal_page.model.PortalPageContentId;
 import io.gravitee.apim.core.subscription_form.crud_service.SubscriptionFormCrudService;
 import io.gravitee.apim.core.subscription_form.model.SubscriptionForm;
 import io.gravitee.apim.core.subscription_form.model.SubscriptionFormId;
@@ -39,9 +38,10 @@ public class SubscriptionFormCrudServiceInMemory implements SubscriptionFormCrud
             ? SubscriptionForm.builder()
                 .id(SubscriptionFormId.random())
                 .environmentId(subscriptionForm.getEnvironmentId())
-                .portalPageContentId(PortalPageContentId.random())
+                .name(subscriptionForm.getName())
                 .gmdContent(subscriptionForm.getGmdContent())
                 .enabled(subscriptionForm.isEnabled())
+                .apiIds(subscriptionForm.getApiIds())
                 .validationConstraints(subscriptionForm.getValidationConstraints())
                 .build()
             : subscriptionForm;
@@ -58,6 +58,11 @@ public class SubscriptionFormCrudServiceInMemory implements SubscriptionFormCrud
         }
 
         throw new IllegalStateException("Subscription form not found: " + subscriptionForm.getId());
+    }
+
+    @Override
+    public void delete(SubscriptionForm subscriptionForm) {
+        storage.removeIf(form -> form.getId().equals(subscriptionForm.getId()));
     }
 
     @Override

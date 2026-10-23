@@ -63,6 +63,6 @@ class GetIngestedApisUseCaseTest {
         AssertionsForClassTypes.assertThat(ingestedApis).isNotNull();
         AssertionsForClassTypes.assertThat(ingestedApis)
             .extracting(Page::getContent, Page::getPageNumber, Page::getPageElements, Page::getTotalElements)
-            .containsExactly(apis, 1, ingestedApis.getPageElements(), (long) ingestedApis.getContent().size());
+            .containsExactly(apis, 1, 1L, 1L);
     }
 }

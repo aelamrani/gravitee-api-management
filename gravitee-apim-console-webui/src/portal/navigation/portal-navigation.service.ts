@@ -16,6 +16,7 @@
 import { Injectable } from '@angular/core';
 
 import { GioPermissionService } from '../../shared/components/gio-permission/gio-permission.service';
+import { PORTAL_AUTHENTICATION_READ_PERMISSIONS } from '../authentication/portal-authentication.permissions';
 
 export interface MenuItem {
   icon?: string;
@@ -28,7 +29,10 @@ interface MenuItemConfig {
   displayName: string;
   routerLink: string;
   icon: string;
-  permissions: string[];
+  // The user needs at least one of these permissions
+  permissions?: string[];
+  // The user needs all of these permissions
+  allPermissions?: string[];
 }
 
 @Injectable({
@@ -51,12 +55,6 @@ export class PortalNavigationService {
       permissions: ['environment-settings-r', 'environment-settings-u'],
     },
     {
-      displayName: 'API',
-      routerLink: 'api',
-      icon: 'gio:cloud-settings',
-      permissions: ['environment-settings-r', 'environment-settings-u'],
-    },
-    {
       displayName: 'Theme',
       routerLink: 'theme',
       icon: 'gio:color-picker',
@@ -74,15 +72,33 @@ export class PortalNavigationService {
       icon: 'gio:list-check',
       permissions: ['environment-metadata-r', 'environment-metadata-u'],
     },
+    {
+      displayName: 'Authentication',
+      routerLink: 'authentication',
+      icon: 'gio:lock',
+      allPermissions: PORTAL_AUTHENTICATION_READ_PERMISSIONS,
+    },
+    {
+      displayName: 'Settings',
+      routerLink: 'settings',
+      icon: 'gio:settings',
+      permissions: ['environment-settings-r', 'environment-settings-u'],
+    },
   ];
 
   public getMainMenuItems(): MenuItem[] {
     return this.allMenuItems
-      .filter(item => this.permissionService.hasAnyMatching(item.permissions))
+      .filter(item => this.hasPermissions(item))
       .map(({ displayName, routerLink, icon }) => ({
         displayName,
         routerLink,
         icon,
       }));
+  }
+
+  private hasPermissions(item: MenuItemConfig): boolean {
+    const hasAnyOf = !item.permissions || this.permissionService.hasAnyMatching(item.permissions);
+    const hasAllOf = !item.allPermissions || this.permissionService.hasAllMatching(item.allPermissions);
+    return hasAnyOf && hasAllOf;
   }
 }

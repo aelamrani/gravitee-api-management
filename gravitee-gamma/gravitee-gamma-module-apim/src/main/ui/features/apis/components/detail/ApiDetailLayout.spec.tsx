@@ -15,9 +15,9 @@
  */
 import { useEnvironment, useHasPermission } from '@gravitee/gamma-modules-sdk';
 import { useMutation } from '@tanstack/react-query';
-import { fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
 jest.mock('@gravitee/gamma-modules-sdk', () => ({
     ...jest.requireActual<object>('@gravitee/gamma-modules-sdk'),
@@ -51,6 +51,45 @@ jest.mock('../../hooks/useApiScoreEnabled', () => ({
     useApiScoreEnabled: jest.fn(() => ({ enabled: true, isFetched: true })),
 }));
 
+jest.mock('../../hooks/useApiReviewEnabled', () => ({
+    useApiReviewEnabled: jest.fn(() => ({ enabled: false, isFetched: true })),
+}));
+
+const mockAskReviewMutate = jest.fn();
+jest.mock('../../hooks/useApiReviewMutations', () => ({
+    useAskApiReview: jest.fn(() => ({ mutate: mockAskReviewMutate, isPending: false })),
+}));
+
+jest.mock('./ApiReviewSheet', () => ({
+    ApiReviewSheet: ({ open, apiId }: { open: boolean; apiId: string }) =>
+        open ? <div data-testid="api-review-sheet">{apiId}</div> : null,
+}));
+
+jest.mock('../../../../shared/components', () => ({
+    ConfirmDialog: ({
+        open,
+        title,
+        confirmLabel,
+        onConfirm,
+    }: {
+        open: boolean;
+        title: string;
+        confirmLabel: string;
+        onConfirm: () => void;
+    }) =>
+        open ? (
+            <div role="dialog" aria-label={title}>
+                <button type="button" onClick={onConfirm}>
+                    {confirmLabel}
+                </button>
+            </div>
+        ) : null,
+}));
+
+jest.mock('../../../../shared/notify', () => ({
+    notify: { success: jest.fn(), error: jest.fn() },
+}));
+
 jest.mock('../../services/apis', () => ({
     deployApi: jest.fn(),
 }));
@@ -63,6 +102,8 @@ jest.mock('../../utils/queryKeys', () => ({
 }));
 
 let mockCapturedLayoutConfig: Record<string, unknown> | null = null;
+let mockCapturedLayoutDeps: unknown[][] = [];
+let mockPublishedLayoutDeps: unknown[] | null = null;
 let mockBannerHost: HTMLDivElement | null = null;
 
 jest.mock('@gravitee/graphene-core', () => {
@@ -81,7 +122,12 @@ jest.mock('@gravitee/graphene-core', () => {
                 {children}
             </button>
         ),
-        Skeleton: () => <div />,
+        Skeleton: ({ className }: { className?: string }) => <div data-testid="skeleton" className={className} />,
+        cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
+        TooltipProvider: ({ children }: { children?: ReactNode }) => <>{children}</>,
+        Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
+        TooltipTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
+        TooltipContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
         ContextSidebar: ({ children, header }: { children?: ReactNode; header?: ReactNode }) => (
             <div>
                 {header}
@@ -99,25 +145,39 @@ jest.mock('@gravitee/graphene-core', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         Input: (props: any) => <input {...props} />,
         Label: ({ children, htmlFor }: { children?: ReactNode; htmlFor?: string }) => <label htmlFor={htmlFor}>{children}</label>,
-        useLayoutConfig: jest.fn((config: Record<string, unknown>) => {
+        // The real hook publishes from an effect keyed on the caller's dependency list, so a re-render only reaches
+        // the host layout when a dependency changed. A fake that captured on every render would stay green with a
+        // dependency missing from that list.
+        useLayoutConfig: jest.fn((config: Record<string, unknown>, deps: unknown[] = []) => {
+            const unchanged =
+                mockPublishedLayoutDeps !== null &&
+                mockPublishedLayoutDeps.length === deps.length &&
+                mockPublishedLayoutDeps.every((dep, index) => Object.is(dep, deps[index]));
+            if (unchanged) return;
+            mockPublishedLayoutDeps = deps;
             mockCapturedLayoutConfig = { ...(mockCapturedLayoutConfig ?? {}), ...config };
+            mockCapturedLayoutDeps.push(deps);
         }),
     };
 });
 
 jest.mock('@gravitee/graphene-core/icons', () => new Proxy({}, { get: () => () => null }));
 
-jest.mock('./ApiDetailSidebarNav', () => ({
-    API_PROXY_NAV_GROUPS: [],
-    ApiDetailSidebarNav: () => <div />,
-    withTcpRestrictions: (groups: unknown[]) => groups,
-    withMetadataPermission: (groups: unknown[]) => groups,
-    withApiScoreEnabled: (groups: unknown[]) => groups,
+// The deep-link helpers reach @gravitee/gamma-lib-observability, whose charting bundle does not load
+// under jsdom. This suite is about the layout, not about how a deep link is encoded.
+jest.mock('../../utils/analyticsDeepLink', () => ({
+    buildApiDashboardHref: () => '/env/observe/dashboards/http-proxy-overview',
+    buildApiLogsHref: () => '/env/observe/logs',
 }));
 
 import { ApiDetailIndexRedirect, ApiDetailLayout } from './ApiDetailLayout';
+import { API_PROXY_NAV_GROUPS } from './ApiDetailSidebarNav';
 import { useDetailBasePath } from '../../../../shared/hooks/useDetailBasePath';
+import { notify } from '../../../../shared/notify';
 import { useApiDetail } from '../../hooks/useApiDetail';
+import { useApiPermissions } from '../../hooks/useApiPermissions';
+import { useApiReviewEnabled } from '../../hooks/useApiReviewEnabled';
+import { useApiScoreEnabled } from '../../hooks/useApiScoreEnabled';
 import { deployApi } from '../../services/apis';
 
 const mockUseEnvironment = useEnvironment as jest.Mock;
@@ -125,25 +185,32 @@ const mockUseHasPermission = useHasPermission as jest.Mock;
 const mockUseMutation = useMutation as jest.Mock;
 const mockDeployApi = deployApi as jest.Mock;
 
-function renderLayout(apiId = 'abc-123') {
+function layoutTree(apiId: string, landingSegment = 'overview', search = '') {
+    return (
+        <MemoryRouter initialEntries={[`/apis/${apiId}/${landingSegment}${search}`]}>
+            <Routes>
+                <Route path="apis/:apiId" element={<ApiDetailLayout />}>
+                    <Route path={landingSegment} element={<div data-testid="api-detail-outlet" />} />
+                </Route>
+            </Routes>
+        </MemoryRouter>
+    );
+}
+
+function renderLayout(apiId = 'abc-123', landingSegment?: string, search = '') {
     mockCapturedLayoutConfig = null;
+    mockCapturedLayoutDeps = [];
+    mockPublishedLayoutDeps = null;
     mockBannerHost = document.createElement('div');
     document.body.appendChild(mockBannerHost);
 
-    render(
-        <MemoryRouter initialEntries={[`/apis/${apiId}/overview`]}>
-            <Routes>
-                <Route path="apis/:apiId" element={<ApiDetailLayout />}>
-                    <Route path="overview" element={<div />} />
-                </Route>
-            </Routes>
-        </MemoryRouter>,
-    );
+    const view = render(layoutTree(apiId, landingSegment, search));
 
     const layoutConfig = mockCapturedLayoutConfig as Record<string, unknown> | null;
     if (layoutConfig?.banner) {
         render(layoutConfig.banner as ReactElement, { container: mockBannerHost! });
     }
+    return view;
 }
 
 // ─── useApiBasePath (via useDetailBasePath) ───────────────────────────────────
@@ -174,7 +241,25 @@ describe('useApiBasePath', () => {
 
 // ─── ApiDetailIndexRedirect ───────────────────────────────────────────────────
 
+function renderIndexRedirect() {
+    return render(
+        <MemoryRouter initialEntries={['/apis/abc-123']}>
+            <Routes>
+                <Route path="apis/:apiId" element={<ApiDetailLayout />}>
+                    <Route index element={<ApiDetailIndexRedirect />} />
+                    <Route path="overview" element={<div data-testid="overview-page" />} />
+                    <Route path="general" element={<div data-testid="general-page" />} />
+                </Route>
+            </Routes>
+        </MemoryRouter>,
+    );
+}
+
 describe('ApiDetailIndexRedirect', () => {
+    // Keeps each case's branch decided by its own mock: the two shipped cases read the module-level
+    // default, which the explicitly-mocked cases would otherwise leave overwritten.
+    afterEach(() => (useApiDetail as jest.Mock).mockReturnValue({ data: null, isLoading: false }));
+
     it('redirects the index route to overview', () => {
         render(
             <MemoryRouter initialEntries={['/apis/abc-123']}>
@@ -189,6 +274,26 @@ describe('ApiDetailIndexRedirect', () => {
         expect(screen.getByTestId('overview-page')).toBeInTheDocument();
     });
 
+    it('keeps the query string so a Tasks deep link still opens the review', () => {
+        let observedSearch = '';
+        function Overview() {
+            observedSearch = useLocation().search;
+            return <div data-testid="overview-page" />;
+        }
+        render(
+            <MemoryRouter initialEntries={['/apis/abc-123?review']}>
+                <Routes>
+                    <Route path="apis/:apiId" element={<ApiDetailLayout />}>
+                        <Route index element={<ApiDetailIndexRedirect />} />
+                        <Route path="overview" element={<Overview />} />
+                    </Route>
+                </Routes>
+            </MemoryRouter>,
+        );
+        expect(screen.getByTestId('overview-page')).toBeInTheDocument();
+        expect(observedSearch).toBe('?review');
+    });
+
     it('redirects an unknown sub-path to overview without looping', () => {
         render(
             <MemoryRouter initialEntries={['/apis/abc-123/analytics']}>
@@ -201,6 +306,41 @@ describe('ApiDetailIndexRedirect', () => {
             </MemoryRouter>,
         );
         expect(screen.getByTestId('overview-page')).toBeInTheDocument();
+    });
+
+    it('lands a federated API on general, the route its nav kept, rather than on overview', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'Federated Orders', definitionVersion: 'FEDERATED' },
+            isLoading: false,
+            isPending: false,
+        });
+        renderIndexRedirect();
+
+        expect(screen.getByTestId('general-page')).toBeInTheDocument();
+        expect(screen.queryByTestId('overview-page')).not.toBeInTheDocument();
+    });
+
+    it('lands a V4 API on overview, which stays its shipped landing route', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'Payments Proxy', definitionVersion: 'V4' },
+            isLoading: false,
+            isPending: false,
+        });
+        renderIndexRedirect();
+
+        expect(screen.getByTestId('overview-page')).toBeInTheDocument();
+        expect(screen.queryByTestId('general-page')).not.toBeInTheDocument();
+    });
+
+    it('redirects nowhere while the detail query has produced no result, even when it reports no loading', () => {
+        // The window this guards is a query that is disabled rather than in flight — the first render of a
+        // host-mounted deep link, before the environment resolves — which reports isLoading: false with no
+        // data. A replace redirect fired there cannot be undone once the definition version arrives.
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: false, isPending: true });
+        renderIndexRedirect();
+
+        expect(screen.queryByTestId('overview-page')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('general-page')).not.toBeInTheDocument();
     });
 });
 
@@ -286,6 +426,30 @@ describe('DeployBanner', () => {
         expect(mutate).toHaveBeenCalledWith('hotfix-cors');
     });
 
+    it('closes the deploy dialog and shows the backend error when deploy fails', () => {
+        let capturedOnError: ((error: unknown) => void) | undefined;
+        mockUseMutation.mockImplementation(({ onError }: { onError?: (error: unknown) => void }) => {
+            capturedOnError = onError;
+            return { mutate: jest.fn(), isPending: false };
+        });
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'My API', deploymentState: 'NEED_REDEPLOY' },
+            isLoading: false,
+        });
+        renderLayout();
+
+        fireEvent.click(screen.getByRole('button', { name: /deploy api/i }));
+        expect(screen.getByText(/deploy your api/i)).toBeInTheDocument();
+
+        const failure = { message: 'You must create at least one plan to deploy this API.' };
+        act(() => {
+            capturedOnError!(failure);
+        });
+
+        expect(screen.queryByText(/deploy your api/i)).not.toBeInTheDocument();
+        expect(notify.error).toHaveBeenCalledWith(failure, 'An error occurred while deploying the API.');
+    });
+
     it('does not call deployApi when env is null (null-env guard)', async () => {
         mockUseEnvironment.mockReturnValue(null);
         let capturedMutationFn: (() => Promise<void>) | undefined;
@@ -343,9 +507,50 @@ describe('DeployBanner', () => {
 
 function renderSidebar() {
     if (mockCapturedLayoutConfig?.contextSidebar) {
-        render(mockCapturedLayoutConfig.contextSidebar as ReactElement);
+        render(<MemoryRouter>{mockCapturedLayoutConfig.contextSidebar as ReactElement}</MemoryRouter>);
     }
 }
+
+describe('ApiInfoHeader proxy type badge', () => {
+    afterEach(() => jest.clearAllMocks());
+
+    function renderSidebarForApi(api: Record<string, unknown>) {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: api, isLoading: false });
+        renderLayout();
+        renderSidebar();
+    }
+
+    it('shows TCP Proxy for an API with TCP listeners', () => {
+        renderSidebarForApi({
+            id: 'abc-123',
+            name: 'TCP API',
+            type: 'PROXY',
+            listeners: [{ type: 'TCP', hosts: ['tcp.example.com'] }],
+        });
+        expect(screen.getByText('TCP Proxy')).toBeInTheDocument();
+    });
+
+    it('shows HTTP Proxy for an API without TCP listeners', () => {
+        renderSidebarForApi({
+            id: 'abc-123',
+            name: 'HTTP API',
+            type: 'PROXY',
+            listeners: [{ type: 'HTTP', paths: [{ path: '/foo' }] }],
+        });
+        expect(screen.getByText('HTTP Proxy')).toBeInTheDocument();
+    });
+
+    it('detects TCP Proxy from tcp-proxy endpoint groups when listeners are absent', () => {
+        renderSidebarForApi({
+            id: 'abc-123',
+            name: 'TCP API',
+            type: 'PROXY',
+            listeners: [],
+            endpointGroups: [{ type: 'tcp-proxy', name: 'Default TCP Proxy group' }],
+        });
+        expect(screen.getByText('TCP Proxy')).toBeInTheDocument();
+    });
+});
 
 describe('ApiAvatar', () => {
     afterEach(() => jest.clearAllMocks());
@@ -380,5 +585,729 @@ describe('ApiAvatar', () => {
         });
         renderLayout();
         expect(screen.queryByRole('img', { name: 'Payment Gateway' })).not.toBeInTheDocument();
+    });
+});
+
+// ─── API review ───────────────────────────────────────────────────────────────
+
+describe('API review', () => {
+    const mockUseApiReviewEnabled = useApiReviewEnabled as jest.Mock;
+    const mockUseApiPermissions = useApiPermissions as jest.Mock;
+
+    function grant(...permissions: string[]) {
+        mockUseHasPermission.mockImplementation(({ anyOf }: { anyOf: string[] }) => anyOf.some(p => permissions.includes(p)));
+    }
+
+    function mockApi(overrides: Record<string, unknown>) {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: { id: 'abc-123', name: 'My API', ...overrides }, isLoading: false });
+    }
+
+    beforeEach(() => {
+        mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: false });
+        mockUseApiReviewEnabled.mockReturnValue({ enabled: true, isFetched: true });
+        mockUseApiPermissions.mockReturnValue({ permissionsReady: true });
+        grant('api-definition-u', 'api-reviews-u');
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+        mockUseHasPermission.mockReturnValue(true);
+    });
+
+    it('shows no review banner while review is disabled for the environment', () => {
+        mockUseApiReviewEnabled.mockReturnValue({ enabled: false, isFetched: true });
+        mockApi({ workflowState: 'DRAFT' });
+        renderLayout();
+        expect(screen.queryByRole('region', { name: 'API review status' })).not.toBeInTheDocument();
+    });
+
+    it('lets an author ask for a review from the draft banner after confirming', () => {
+        grant('api-definition-u');
+        mockApi({ workflowState: 'DRAFT' });
+        renderLayout();
+
+        expect(screen.getByText('This API is a draft.')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Ask for a review' }));
+        expect(screen.getByRole('dialog', { name: 'Review API' })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Ask for review' }));
+        expect(mockAskReviewMutate).toHaveBeenCalledWith(undefined, expect.objectContaining({ onSuccess: expect.any(Function) }));
+
+        const options = mockAskReviewMutate.mock.calls[0]?.[1] as { onSuccess: () => void };
+        options.onSuccess();
+        expect(notify.success).toHaveBeenCalledWith('Review has been asked.');
+    });
+
+    it('hides the ask action from a viewer without api-definition-u', () => {
+        grant('api-reviews-u');
+        mockApi({ workflowState: 'DRAFT' });
+        renderLayout();
+        expect(screen.getByText('This API is a draft.')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Ask for a review' })).not.toBeInTheDocument();
+    });
+
+    it('shows the draft banner without the ask action for a federated API', () => {
+        grant('api-definition-u');
+        mockApi({ definitionVersion: 'FEDERATED', workflowState: 'DRAFT' });
+        renderLayout();
+        expect(screen.getByText('This API is a draft.')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Ask for a review' })).not.toBeInTheDocument();
+    });
+
+    it('opens the review sheet for a reviewer from the in-review banner', () => {
+        mockApi({ workflowState: 'IN_REVIEW' });
+        renderLayout();
+
+        expect(screen.getByText('This API has changes waiting for your review.')).toBeInTheDocument();
+        expect(screen.queryByTestId('api-review-sheet')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Review changes' }));
+        expect(screen.getByTestId('api-review-sheet')).toHaveTextContent('abc-123');
+    });
+
+    it('keeps the layout dependencies stable across a rerender so the host layout does not re-register forever', () => {
+        mockApi({ workflowState: 'IN_REVIEW' });
+        renderLayout();
+
+        const depsCallCountBeforeClick = mockCapturedLayoutDeps.length;
+
+        // Opening the sheet rerenders the layout without touching anything the host layout depends on. The
+        // useLayoutConfig mock skips publishing when the deps array is unchanged, so a truly stable layout
+        // leaves no new entry here — that absence is the proof, not a same-length pair of pushed arrays.
+        fireEvent.click(screen.getByRole('button', { name: 'Review changes' }));
+
+        expect(mockCapturedLayoutDeps).toHaveLength(depsCallCountBeforeClick);
+    });
+
+    it('tells a non-reviewer the review is pending without offering a decision', () => {
+        grant('api-definition-u');
+        mockApi({ workflowState: 'IN_REVIEW' });
+        renderLayout();
+        expect(screen.getByText('The API reviewer has been asked to review the changes.')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Review changes' })).not.toBeInTheDocument();
+    });
+
+    it('waits for the API permissions before deciding which wording to show', () => {
+        mockUseApiPermissions.mockReturnValue({ permissionsReady: false });
+        mockApi({ workflowState: 'IN_REVIEW' });
+        renderLayout();
+        expect(screen.queryByRole('region', { name: 'API review status' })).not.toBeInTheDocument();
+    });
+
+    it('holds back the out-of-sync deploy banner while the review is pending', () => {
+        mockApi({ workflowState: 'IN_REVIEW', deploymentState: 'NEED_REDEPLOY' });
+        renderLayout();
+        expect(screen.queryByText(/out of sync/i)).not.toBeInTheDocument();
+
+        mockApi({ workflowState: 'REVIEW_OK', deploymentState: 'NEED_REDEPLOY' });
+        renderLayout();
+        expect(screen.getByText(/out of sync/i)).toBeInTheDocument();
+    });
+
+    it('opens the review sheet straight away for a reviewer arriving with ?review', () => {
+        mockApi({ workflowState: 'IN_REVIEW' });
+        renderLayout('abc-123', 'overview', '?review');
+        expect(screen.getByTestId('api-review-sheet')).toBeInTheDocument();
+    });
+
+    it('ignores ?review for a user who cannot review', () => {
+        grant('api-definition-u');
+        mockApi({ workflowState: 'IN_REVIEW' });
+        renderLayout('abc-123', 'overview', '?review');
+        expect(screen.queryByTestId('api-review-sheet')).not.toBeInTheDocument();
+    });
+
+    it('ignores ?review once the review has been accepted', () => {
+        mockApi({ workflowState: 'REVIEW_OK' });
+        renderLayout('abc-123', 'overview', '?review');
+        expect(screen.queryByTestId('api-review-sheet')).not.toBeInTheDocument();
+    });
+});
+
+// ─── ApiInfoHeader ────────────────────────────────────────────────────────────
+
+describe('ApiInfoHeader', () => {
+    afterEach(() => jest.clearAllMocks());
+
+    it('renders no API name when the API detail request failed', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
+        renderLayout();
+        renderSidebar();
+        expect(screen.queryByText('Payment Gateway')).not.toBeInTheDocument();
+    });
+
+    it('shows Started and Out of sync together when a started API needs redeploy', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'Payment Gateway', state: 'STARTED', deploymentState: 'NEED_REDEPLOY' },
+            isLoading: false,
+        });
+        renderLayout();
+        renderSidebar();
+        expect(screen.getByText('Started')).toBeInTheDocument();
+        expect(screen.getByText('Out of sync')).toBeInTheDocument();
+    });
+
+    it('shows Stopped and Out of sync together when a stopped API needs redeploy', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'Payment Gateway', state: 'STOPPED', deploymentState: 'NEED_REDEPLOY' },
+            isLoading: false,
+        });
+        renderLayout();
+        renderSidebar();
+        expect(screen.getByText('Stopped')).toBeInTheDocument();
+        expect(screen.getByText('Out of sync')).toBeInTheDocument();
+    });
+
+    it('does not leave Loading… in the breadcrumb when the API fails to load', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
+        renderLayout();
+        const crumbs = (mockCapturedLayoutConfig?.breadcrumbs ?? []) as { label: string }[];
+        expect(crumbs.map(crumb => crumb.label)).not.toContain('Loading…');
+    });
+
+    it('renders the API name when the API detail request succeeded', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: { id: 'abc-123', name: 'Payment Gateway' }, isLoading: false });
+        renderLayout();
+        renderSidebar();
+        expect(screen.getByText('Payment Gateway')).toBeInTheDocument();
+    });
+
+    // Both names run past 40 characters, the point at which the breadcrumb label deliberately slices and
+    // appends an ellipsis — so a header that borrowed that cap would fail on the routed API's own name.
+    const ROUTED_FEDERATED_API = {
+        id: 'federated-orders',
+        name: 'Orders Federated API for the EMEA region and partners',
+        definitionVersion: 'FEDERATED',
+    };
+    const OTHER_FEDERATED_API = {
+        id: 'federated-billing',
+        name: 'Billing Federated API for the AMER region and partners',
+        definitionVersion: 'FEDERATED',
+    };
+
+    it('renders the routed federated API name in full on the general route a federated row lands on', () => {
+        (useApiDetail as jest.Mock).mockImplementation((apiId: string) => ({
+            data: apiId === ROUTED_FEDERATED_API.id ? ROUTED_FEDERATED_API : OTHER_FEDERATED_API,
+            isLoading: false,
+            isError: false,
+        }));
+        renderLayout(ROUTED_FEDERATED_API.id, 'general');
+        renderSidebar();
+
+        expect(screen.getByText(ROUTED_FEDERATED_API.name)).toBeInTheDocument();
+        expect(screen.queryByText(OTHER_FEDERATED_API.name)).not.toBeInTheDocument();
+    });
+
+    it('renders no API name once a refetch fails on an already-loaded API', () => {
+        // A failed refetch keeps the last successful data, so isError is the only value that changes — and the
+        // only arrangement in which a denied detail request still has a name in hand to render.
+        const loadedApi = { id: 'abc-123', name: 'Payment Gateway' };
+        (useApiDetail as jest.Mock).mockReturnValue({ data: loadedApi, isLoading: false, isError: false });
+        const { rerender } = renderLayout();
+
+        (useApiDetail as jest.Mock).mockReturnValue({ data: loadedApi, isLoading: false, isError: true });
+        rerender(layoutTree('abc-123'));
+        renderSidebar();
+
+        expect(screen.queryByText('Payment Gateway')).not.toBeInTheDocument();
+    });
+});
+
+// ─── Sidebar navigation ───────────────────────────────────────────────────────
+
+// One label per API_PROXY_NAV_GROUPS group, so a nav missing a whole group cannot pass.
+const NAV_ITEM_LABELS = [
+    'Overview',
+    'Entrypoints',
+    'Policy Studio',
+    'Plans',
+    'User Permissions',
+    'Audit Logs',
+    'Sharding Tags',
+    'Documentation',
+];
+
+// Every API_PROXY_NAV_GROUPS item renders as exactly one of these: a NavLink, a collapsible parent button, or a
+// coming-soon row carrying role="button" — so an empty result for both roles means no nav item rendered at all.
+const NAV_ITEM_ROLES = ['link', 'button'] as const;
+const NAV_ROW_SKELETON_CLASS = 'h-4 rounded';
+const NAV_LOADING_ROW_COUNT = 10;
+
+describe('ApiDetailSidebarNav in the detail layout', () => {
+    beforeEach(() => {
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: true });
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: false });
+    });
+
+    it('renders no navigation item when the API detail request failed', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
+        renderLayout();
+        renderSidebar();
+
+        for (const role of NAV_ITEM_ROLES) {
+            expect(screen.queryAllByRole(role)).toHaveLength(0);
+        }
+    });
+
+    it('renders every navigation item when the API detail request succeeded', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: { id: 'abc-123', name: 'Payment Gateway' }, isLoading: false, isError: false });
+        renderLayout();
+        renderSidebar();
+
+        for (const label of NAV_ITEM_LABELS) {
+            expect(screen.getByText(label)).toBeInTheDocument();
+        }
+    });
+
+    it('hides Documentation from a user without api-documentation-r, leaving the rest of the nav alone', () => {
+        mockUseHasPermission.mockImplementation(({ anyOf }: { anyOf: string[] }) => !anyOf.includes('api-documentation-r'));
+        (useApiDetail as jest.Mock).mockReturnValue({ data: { id: 'abc-123', name: 'Payment Gateway' }, isLoading: false, isError: false });
+        renderLayout();
+        renderSidebar();
+
+        expect(screen.queryByText('Documentation')).not.toBeInTheDocument();
+        expect(screen.getByText('Metadata')).toBeInTheDocument();
+    });
+
+    it('renders no navigation item once a refetch fails on an already-loaded API', () => {
+        // A failed refetch keeps the last successful data, so isError is the only value that changes.
+        const loadedApi = { id: 'abc-123', name: 'Payment Gateway' };
+        (useApiDetail as jest.Mock).mockReturnValue({ data: loadedApi, isLoading: false, isError: false });
+        const { rerender } = renderLayout();
+
+        (useApiDetail as jest.Mock).mockReturnValue({ data: loadedApi, isLoading: false, isError: true });
+        rerender(layoutTree('abc-123'));
+        renderSidebar();
+
+        for (const role of NAV_ITEM_ROLES) {
+            expect(screen.queryAllByRole(role)).toHaveLength(0);
+        }
+    });
+
+    it.each([
+        ['in flight', { data: undefined, isLoading: true, isError: false }],
+        ['disabled until the environment resolves', { data: undefined, isLoading: false, isError: false }],
+    ])('renders no navigation item while the API detail request is %s after permissions resolved', (_state, detailResult) => {
+        (useApiDetail as jest.Mock).mockReturnValue(detailResult);
+        renderLayout();
+        renderSidebar();
+
+        for (const role of NAV_ITEM_ROLES) {
+            expect(screen.queryAllByRole(role)).toHaveLength(0);
+        }
+        const navRowSkeletons = screen.queryAllByTestId('skeleton').filter(skeleton => skeleton.className === NAV_ROW_SKELETON_CLASS);
+        expect(navRowSkeletons).toHaveLength(NAV_LOADING_ROW_COUNT);
+    });
+});
+
+// ─── Sidebar navigation — federated APIs ──────────────────────────────────────
+
+// Labels, not paths: the label is what a user sees, and a nav rendering the right hrefs with the wrong rows
+// would still pass a path-based assertion. Every nav row, link or `comingSoon` button, in one list — a row
+// filtered out of the item list and a row still rendered as a disabled one are then told apart.
+function renderedNavLabels(): string[] {
+    return NAV_ITEM_ROLES.flatMap(role => screen.queryAllByRole(role))
+        .map(row => row.textContent?.trim() ?? '')
+        .sort();
+}
+
+// Asserted as the complete set, mirroring the production allow-list: a nav item added later reaches a federated
+// API's sidebar only once someone confirms it applies, and fails this test until they do.
+const FEDERATED_SHOWN_LABELS = [
+    'Settings',
+    'User Permissions',
+    'Metadata',
+    'Documentation',
+    'Plans',
+    'Subscriptions',
+    'Broadcasts',
+    'Audit Logs',
+    'API Score',
+];
+
+const FEDERATED_EMPTIED_GROUP_HEADINGS = ['Design', 'Operations', 'Observability'];
+
+const FEDERATED_KEPT_LINKS: [label: string, path: string][] = [
+    ['Settings', 'general'],
+    ['Plans', 'plans'],
+    ['Subscriptions', 'consumers'],
+    ['Broadcasts', 'broadcasts'],
+    ['User Permissions', 'user-permissions'],
+    ['Audit Logs', 'audit-logs'],
+    // Kept for the api-metadata-r holder the default useHasPermission mock stands in for: federation must not be
+    // the thing that removes it, so this entry fails the moment 'metadata' joins the federated omission set.
+    ['Metadata', 'metadata'],
+    // Same for documentation: a federated API's pages are still portal documentation, and the classic console's
+    // federated menu shows them.
+    ['Documentation', 'documentation'],
+];
+
+const API_BASE_PATH = '/apis/abc-123';
+
+describe('ApiDetailSidebarNav in the detail layout — federated API', () => {
+    beforeEach(() => {
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: true });
+        (useApiScoreEnabled as jest.Mock).mockReturnValue({ enabled: true, isFetched: true });
+        // The viewer holds api-metadata-r and api-response_templates-r: both items survive their own permission
+        // gate here, so federation is the only thing left that can remove them. Set explicitly rather than left to
+        // the module-level default, which an earlier describe overwrites with false for the rest of the file.
+        mockUseHasPermission.mockReturnValue(true);
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: false });
+        (useApiScoreEnabled as jest.Mock).mockReturnValue({ enabled: true, isFetched: true });
+    });
+
+    function renderSidebarForApiOfDefinitionVersion(definitionVersion: string, landingSegment?: string) {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'My API', definitionVersion, type: 'PROXY' },
+            isLoading: false,
+            isError: false,
+        });
+        const view = renderLayout('abc-123', landingSegment);
+        renderSidebar();
+        return view;
+    }
+
+    function renderSidebarForFederatedApi() {
+        return renderSidebarForApiOfDefinitionVersion('FEDERATED', 'general');
+    }
+
+    it('shows only the sections a federated API applies to, and drops the group headings they empty', () => {
+        renderSidebarForFederatedApi();
+
+        expect(renderedNavLabels()).toEqual([...FEDERATED_SHOWN_LABELS].sort());
+        for (const heading of FEDERATED_EMPTIED_GROUP_HEADINGS) {
+            expect(screen.queryByText(heading)).not.toBeInTheDocument();
+        }
+    });
+
+    it('shows only the federated sections once the detail request resolves after the permissions request', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: true, isError: false });
+        const { rerender } = renderLayout();
+
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'My API', definitionVersion: 'FEDERATED', type: 'PROXY' },
+            isLoading: false,
+            isError: false,
+        });
+        rerender(layoutTree('abc-123'));
+        renderSidebar();
+
+        expect(renderedNavLabels()).toEqual([...FEDERATED_SHOWN_LABELS].sort());
+    });
+
+    it('keeps the sections a federated API does have backing data for as navigable links', () => {
+        renderSidebarForFederatedApi();
+
+        for (const [label, path] of FEDERATED_KEPT_LINKS) {
+            expect(screen.getByRole('link', { name: new RegExp(`^${label}$`, 'i') })).toHaveAttribute('href', `${API_BASE_PATH}/${path}`);
+        }
+    });
+
+    it('keeps API Score as a navigable link when the environment has API Score enabled', () => {
+        renderSidebarForFederatedApi();
+
+        expect(screen.getByRole('link', { name: /^api score$/i })).toHaveAttribute('href', `${API_BASE_PATH}/api-score`);
+    });
+
+    // The flag is fetched, so an API-Score-enabled environment reports `false` on the first render and `true` only
+    // once the portal configuration arrives. The sidebar reaches the host layout through a deps-keyed publish, so
+    // this is the only case that fails when `apiScoreEnabled` is dropped from the useLayoutConfig dependency array.
+    it('gains the API Score link when the environment flag arrives after the first render', () => {
+        (useApiScoreEnabled as jest.Mock).mockReturnValue({ enabled: false, isFetched: false });
+        const { rerender } = renderSidebarForFederatedApi();
+        expect(screen.queryByRole('link', { name: /^api score$/i })).not.toBeInTheDocument();
+
+        (useApiScoreEnabled as jest.Mock).mockReturnValue({ enabled: true, isFetched: true });
+        rerender(layoutTree('abc-123', 'general'));
+        renderSidebar();
+
+        expect(screen.getByRole('link', { name: /^api score$/i })).toHaveAttribute('href', `${API_BASE_PATH}/api-score`);
+    });
+
+    it('removes only the API Score row when the environment has API Score disabled', () => {
+        (useApiScoreEnabled as jest.Mock).mockReturnValue({ enabled: false, isFetched: true });
+        renderSidebarForFederatedApi();
+
+        expect(screen.queryByRole('link', { name: /^api score$/i })).not.toBeInTheDocument();
+        expect(screen.queryByText('API Score')).not.toBeInTheDocument();
+        // The group heading is the only 'General' that is not a link, so the selector is what separates it
+        // from the General nav item — an emptied-out sidebar would satisfy the two absences above on its own.
+        expect(screen.getByText('General', { selector: 'p' })).toBeInTheDocument();
+        for (const [label, path] of FEDERATED_KEPT_LINKS) {
+            expect(screen.getByRole('link', { name: new RegExp(`^${label}$`, 'i') })).toHaveAttribute('href', `${API_BASE_PATH}/${path}`);
+        }
+    });
+
+    // These are the only cases that state a definition version explicitly — every other sidebar case leaves the
+    // field off entirely — so a federated marker broadened to match any API that names a version, or broadened
+    // to anything-but-'V4', is caught here and nowhere else.
+    it.each(['V4', 'V4_NATIVE'])('keeps every section for a %s API, which is not federated', definitionVersion => {
+        renderSidebarForApiOfDefinitionVersion(definitionVersion);
+
+        // Everything the canonical nav declares, plus the two deep links withObservabilityLinks inserts at render
+        // time. Derived rather than typed out: the claim is that federation filtered nothing, not that the nav
+        // holds some particular set of rows — API_PROXY_NAV_GROUPS' contents are asserted in its own spec.
+        expect(renderedNavLabels()).toEqual(
+            [...API_PROXY_NAV_GROUPS.flatMap(group => group.items.map(item => item.label)), 'Dashboard', 'Logs'].sort(),
+        );
+        for (const heading of FEDERATED_EMPTIED_GROUP_HEADINGS) {
+            expect(screen.getByText(heading)).toBeInTheDocument();
+        }
+    });
+});
+
+// ─── Federated agent APIs ─────────────────────────────────────────────────────
+
+describe('ApiDetailLayout — federated agent API', () => {
+    const AGENT_NAME = 'Fraud Detection Agent';
+
+    beforeEach(() => {
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: true });
+        // A SUCCESSFUL fetch, not a failure: GET /apis/{id} answers 200 for a federated agent, so the
+        // shipped isError branch never fires and only a definition-version check can close this route.
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: AGENT_NAME, definitionVersion: 'FEDERATED_AGENT' },
+            isLoading: false,
+            isError: false,
+        });
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: false });
+    });
+
+    it('renders no detail page for an id that resolves to a federated agent', () => {
+        renderLayout();
+        renderSidebar();
+
+        expect(screen.queryByTestId('api-detail-outlet')).not.toBeInTheDocument();
+        for (const role of NAV_ITEM_ROLES) {
+            expect(screen.queryAllByRole(role)).toHaveLength(0);
+        }
+        expect(screen.queryByText(AGENT_NAME)).not.toBeInTheDocument();
+        // Pinned as an exact string, not a pattern: the copy is what tells the user why the page is blank,
+        // and an empty or reworded message is indistinguishable from the blocked page working correctly.
+        expect(screen.getByText('This API type is not available in API Proxies.')).toBeInTheDocument();
+        // The load-failure copy would be a false statement about a request that succeeded.
+        expect(screen.queryByText(/failed to load api/i)).not.toBeInTheDocument();
+    });
+
+    // The counterpart the blocked case needs: nothing else asserts the routed page renders at all, so an
+    // agent block widened to every federated API — or to every API — would look exactly like this one working.
+    it('still renders the routed detail page for a federated API, which is not an agent', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'Federated Orders', definitionVersion: 'FEDERATED' },
+            isLoading: false,
+            isError: false,
+        });
+        renderLayout('abc-123', 'general');
+
+        expect(screen.getByTestId('api-detail-outlet')).toBeInTheDocument();
+        expect(screen.queryByText('This API type is not available in API Proxies.')).not.toBeInTheDocument();
+    });
+
+    it('shows the load-failure copy rather than the unsupported-type copy when the agent detail request fails', () => {
+        // A failed refetch keeps the last successful payload, so both the agent marker and isError are
+        // true at once — and a load failure is the more specific thing to tell the user about.
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: AGENT_NAME, definitionVersion: 'FEDERATED_AGENT' },
+            isLoading: false,
+            isError: true,
+        });
+        renderLayout();
+
+        expect(screen.getByText('Failed to load API. It may have been deleted or you may not have access.')).toBeInTheDocument();
+        expect(screen.queryByText('This API type is not available in API Proxies.')).not.toBeInTheDocument();
+    });
+});
+
+// ─── Federated API route gate ─────────────────────────────────────────────────
+
+describe('ApiDetailLayout — federated API route gate', () => {
+    const FEDERATED_API = { id: 'abc-123', name: 'Federated Orders', definitionVersion: 'FEDERATED' };
+    const V4_API = { id: 'abc-123', name: 'Payments Proxy', definitionVersion: 'V4' };
+    const ROUTED_PAGES = ['policy-studio', 'entrypoints', 'endpoints/list', 'general', 'plans', 'plans/:planId'];
+
+    let observedLocation: string | undefined;
+
+    function LocationProbe() {
+        const { pathname, search } = useLocation();
+        observedLocation = `${pathname}${search}`;
+        return null;
+    }
+
+    function mockDetail(result: Record<string, unknown>) {
+        (useApiDetail as jest.Mock).mockReturnValue(result);
+    }
+
+    function gateTree(initialPath: string) {
+        return (
+            <MemoryRouter initialEntries={[initialPath]}>
+                <Routes>
+                    <Route path="apis/:apiId" element={<ApiDetailLayout />}>
+                        {ROUTED_PAGES.map(path => (
+                            <Route
+                                key={path}
+                                path={path}
+                                element={
+                                    <>
+                                        <div data-testid={`${path.split('/')[0]}-page`} />
+                                        <LocationProbe />
+                                    </>
+                                }
+                            />
+                        ))}
+                    </Route>
+                </Routes>
+            </MemoryRouter>
+        );
+    }
+
+    beforeEach(() => {
+        observedLocation = undefined;
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: true });
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+        (useApiDetail as jest.Mock).mockReturnValue({ data: null, isLoading: false });
+        (useApiPermissions as jest.Mock).mockReturnValue({ permissionsReady: false });
+    });
+
+    it.each([
+        ['policy-studio', 'policy-studio-page'],
+        ['entrypoints', 'entrypoints-page'],
+        ['endpoints/list', 'endpoints-page'],
+    ])('redirects a federated API from the gateway-only %s route to general', (route, pageTestId) => {
+        mockDetail({ data: FEDERATED_API, isLoading: false, isPending: false, isError: false });
+
+        render(gateTree(`/apis/abc-123/${route}`));
+
+        expect(screen.queryByTestId(pageTestId)).not.toBeInTheDocument();
+        expect(screen.getByTestId('general-page')).toBeInTheDocument();
+        expect(observedLocation).toBe('/apis/abc-123/general');
+    });
+
+    it('keeps the query string when redirecting a federated API to general', () => {
+        mockDetail({ data: FEDERATED_API, isLoading: false, isPending: false, isError: false });
+
+        render(gateTree('/apis/abc-123/policy-studio?tab=flows'));
+
+        expect(observedLocation).toBe('/apis/abc-123/general?tab=flows');
+    });
+
+    // The redirect cannot fire before the type is known, so the gateway page must not mount meanwhile:
+    // mounting it would already have sent the gateway requests the redirect exists to prevent.
+    it('mounts no gateway-only page while the API type is still unknown', () => {
+        mockDetail({ data: undefined, isLoading: true, isPending: true, isError: false });
+
+        render(gateTree('/apis/abc-123/policy-studio'));
+
+        expect(screen.queryByTestId('policy-studio-page')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('general-page')).not.toBeInTheDocument();
+        expect(observedLocation).toBeUndefined();
+    });
+
+    it('shows a loading placeholder instead of the gateway-only page while the API type is still unknown', () => {
+        mockDetail({ data: undefined, isLoading: true, isPending: true, isError: false });
+
+        const { container } = render(gateTree('/apis/abc-123/policy-studio'));
+
+        expect(screen.queryByTestId('policy-studio-page')).not.toBeInTheDocument();
+        expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+    });
+
+    it.each([
+        ['general', 'general-page'],
+        ['plans', 'plans-page'],
+        ['plans/p-1', 'plans-page'],
+    ])('renders the %s route a federated API keeps in its nav', (route, pageTestId) => {
+        mockDetail({ data: FEDERATED_API, isLoading: false, isPending: false, isError: false });
+
+        render(gateTree(`/apis/abc-123/${route}`));
+
+        expect(screen.getByTestId(pageTestId)).toBeInTheDocument();
+        expect(observedLocation).toBe(`/apis/abc-123/${route}`);
+    });
+
+    it('renders the policy studio for a V4 API', () => {
+        mockDetail({ data: V4_API, isLoading: false, isPending: false, isError: false });
+
+        render(gateTree('/apis/abc-123/policy-studio'));
+
+        expect(screen.getByTestId('policy-studio-page')).toBeInTheDocument();
+        expect(observedLocation).toBe('/apis/abc-123/policy-studio');
+    });
+
+    it('renders general for a federated API route while the API is still loading', () => {
+        mockDetail({ data: undefined, isLoading: true, isPending: true, isError: false });
+
+        render(gateTree('/apis/abc-123/general'));
+
+        expect(screen.getByTestId('general-page')).toBeInTheDocument();
+    });
+});
+
+// ─── Detail request failure logging ───────────────────────────────────────────
+
+describe('ApiDetailLayout — detail request failure logging', () => {
+    let warnSpy: jest.SpyInstance;
+    let errorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+        (useApiDetail as jest.Mock).mockReturnValue({ data: null, isLoading: false });
+    });
+
+    it('warns with the api id when the detail request is forbidden', () => {
+        const forbidden = { status: 403 };
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: false, isError: true, error: forbidden });
+
+        renderLayout('abc-123');
+
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith('[ApiDetail] User lacks permission to read API', 'abc-123', forbidden);
+        expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ['a server error', { status: 500 }],
+        ['a not-found error', { status: 404 }],
+        ['a missing error object', null],
+    ])('logs an error with the api id for %s', (_label, failure) => {
+        (useApiDetail as jest.Mock).mockReturnValue({ data: undefined, isLoading: false, isError: true, error: failure });
+
+        renderLayout('abc-123');
+
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        expect(errorSpy).toHaveBeenCalledWith('[ApiDetail] Failed to load API', 'abc-123', failure);
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('logs nothing when the detail request succeeds', () => {
+        (useApiDetail as jest.Mock).mockReturnValue({
+            data: { id: 'abc-123', name: 'My API' },
+            isLoading: false,
+            isError: false,
+            error: null,
+        });
+
+        renderLayout('abc-123');
+
+        expect(warnSpy).not.toHaveBeenCalled();
+        expect(errorSpy).not.toHaveBeenCalled();
     });
 });

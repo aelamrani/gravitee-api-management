@@ -1,0 +1,74 @@
+/*
+ * Copyright © 2015 The Gravitee team (http://gravitee.io)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import type { EnvironmentScoringOverview } from '../types/scoring';
+
+const DATE_AGO_INTERVALS = [
+    ['year', 31_536_000],
+    ['month', 2_592_000],
+    ['week', 604_800],
+    ['day', 86_400],
+    ['hour', 3600],
+    ['minute', 60],
+    ['second', 1],
+] as const;
+
+export type ScoreTone = 'success' | 'warning' | 'error';
+
+export const SCORE_PILL_CLASS: Record<ScoreTone, string> = {
+    success: 'border-success/20 text-success bg-success/10',
+    warning: 'text-warning border-warning/30 bg-warning/10',
+    error: 'border-destructive/20 text-destructive bg-destructive/10',
+};
+
+export function formatScorePercent(score: number): string {
+    return `${Math.round(score * 100)}%`;
+}
+
+/** Classic Console `dateAgo` pipe — always relative, including beyond one week. */
+export function formatDateAgo(value: string | number | Date | undefined, now = Date.now()): string {
+    if (value === undefined || value === null || value === '') return '';
+    const then = new Date(value).getTime();
+    if (Number.isNaN(then)) return String(value);
+    const seconds = Math.floor((now - then) / 1000);
+    if (seconds < 29) return 'just now';
+    for (const [unit, size] of DATE_AGO_INTERVALS) {
+        const count = Math.floor(seconds / size);
+        if (count > 0) {
+            return count === 1 ? `${count} ${unit} ago` : `${count} ${unit}s ago`;
+        }
+    }
+    return String(value);
+}
+
+export function scoreTone(score: number): ScoreTone {
+    if (score >= 0.8) return 'success';
+    if (score >= 0.4) return 'warning';
+    return 'error';
+}
+
+/** Classic Console treats a missing or negative score as "Not available". */
+export function isScoreAvailable(score: number | null | undefined): score is number {
+    return score !== null && score !== undefined && score >= 0;
+}
+
+export function isApiScoreEnabled(config: { apiScore?: { enabled?: boolean } } | null | undefined): boolean {
+    return Boolean(config?.apiScore?.enabled);
+}
+
+/** Classic Console hides the Overview stats when `overview.score == null`. */
+export function hasOverviewScore(overview: EnvironmentScoringOverview | null | undefined): overview is EnvironmentScoringOverview {
+    return overview !== null && overview !== undefined && overview.score !== null && overview.score !== undefined;
+}

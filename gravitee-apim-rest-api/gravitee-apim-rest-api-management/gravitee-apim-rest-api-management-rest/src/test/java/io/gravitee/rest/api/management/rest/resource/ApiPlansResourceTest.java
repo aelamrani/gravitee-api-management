@@ -57,7 +57,7 @@ public class ApiPlansResourceTest extends AbstractResourceTest {
 
     @BeforeEach
     public void init() {
-        Mockito.reset(planService, apiService, apiSearchServiceV4, groupService);
+        Mockito.reset(planService, apiService, apiSearchServiceV4, groupService, accessControlService);
         when(
             permissionService.hasPermission(
                 any(ExecutionContext.class),
@@ -246,6 +246,28 @@ public class ApiPlansResourceTest extends AbstractResourceTest {
     }
 
     @Test
+    void should_return_403_when_getting_plans_of_public_api_exposed_in_no_portal_without_permission() {
+        withoutPlanOrLogPermission();
+        when(accessControlService.canConsumeApiFromPortal(any(ExecutionContext.class), any(ApiEntity.class))).thenReturn(false);
+
+        final Response response = envTarget().path(API).path("plans").request().get();
+
+        assertEquals(FORBIDDEN_403, response.getStatus());
+        verify(planService, never()).findByApi(any(), any());
+    }
+
+    @Test
+    void should_return_403_when_getting_a_plan_of_public_api_exposed_in_no_portal_without_permission() {
+        withoutPlanOrLogPermission();
+        when(accessControlService.canConsumeApiFromPortal(any(ExecutionContext.class), any(ApiEntity.class))).thenReturn(false);
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).request().get();
+
+        assertEquals(FORBIDDEN_403, response.getStatus());
+        verify(planService, never()).findById(any(), any());
+    }
+
+    @Test
     public void shouldGetApiPlansForV2Api() {
         PlanEntity publishedPlan = buildPlan("published-plan", PlanStatus.PUBLISHED, 1);
         PlanEntity stagingPlan = buildPlan("staging-plan", PlanStatus.STAGING, 2);
@@ -316,6 +338,98 @@ public class ApiPlansResourceTest extends AbstractResourceTest {
 
         assertEquals(NO_CONTENT_204, response.getStatus());
         verify(planService, times(1)).delete(eq(GraviteeContext.getExecutionContext()), eq(PLAN));
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenGettingAnApiProductPlan() {
+        mockApiProductPlan();
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).request().get();
+
+        assertEquals(BAD_REQUEST_400, response.getStatus());
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenUpdatingAnApiProductPlan() {
+        mockApiProductPlan();
+
+        UpdatePlanEntity updatePlanEntity = new UpdatePlanEntity();
+        updatePlanEntity.setId(PLAN);
+        updatePlanEntity.setName("updated-plan");
+        updatePlanEntity.setDescription("updated-description");
+        updatePlanEntity.setValidation(PlanValidationType.AUTO);
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).request().put(Entity.json(updatePlanEntity));
+
+        assertEquals(BAD_REQUEST_400, response.getStatus());
+        verify(planService, never()).update(any(), any());
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenDeletingAnApiProductPlan() {
+        mockApiProductPlan();
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).request().delete();
+
+        assertEquals(BAD_REQUEST_400, response.getStatus());
+        verify(planService, never()).delete(any(), any());
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenClosingAnApiProductPlan() {
+        mockApiProductPlan();
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).path("_close").request().post(Entity.json(""));
+
+        assertEquals(BAD_REQUEST_400, response.getStatus());
+        verify(planService, never()).close(any(), any());
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenPublishingAnApiProductPlan() {
+        mockApiProductPlan();
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).path("_publish").request().post(Entity.json(""));
+
+        assertEquals(BAD_REQUEST_400, response.getStatus());
+        verify(planService, never()).publish(any(), any());
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenDeprecatingAnApiProductPlan() {
+        mockApiProductPlan();
+
+        final Response response = envTarget().path(API).path("plans").path(PLAN).path("_deprecate").request().post(Entity.json(""));
+
+        assertEquals(BAD_REQUEST_400, response.getStatus());
+        verify(planService, never()).deprecate(any(), any());
+    }
+
+    private void mockApiProductPlan() {
+        PlanEntity apiProductPlan = new PlanEntity();
+        apiProductPlan.setId(PLAN);
+        apiProductPlan.setReferenceId("an-api-product");
+        apiProductPlan.setReferenceType(GenericPlanEntity.ReferenceType.API_PRODUCT);
+        when(planService.findById(GraviteeContext.getExecutionContext(), PLAN)).thenReturn(apiProductPlan);
+    }
+
+    private void withoutPlanOrLogPermission() {
+        when(
+            permissionService.hasPermission(
+                any(ExecutionContext.class),
+                eq(RolePermission.API_PLAN),
+                eq(API),
+                any(RolePermissionAction[].class)
+            )
+        ).thenReturn(false);
+        when(
+            permissionService.hasPermission(
+                any(ExecutionContext.class),
+                eq(RolePermission.API_LOG),
+                eq(API),
+                any(RolePermissionAction[].class)
+            )
+        ).thenReturn(false);
     }
 
     private void mockLegacyApi() {

@@ -60,7 +60,6 @@ public class UpgraderOrder {
     public static final int ENVIRONMENTS_DEFAULT_PORTAL_PAGE_UPGRADER = 711;
     public static final int ENVIRONMENTS_DEFAULT_PORTAL_NAVIGATION_ITEMS_UPGRADER = 712;
     public static final int APPLICATION_CLIENT_CERTIFICATE_MIGRATION_UPGRADER = 713;
-    public static final int ENVIRONMENTS_DEFAULT_SUBSCRIPTION_FORM_UPGRADER = 714;
     public static final int PORTAL_NAVIGATION_ITEM_ROOT_ID_UPGRADER = 715;
     public static final int TAG_KEY_UPGRADER = 716;
     public static final int TENANT_KEY_UPGRADER = 717;
@@ -71,7 +70,9 @@ public class UpgraderOrder {
     public static final int CLASSIC_CATEGORIES_MIGRATION_UPGRADER = 722;
     public static final int PORTAL_NAVIGATION_STRUCTURE_UPGRADER = 723;
     public static final int PORTAL_NAVIGATION_ITEM_AUTOMATION_METADATA_UPGRADER = 724;
-    public static final int SUBSCRIPTION_FORM_PAGE_CONTENT_UPGRADER = 725;
+    public static final int PORTAL_NAVIGATION_ITEM_API_OWNED_REKEY_UPGRADER = 725;
+    public static final int PORTAL_NAVIGATION_ITEM_API_OWNED_CONSOLE_MIGRATION_UPGRADER = 726;
+    public static final int ENVIRONMENTS_DEFAULT_APIS_FOLDER_UPGRADER = 727;
     public static final int CLUSTER_ROLES_UPGRADER = 900;
     public static final int CLUSTER_CROSS_ID_UPGRADER = 901;
     public static final int API_ENDPOINT_WEIGHT_UPGRADER = 560;

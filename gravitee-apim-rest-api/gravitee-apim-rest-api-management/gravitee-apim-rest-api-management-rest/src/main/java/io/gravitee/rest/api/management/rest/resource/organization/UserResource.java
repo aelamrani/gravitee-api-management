@@ -212,7 +212,7 @@ public class UserResource extends AbstractResource {
         description = "User must have the ORGANIZATION_USERS[UPDATE] permission to use this service"
     )
     @ApiResponse(responseCode = "204", description = "User's password reset")
-    @ApiResponse(responseCode = "400", description = "Unsupported reset target")
+    @ApiResponse(responseCode = "400", description = "Unsupported reset target, or no Gamma URL configured")
     @ApiResponse(responseCode = "404", description = "User not found")
     @ApiResponse(responseCode = "500", description = "Internal server error")
     @Permissions(
@@ -338,6 +338,7 @@ public class UserResource extends AbstractResource {
         description = "Processed user",
         content = @Content(mediaType = APPLICATION_JSON, schema = @Schema(implementation = UserEntity.class))
     )
+    @ApiResponse(responseCode = "400", description = "No Gamma URL is configured, so the activation link cannot be built")
     @ApiResponse(responseCode = "404", description = "User not found")
     @ApiResponse(responseCode = "500", description = "Internal server error")
     public Response validateRegistration(boolean accepted) {

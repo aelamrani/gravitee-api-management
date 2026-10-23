@@ -13,23 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import {
-    formatAddMembersResultMessage,
-    formatRoleLabel,
-    getApplicationRole,
-    getGroupMemberRole,
-    isMemberPrimaryOwner,
-} from './memberHelpers';
+import { getApplicationRole, isMemberPrimaryOwner } from './memberHelpers';
 import type { ApplicationUiMember } from '../../types/applicationMembers.types';
 
 describe('memberHelpers', () => {
-    describe('formatRoleLabel', () => {
-        it('formats underscore-separated roles', () => {
-            expect(formatRoleLabel('PRIMARY_OWNER')).toBe('Primary Owner');
-            expect(formatRoleLabel('USER')).toBe('User');
-        });
-    });
-
     describe('getApplicationRole', () => {
         it('prefers APPLICATION scope role', () => {
             const member: ApplicationUiMember = {
@@ -72,50 +59,6 @@ describe('memberHelpers', () => {
                     roles: [{ name: 'USER', scope: 'APPLICATION' }],
                 }),
             ).toBe(false);
-        });
-    });
-
-    describe('formatAddMembersResultMessage', () => {
-        const alice = { reference: 'ref-a', displayName: 'Alice' };
-        const bob = { reference: 'ref-b', displayName: 'Bob' };
-
-        it('describes partial success with failed member names', () => {
-            expect(
-                formatAddMembersResultMessage(5, 2, [
-                    { user: alice, reason: 'Conflict' },
-                    { user: bob, reason: 'Forbidden' },
-                ]),
-            ).toBe('Added 2 of 5 members. Failed to add: Alice (Conflict), Bob (Forbidden).');
-        });
-
-        it('describes total failure for multiple members', () => {
-            expect(
-                formatAddMembersResultMessage(2, 0, [
-                    { user: alice, reason: 'Conflict' },
-                    { user: bob, reason: 'Forbidden' },
-                ]),
-            ).toBe('Failed to add 2 members: Alice (Conflict), Bob (Forbidden).');
-        });
-
-        it('describes single-member failure with API reason', () => {
-            expect(formatAddMembersResultMessage(1, 0, [{ user: alice, reason: 'Member already exists' }])).toBe(
-                'Failed to add member: Member already exists',
-            );
-        });
-    });
-
-    describe('getGroupMemberRole', () => {
-        it('prefers GROUP scope role', () => {
-            expect(getGroupMemberRole({ roles: { GROUP: 'OWNER', APPLICATION: 'USER' } })).toBe('OWNER');
-        });
-
-        it('falls back to APPLICATION then first value', () => {
-            expect(getGroupMemberRole({ roles: { APPLICATION: 'USER' } })).toBe('USER');
-            expect(getGroupMemberRole({ roles: { OTHER: 'ADMIN' } })).toBe('ADMIN');
-        });
-
-        it('returns em dash when roles are empty', () => {
-            expect(getGroupMemberRole({ roles: {} })).toBe('—');
         });
     });
 });

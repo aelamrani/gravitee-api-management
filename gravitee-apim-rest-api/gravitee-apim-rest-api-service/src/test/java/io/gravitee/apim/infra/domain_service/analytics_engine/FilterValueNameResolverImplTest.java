@@ -17,7 +17,9 @@ package io.gravitee.apim.infra.domain_service.analytics_engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
@@ -32,6 +34,7 @@ import io.gravitee.apim.core.application.crud_service.ApplicationCrudService;
 import io.gravitee.apim.core.plan.crud_service.PlanCrudService;
 import io.gravitee.apim.core.plan.model.Plan;
 import io.gravitee.rest.api.model.BaseApplicationEntity;
+import io.gravitee.rest.api.model.v4.plan.GenericPlanEntity;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -114,9 +117,11 @@ class FilterValueNameResolverImplTest {
             var app1 = new BaseApplicationEntity();
             app1.setId("app-1");
             app1.setName("My App 1");
+            app1.setEnvironmentId(ENVIRONMENT_ID);
             var app2 = new BaseApplicationEntity();
             app2.setId("app-2");
             app2.setName("My App 2");
+            app2.setEnvironmentId(ENVIRONMENT_ID);
 
             when(applicationCrudService.findByIds(ids, "env-id")).thenReturn(List.of(app1, app2));
 
@@ -127,6 +132,57 @@ class FilterValueNameResolverImplTest {
                 .containsEntry("app-2", "My App 2")
                 .containsEntry("1", "Unknown")
                 .hasSize(3);
+        }
+
+        @Test
+        void should_not_look_up_api_products_without_environment() {
+            var result = resolver.resolveNames(null, FilterSpec.Name.API_PRODUCT, List.of("prod-1"));
+
+            assertThat(result).isEmpty();
+            verifyNoInteractions(apiProductQueryService);
+        }
+
+        @Test
+        void should_label_a_plan_with_its_api() {
+            var ids = List.of("plan-1", "plan-2");
+            when(planCrudService.findByIds(ids)).thenReturn(
+                List.of(anApiPlan("plan-1", "Test", "api-1"), anApiPlan("plan-2", "Test", "api-2"))
+            );
+            when(apiCrudService.findByIds(argThat(apiIds -> Set.copyOf(apiIds).equals(Set.of("api-1", "api-2"))))).thenReturn(
+                List.of(Api.builder().id("api-1").name("Payments API").build(), Api.builder().id("api-2").name("Petstore API").build())
+            );
+
+            var result = resolver.resolveNames(ENVIRONMENT_ID, FilterSpec.Name.PLAN, ids);
+
+            assertThat(result).containsEntry("plan-1", "Test · Payments API").containsEntry("plan-2", "Test · Petstore API").hasSize(2);
+        }
+
+        @Test
+        void should_label_an_api_product_plan_with_its_api_product() {
+            var plan = Plan.builder()
+                .id("plan-1")
+                .name("Gold")
+                .referenceId("prod-1")
+                .referenceType(GenericPlanEntity.ReferenceType.API_PRODUCT)
+                .build();
+            when(apiProductQueryService.findByEnvironmentIdAndIdIn(ENVIRONMENT_ID, Set.of("prod-1"))).thenReturn(
+                Set.of(ApiProduct.builder().id("prod-1").name("Payments bundle").build())
+            );
+
+            var result = resolver.planLabels(ENVIRONMENT_ID, List.of(plan));
+
+            assertThat(result).containsEntry("plan-1", "Gold · Payments bundle").hasSize(1);
+            verifyNoInteractions(apiCrudService);
+        }
+
+        @Test
+        void should_keep_the_bare_name_of_a_plan_whose_api_is_gone() {
+            var plan = anApiPlan("plan-1", "Test", "deleted-api");
+            when(apiCrudService.findByIds(List.of("deleted-api"))).thenReturn(List.of());
+
+            var result = resolver.planLabels(ENVIRONMENT_ID, List.of(plan));
+
+            assertThat(result).containsEntry("plan-1", "Test");
         }
 
         @Test
@@ -254,5 +310,9 @@ class FilterValueNameResolverImplTest {
 
             assertThat(result).isEmpty();
         }
+    }
+
+    private static Plan anApiPlan(String id, String name, String apiId) {
+        return Plan.builder().id(id).name(name).referenceId(apiId).referenceType(GenericPlanEntity.ReferenceType.API).build();
     }
 }

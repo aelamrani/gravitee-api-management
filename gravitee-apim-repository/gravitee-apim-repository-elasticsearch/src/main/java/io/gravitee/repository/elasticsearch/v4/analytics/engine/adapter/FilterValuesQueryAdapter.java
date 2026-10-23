@@ -15,6 +15,7 @@
  */
 package io.gravitee.repository.elasticsearch.v4.analytics.engine.adapter;
 
+import io.gravitee.repository.elasticsearch.v4.shared.EntrypointScopeClause;
 import io.gravitee.repository.log.v4.model.analytics.FilterValuesQuery;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 public class FilterValuesQueryAdapter {
 
     private static final String API_ID_FIELD = "api-id";
+    private static final String API_PRODUCT_ID_FIELD = "api-product-id";
 
     public String adapt(FilterValuesQuery query) {
         var root = new JsonObject();
@@ -45,6 +47,26 @@ public class FilterValuesQueryAdapter {
             } else {
                 boolFilter.add(JsonObject.of("terms", JsonObject.of(API_ID_FIELD, new JsonArray(new ArrayList<>(query.apiIds())))));
             }
+        }
+
+        if (query.apiProductId() != null) {
+            boolFilter.add(JsonObject.of("term", JsonObject.of(API_PRODUCT_ID_FIELD, query.apiProductId())));
+        }
+
+        if (query.values() != null) {
+            boolFilter.add(
+                query.values().isEmpty()
+                    ? JsonObject.of("match_none", JsonObject.of())
+                    : JsonObject.of("terms", JsonObject.of(query.esFieldName(), new JsonArray(new ArrayList<>(query.values()))))
+            );
+        }
+
+        if (query.trafficScope() != null) {
+            boolFilter.add(
+                EntrypointScopeClause.trafficScope(query.trafficScope(), apiIds ->
+                    JsonObject.of("terms", JsonObject.of(API_ID_FIELD, new JsonArray(apiIds)))
+                )
+            );
         }
 
         if (!boolFilter.isEmpty()) {

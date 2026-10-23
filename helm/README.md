@@ -164,9 +164,9 @@ If neither `mongo.uri` or `mongo.servers` are provided, you have to define the f
 
 ### Mongo ReplicaSet
 
-| Parameter                    | Description                           | Default |
-| ---------------------------- | ------------------------------------- | ------- |
-| `mongodb-replicaset.enabled` | Enable deployment of Mongo replicaset | `false` |
+| Parameter         | Description                                                                                                                              | Default |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `mongodb.enabled` | **Deprecated.** Enable deployment of Mongo replicaset. Removed in APIM 4.15: deploy MongoDB outside this chart and point `mongo.*` at it | `false` |
 
 See [MongoDB replicaset](https://artifacthub.io/packages/helm/bitnami/mongodb) for detailed documentation on helm chart.
 
@@ -191,9 +191,9 @@ See [MongoDB replicaset](https://artifacthub.io/packages/helm/bitnami/mongodb) f
 
 ### Elasticsearch cluster
 
-| Parameter               | Description                                | Default |
-| ----------------------- | ------------------------------------------ | ------- |
-| `elasticsearch.enabled` | Enable deployment of Elasticsearch cluster | `false` |
+| Parameter               | Description                                                                                                                                      | Default |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| `elasticsearch.enabled` | **Deprecated.** Enable deployment of Elasticsearch cluster. Removed in APIM 4.15: deploy Elasticsearch outside this chart and point `es.*` at it | `false` |
 
 See [Elasticsearch](https://artifacthub.io/packages/helm/bitnami/elasticsearch) for detailed documentation on optional requirements helm chart.
 
@@ -338,6 +338,8 @@ See [Elasticsearch](https://artifacthub.io/packages/helm/bitnami/elasticsearch) 
 | `api.resources.requests.memory`                       | K8s pod deployment requests definition for memory                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `512Mi`                                                                                                                                                     |
 | `api.lifecycle.postStart`                             | K8s pod deployment [postStart](https://kubernetes.io/docs/tasks/configure-pod-container/attach-handler-lifecycle-event/#define-poststart-and-prestop-handlers) command definition                                                                                                                                                                                                                                                                                                                                                                     | `null`                                                                                                                                                      |
 | `api.lifecycle.preStop`                               | K8s pod deployment [preStop](https://kubernetes.io/docs/tasks/configure-pod-container/attach-handler-lifecycle-event/#define-poststart-and-prestop-handlers) command definition                                                                                                                                                                                                                                                                                                                                                                       | `null`                                                                                                                                                      |
+| `installation.standalone.edge-reactor.urls`           | Edge reactor URL proposed to Edge Management per environment, as a list of `envId` and `url`. Takes precedence over `installation.standalone.edge-reactor.url` and `installation.edge.reactorUrl`. Not rendered in a multi-tenant installation. Only proposed when an environment is set up: the URL stored for the environment stays authoritative.                                                                                                                                                                                                  | `null`                                                                                                                                                      |
+| `installation.standalone.edge-reactor.url`            | Edge reactor URL proposed to Edge Management for the `DEFAULT` environment only, when no `urls` entry matches it. Takes precedence over `installation.edge.reactorUrl`. Not rendered in a multi-tenant installation. Only proposed when an environment is set up: the URL stored for the environment stays authoritative.                                                                                                                                                                                                                             | `null`                                                                                                                                                      |
 
 ### Gravitee Gateway
 

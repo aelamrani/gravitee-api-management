@@ -30,13 +30,16 @@ for POM in "$POM_FILE" "$DISTRIBUTION_POM_FILE"; do
     rm -f "$POM.bak"
 done
 
+# The pin follows: the branch assembles the core it publishes itself until a real one is released,
+# which advances the pin onto it.
+set_core_pin "${ALPHA_VERSION_SNAPSHOT}"
+
 # portal-openapi.yaml: update version string
 sed -i.bak "s|version: \"${REVISION}-SNAPSHOT\"|version: \"${ALPHA_VERSION_SNAPSHOT}\"|" "$PORTAL_OPENAPI"
 rm -f "$PORTAL_OPENAPI.bak"
 
-# helm/Chart.yaml: update version without -SNAPSHOT
-sed -i.bak "s|version: ${REVISION}|version: ${ALPHA_VERSION}|" "$HELM_CHART"
-rm -f "$HELM_CHART.bak"
+# helm/Chart.yaml: the alpha the branch publishes, without -SNAPSHOT
+set_chart_version "${ALPHA_VERSION}"
 
 # Commit
 git -C "$REPO_ROOT" add pom.xml \
@@ -46,6 +49,7 @@ git -C "$REPO_ROOT" add pom.xml \
 
 git -C "$REPO_ROOT" commit -m "chore: prepare first alpha version"
 
-git -C "$REPO_ROOT" push -u origin "$BRANCH_NAME"
+git -C "$REPO_ROOT" --no-pager show HEAD
+run_confirmed git -C "$REPO_ROOT" push -u origin "$BRANCH_NAME"
 
 echo "Changes committed and pushed on branch '$BRANCH_NAME'."

@@ -25,6 +25,7 @@ import inmemory.ApiCrudServiceInMemory;
 import inmemory.ApiExposedEntrypointDomainServiceInMemory;
 import inmemory.ApplicationCrudServiceInMemory;
 import inmemory.CRDMembersDomainServiceInMemory;
+import inmemory.ClientCertificateCrudServiceInMemory;
 import inmemory.EventLatestCrudInMemory;
 import inmemory.GroupCrudServiceInMemory;
 import inmemory.GroupQueryServiceInMemory;
@@ -49,6 +50,7 @@ import io.gravitee.apim.core.analytics_engine.use_case.GetApiMetricSpecUseCase;
 import io.gravitee.apim.core.analytics_engine.use_case.GetApiSpecUseCase;
 import io.gravitee.apim.core.analytics_engine.use_case.GetMetricFacetSpecUseCase;
 import io.gravitee.apim.core.analytics_engine.use_case.GetMetricFilterSpecUseCase;
+import io.gravitee.apim.core.api.crud_service.ApiCrudService;
 import io.gravitee.apim.core.api.domain_service.ApiExportDomainService;
 import io.gravitee.apim.core.api.domain_service.ApiImportDomainService;
 import io.gravitee.apim.core.api.domain_service.ApiMetadataDecoderDomainService;
@@ -79,6 +81,7 @@ import io.gravitee.apim.core.apim.service_provider.ApimProductInfo;
 import io.gravitee.apim.core.application.domain_service.ValidateApplicationCRDDomainService;
 import io.gravitee.apim.core.application.domain_service.ValidateApplicationSettingsDomainService;
 import io.gravitee.apim.core.application.use_case.ImportApplicationCRDUseCase;
+import io.gravitee.apim.core.application_certificate.crud_service.ClientCertificateCrudService;
 import io.gravitee.apim.core.application_certificate.domain_service.ClientCertificateDomainService;
 import io.gravitee.apim.core.application_certificate.domain_service.ClientCertificateValidationDomainService;
 import io.gravitee.apim.core.application_certificate.domain_service.MtlsSubscriptionSyncDomainService;
@@ -135,6 +138,7 @@ import io.gravitee.apim.core.newtai.service_provider.NewtAIProvider;
 import io.gravitee.apim.core.notification.crud_service.NotificationConfigCrudService;
 import io.gravitee.apim.core.parameters.query_service.ParametersQueryService;
 import io.gravitee.apim.core.permission.domain_service.PermissionDomainService;
+import io.gravitee.apim.core.plan.crud_service.PlanCrudService;
 import io.gravitee.apim.core.plan.domain_service.CreatePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.PlanSynchronizationService;
 import io.gravitee.apim.core.plan.domain_service.UpdatePlanDomainService;
@@ -161,19 +165,23 @@ import io.gravitee.apim.core.portal_page.query_service.PortalPageContentQuerySer
 import io.gravitee.apim.core.portal_page.service_provider.PortalNavigationTemplatingService;
 import io.gravitee.apim.core.portal_page.use_case.CreateDefaultPortalNavigationItemsUseCase;
 import io.gravitee.apim.core.portal_page.use_case.CreateOrUpdateApiDocumentationUseCase;
+import io.gravitee.apim.core.portal_page.use_case.CreateOrUpdateApiLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.CreateOrUpdatePortalDocumentationUseCase;
 import io.gravitee.apim.core.portal_page.use_case.CreateOrUpdatePortalLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.CreatePortalNavigationItemUseCase;
 import io.gravitee.apim.core.portal_page.use_case.DeleteApiDocumentationUseCase;
+import io.gravitee.apim.core.portal_page.use_case.DeleteApiLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.DeletePortalDocumentationUseCase;
 import io.gravitee.apim.core.portal_page.use_case.DeletePortalLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.GetApiDocumentationUseCase;
+import io.gravitee.apim.core.portal_page.use_case.GetApiLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.GetPortalDocumentationUseCase;
 import io.gravitee.apim.core.portal_page.use_case.GetPortalLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.GetPortalPageContentUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ListPortalNavigationItemsUseCase;
 import io.gravitee.apim.core.portal_page.use_case.UpdatePortalNavigationItemUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ValidateApiDocumentationUseCase;
+import io.gravitee.apim.core.portal_page.use_case.ValidateApiLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ValidatePortalDocumentationUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ValidatePortalLinkUseCase;
 import io.gravitee.apim.core.promotion.service_provider.CockpitPromotionServiceProvider;
@@ -225,6 +233,7 @@ import io.gravitee.apim.infra.adapter.SubscriptionAdapterImpl;
 import io.gravitee.apim.infra.domain_service.analytics_engine.definition.AnalyticsDefinitionYAMLQueryService;
 import io.gravitee.apim.infra.domain_service.analytics_engine.processors.UnitEnrichmentPostProcessorImpl;
 import io.gravitee.apim.infra.domain_service.application.ValidateApplicationSettingsDomainServiceImpl;
+import io.gravitee.apim.infra.domain_service.application_certificates.ClientCertificateValidationDomainServiceImpl;
 import io.gravitee.apim.infra.domain_service.documentation.ValidatePageSourceDomainServiceImpl;
 import io.gravitee.apim.infra.domain_service.group.ValidateGroupCRDDomainServiceImpl;
 import io.gravitee.apim.infra.domain_service.json_patch.JsonMergePatchServiceImpl;
@@ -774,9 +783,17 @@ public class ResourceContextConfiguration {
     public ValidateApplicationSettingsDomainService validateApplicationSettingsDomainService(
         ApplicationRepository applicationRepository,
         ApplicationTypeService applicationTypeService,
-        ParameterService parameterService
+        ParameterService parameterService,
+        ClientCertificateValidationDomainService clientCertificateValidationDomainService,
+        ClientCertificateCrudService clientCertificateCrudService
     ) {
-        return new ValidateApplicationSettingsDomainServiceImpl(applicationRepository, applicationTypeService, parameterService);
+        return new ValidateApplicationSettingsDomainServiceImpl(
+            applicationRepository,
+            applicationTypeService,
+            parameterService,
+            clientCertificateValidationDomainService,
+            clientCertificateCrudService
+        );
     }
 
     @Bean
@@ -920,7 +937,9 @@ public class ResourceContextConfiguration {
         AcceptSubscriptionDomainService acceptSubscriptionDomainService,
         CloseSubscriptionDomainService closeSubscriptionDomainService,
         ReconcileApiKeysDomainService reconcileApiKeysDomainService,
-        SubscriptionCrudService subscriptionCrudService
+        SubscriptionCrudService subscriptionCrudService,
+        ApiCrudService apiCrudService,
+        PlanCrudService planCrudService
     ) {
         return new SubscriptionCRDDomainServiceImpl(
             subscriptionService,
@@ -928,7 +947,9 @@ public class ResourceContextConfiguration {
             acceptSubscriptionDomainService,
             closeSubscriptionDomainService,
             reconcileApiKeysDomainService,
-            subscriptionCrudService
+            subscriptionCrudService,
+            apiCrudService,
+            planCrudService
         );
     }
 
@@ -1170,13 +1191,15 @@ public class ResourceContextConfiguration {
     @Bean
     public PortalNavigationItemValidatorService portalNavigationItemValidatorService(
         PortalNavigationItemsQueryService portalNavigationItemsQueryService,
-        PortalPageContentQueryService portalPageContentQueryService
+        PortalPageContentQueryService portalPageContentQueryService,
+        ApiCrudServiceInMemory apiCrudServiceInMemory
     ) {
         return new PortalNavigationItemValidatorService(
             portalNavigationItemsQueryService,
             portalPageContentQueryService,
             mock(io.gravitee.apim.core.api_product.query_service.ApiProductQueryService.class),
-            new PortalNavigationItemSourceDomainServiceInMemory()
+            new PortalNavigationItemSourceDomainServiceInMemory(),
+            apiCrudServiceInMemory
         );
     }
 
@@ -1320,8 +1343,15 @@ public class ResourceContextConfiguration {
     }
 
     @Bean
-    public ClientCertificateValidationDomainService clientCertificateValidationDomainService() {
-        return mock(ClientCertificateValidationDomainService.class);
+    public ClientCertificateCrudService clientCertificateCrudService() {
+        return new ClientCertificateCrudServiceInMemory();
+    }
+
+    @Bean
+    public ClientCertificateValidationDomainService clientCertificateValidationDomainService(
+        ClientCertificateCrudService clientCertificateCrudService
+    ) {
+        return new ClientCertificateValidationDomainServiceImpl(clientCertificateCrudService);
     }
 
     @Bean
@@ -1442,6 +1472,26 @@ public class ResourceContextConfiguration {
     @Bean
     public DeletePortalLinkUseCase deletePortalLinkUseCase() {
         return mock(DeletePortalLinkUseCase.class);
+    }
+
+    @Bean
+    public CreateOrUpdateApiLinkUseCase createOrUpdateApiLinkUseCase() {
+        return mock(CreateOrUpdateApiLinkUseCase.class);
+    }
+
+    @Bean
+    public ValidateApiLinkUseCase validateApiLinkUseCase() {
+        return mock(ValidateApiLinkUseCase.class);
+    }
+
+    @Bean
+    public GetApiLinkUseCase getApiLinkUseCase() {
+        return mock(GetApiLinkUseCase.class);
+    }
+
+    @Bean
+    public DeleteApiLinkUseCase deleteApiLinkUseCase() {
+        return mock(DeleteApiLinkUseCase.class);
     }
 
     @Bean

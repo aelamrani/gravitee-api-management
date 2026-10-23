@@ -12,10 +12,6 @@ parameters:
     type: boolean
     default: true
     description: Run in dry run mode?
-  docker_tag_as_latest:
-    type: boolean
-    default: false
-    description: Is this version the latest version available?
   graviteeio_version:
     type: string
     default: ""
@@ -84,6 +80,10 @@ commands:
               -u "bot:${AZURE_ARTIFACTS_PAT}" \
               "https://pkgs.dev.azure.com/graviteeio/packages/_packaging/gravitee/maven/v1/io/gravitee/canary/feed-canary/1.0.0/feed-canary-1.0.0.pom") || CODE=000
 
+            # job-setup's Maven check reads this to tell an outage here from its own settings wiring, and
+            # print only the cause that applies. A status code, so nothing the shell can expand.
+            echo "export AZURE_FEED_HTTP_CODE='${CODE}'" >> "$BASH_ENV"
+
             case "$CODE" in
               200) echo "The feed resolves the canary." ;;
               401) echo "401 — the feed rejected the token." >&2; exit 1 ;;
@@ -104,9 +104,9 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
-            - gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}
-            - gravitee-api-management-v15-<< parameters.jobName >>-master
+            - gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
+            - gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}
+            - gravitee-api-management-v16-<< parameters.jobName >>-master-
     description: Restore Maven cache for a dedicated job
   cmd-save-maven-job-cache:
     parameters:
@@ -118,11 +118,13 @@ commands:
       - run:
           name: Exclude all APIM artefacts from cache.
           command: rm -rf ~/.m2/repository/io/gravitee/apim
+          when: always
       - run:
           name: Drop failed resolution markers from cache.
           command: find ~/.m2 -name '*.lastUpdated' -delete
+          when: always
       - save_cache:
-          key: gravitee-api-management-v15-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
+          key: gravitee-api-management-v16-<< parameters.jobName >>-{{ .Branch }}-{{ checksum "pom.xml" }}
           paths:
             - ~/.m2
           when: always
@@ -142,14 +144,14 @@ commands:
       - restore_cache:
           name: Restore Yarn workspace cache
           keys:
-            - gravitee-api-management-v15-workspace-{{ .Branch }}-{{ checksum "yarn.lock" }}
-            - gravitee-api-management-v15-workspace-{{ .Branch }}
+            - gravitee-api-management-v16-workspace-{{ .Branch }}-{{ checksum "yarn.lock" }}
+            - gravitee-api-management-v16-workspace-{{ .Branch }}
       - run:
           name: Install workspace dependencies
           command: yarn install --frozen-lockfile
       - save_cache:
           name: Save Yarn workspace cache
-          key: gravitee-api-management-v15-workspace-{{ .Branch }}-{{ checksum "yarn.lock" }}
+          key: gravitee-api-management-v16-workspace-{{ .Branch }}-{{ checksum "yarn.lock" }}
           paths:
             - ./node_modules
 jobs:
@@ -188,15 +190,23 @@ jobs:
       - run:
           name: Check Maven resolves from the feed
           command: |-
-            if ! mvn -B -q -s .gravitee.settings.xml \
+            if ! mvn -B -q -N -s .gravitee.settings.xml \
               org.apache.maven.plugins:maven-dependency-plugin:3.8.1:get \
               -Dartifact=io.gravitee.canary:feed-canary:1.0.0:pom; then
               echo "Maven could not resolve the canary from the feed." >&2
-              echo "The token itself was accepted over HTTPS a step earlier, so what is left is the" >&2
-              echo "settings wiring: a <server> id that does not match the repository id, or" >&2
-              # Single quotes: the shell would try to expand this one, and a dot is not a valid
-              # variable name — the message would come out as a bad substitution instead.
-              echo '${env.AZURE_ARTIFACTS_PAT} not being interpolated.' >&2
+              # The HTTPS check one step above exported what the feed answered, so this prints the one
+              # cause that applies instead of leaving the reader to match two messages against each other.
+              if [ "${AZURE_FEED_HTTP_CODE}" = "200" ]; then
+                echo "The feed answered 200 to that check, so the token is accepted and what is left is the" >&2
+                echo "settings wiring: a <server> id that does not match the repository id, or" >&2
+                # Single quotes: the shell would try to expand this one, and a dot is not a valid
+                # variable name — the message would come out as a bad substitution instead.
+                echo '${env.AZURE_ARTIFACTS_PAT} not being interpolated.' >&2
+              else
+                echo "The feed answered HTTP ${AZURE_FEED_HTTP_CODE} to that check: this is that outage." >&2
+                echo "Artifactory takes over for the rest of the build, which is why that step carried on;" >&2
+                echo "the canary exists on the feed and nowhere else, so nothing can serve it here." >&2
+              fi
               exit 1
             fi
 
@@ -238,7 +248,7 @@ jobs:
       - cmd-install-yarn
       - cmd-azure-artifacts-token
       - run:
-          name: Build engine
+          name: Build core
           command: mvn -s .gravitee.settings.xml clean install --no-transfer-progress --update-snapshots -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=false -T 8 -P all-modules -DwithJavadoc
           environment:
             BUILD_ID: "1234"
@@ -255,7 +265,7 @@ jobs:
           paths:
             - ~/.m2/repository/io/gravitee/apim
             - ~/.m2/repository/io/gravitee/gamma
-          key: gravitee-api-management-v15-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+          key: gravitee-api-management-v16-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
           when: on_success
       - run:
           name: Archive the compiled rest-api classes
@@ -263,7 +273,7 @@ jobs:
       - save_cache:
           paths:
             - /tmp/rest-api-classes.tar
-          key: gravitee-api-management-v15-rest-api-classes-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+          key: gravitee-api-management-v16-rest-api-classes-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
           when: on_success
       - cmd-save-maven-job-cache:
           jobName: job-build
@@ -283,7 +293,7 @@ jobs:
           at: .
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
+            - gravitee-api-management-v16-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
       - run:
           name: Install CI project dependencies
           command: npm ci --prefer-offline --no-audit --no-fund
@@ -291,7 +301,7 @@ jobs:
       - save_cache:
           paths:
             - .circleci/ci/node_modules
-          key: gravitee-api-management-v15-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
+          key: gravitee-api-management-v16-check-graphene-versions-{{ checksum ".circleci/ci/package-lock.json" }}
       - run:
           name: Check graphene versions across bundled Gamma modules
           command: npx ts-node src/graphene-versions/check.ts
@@ -308,7 +318,7 @@ jobs:
           jobName: job-test-gamma
       - restore_cache:
           keys:
-            - gravitee-api-management-v15-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
+            - gravitee-api-management-v16-build-apim-{{ .Environment.CIRCLE_WORKFLOW_WORKSPACE_ID }}
       - cmd-azure-artifacts-token
       - run:
           name: Run Gamma tests
@@ -337,7 +347,7 @@ jobs:
           command: yarn nx run-many --target=lint --projects=gravitee-gamma-module-apim,gravitee-gamma-module-platform,gravitee-gamma-module-portals
       - run:
           name: Run unit tests
-          command: yarn nx run-many --target=test --projects=gravitee-gamma-module-apim,gravitee-gamma-module-platform,gravitee-gamma-module-portals --maxWorkers=2 --coverage
+          command: yarn nx run-many --target=test --projects=gravitee-gamma-module-apim,gravitee-gamma-module-platform,gravitee-gamma-module-portals --maxWorkers=2 --workerIdleMemoryLimit=512MB --coverage
       - cmd-notify-on-failure
       - store_test_results:
           path: gravitee-gamma/gravitee-gamma-module-apim/coverage/junit.xml

@@ -22,10 +22,12 @@ import {
     BoxesIcon,
     CloudIcon,
     DatabaseIcon,
+    EyeIcon,
     FileTextIcon,
     FingerprintIcon,
     GlobeIcon,
     KeyIcon,
+    KeyRoundIcon,
     LayersIcon,
     MailIcon,
     MessageSquareIcon,
@@ -33,7 +35,9 @@ import {
     ScrollTextIcon,
     ServerIcon,
     SettingsIcon,
+    ShieldCheckIcon,
     ShieldIcon,
+    UserIcon,
     UsersIcon,
     UsersRoundIcon,
     WaypointsIcon,
@@ -99,9 +103,11 @@ export const NAV_SECTIONS: PlatformNavSection[] = [
                 label: 'APIs & Assets',
                 items: [
                     { key: 'applications', title: ROUTES.applications.label, icon: AppWindowIcon },
+                    { key: 'api-score', title: ROUTES['api-score'].label, icon: ShieldCheckIcon },
                     { key: 'integrations', title: ROUTES.integrations.label, icon: WaypointsIcon },
                     { key: 'metadata', title: ROUTES.metadata.label, icon: DatabaseIcon },
                     { key: 'dictionaries', title: ROUTES.dictionaries.label, icon: BookOpenIcon },
+                    { key: 'user-fields', title: ROUTES['user-fields'].label, icon: UserIcon },
                     { key: 'shared-policy-groups', title: ROUTES['shared-policy-groups'].label, icon: LayersIcon },
                     { key: 'broadcasts', title: ROUTES.broadcasts.label, icon: MessageSquareIcon },
                 ],
@@ -109,7 +115,9 @@ export const NAV_SECTIONS: PlatformNavSection[] = [
             {
                 label: 'System & Security',
                 items: [
+                    { key: 'primary-owner-mode', title: ROUTES['primary-owner-mode'].label, icon: UsersRoundIcon },
                     { key: 'access-management', title: ROUTES['access-management'].label, icon: ShieldIcon },
+                    { key: 'api-review', title: ROUTES['api-review'].label, icon: EyeIcon },
                     { key: 'gateways', title: ROUTES.gateways.label, icon: ServerIcon },
                     { key: 'alerts', title: ROUTES.alerts.label, icon: BellIcon },
                     { key: 'notification-settings', title: ROUTES['notification-settings'].label, icon: MailIcon },
@@ -118,6 +126,7 @@ export const NAV_SECTIONS: PlatformNavSection[] = [
                     { key: 'environment-cors', title: ROUTES['environment-cors'].label, icon: GlobeIcon },
                     { key: 'api-logging', title: ROUTES['api-logging'].label, icon: FileTextIcon },
                     { key: 'security-plan-types', title: ROUTES['security-plan-types'].label, icon: KeyIcon },
+                    { key: 'client-registration', title: ROUTES['client-registration'].label, icon: KeyRoundIcon },
                     { key: 'environment-audit', title: ROUTES['environment-audit'].label, icon: ScrollTextIcon },
                 ],
             },
@@ -140,8 +149,12 @@ export const NAV_SECTIONS: PlatformNavSection[] = [
     },
 ];
 
-export function platformPrimaryNavItems(sections: readonly PlatformNavSection[]): NavItem[] {
-    return sections.map(section => ({ key: section.key, title: section.title, icon: section.icon }));
+/** A section links to its first visible item, the page selecting it navigates to. */
+export function platformPrimaryNavItems(sections: readonly PlatformNavSection[], hrefForItem: (itemKey: string) => string): NavItem[] {
+    return sections.map(section => {
+        const firstKey = firstNavItemKey(section);
+        return { key: section.key, title: section.title, icon: section.icon, href: firstKey ? hrefForItem(firstKey) : undefined };
+    });
 }
 
 export function findNavSectionKey(sections: readonly PlatformNavSection[], itemKey: string): PlatformNavSectionKey | undefined {

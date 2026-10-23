@@ -20,9 +20,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
+import io.gravitee.apim.core.analytics_engine.model.TrafficScope;
 import io.gravitee.repository.log.v4.api.AnalyticsRepository;
 import io.gravitee.repository.log.v4.model.analytics.FilterValuesQuery;
 import io.gravitee.repository.log.v4.model.analytics.FilterValuesResult;
@@ -30,6 +32,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
@@ -201,6 +205,30 @@ class FilterValuesQueryServiceImplTest {
     }
 
     @Test
+    void should_pass_the_traffic_scope_to_es_query() {
+        when(analyticsRepository.searchFilterValues(any(), any())).thenReturn(new FilterValuesResult(List.of("gw-1"), null, 1));
+
+        service.searchFilterValues(
+            ORG_ID,
+            ENV_ID,
+            FilterSpec.Name.GATEWAY,
+            null,
+            null,
+            1,
+            10,
+            null,
+            null,
+            Set.of("studio", "orders"),
+            new TrafficScope(Set.of("studio"), Set.of("mcp"))
+        );
+
+        verify(analyticsRepository).searchFilterValues(any(), queryCaptor.capture());
+        assertThat(queryCaptor.getValue().trafficScope()).isEqualTo(
+            new io.gravitee.repository.analytics.engine.api.query.TrafficScope(Set.of("studio"), Set.of("mcp"))
+        );
+    }
+
+    @Test
     void should_leave_api_ids_null_on_query_when_authorized_api_ids_not_provided() {
         when(analyticsRepository.searchFilterValues(any(), any())).thenReturn(new FilterValuesResult(List.of("gw-1"), null, 1));
 
@@ -208,6 +236,106 @@ class FilterValuesQueryServiceImplTest {
 
         verify(analyticsRepository).searchFilterValues(any(), queryCaptor.capture());
         assertThat(queryCaptor.getValue().apiIds()).isNull();
+    }
+
+    @Test
+    void should_keep_only_the_values_found_in_the_calls_of_the_authorized_apis() {
+        var from = Instant.parse("2026-01-01T00:00:00Z");
+        var to = Instant.parse("2026-01-02T00:00:00Z");
+        when(analyticsRepository.searchFilterValues(any(), any())).thenReturn(new FilterValuesResult(List.of("app-1"), null, 1));
+
+        var found = service.findValuesInCalls(
+            ORG_ID,
+            ENV_ID,
+            FilterSpec.Name.APPLICATION,
+            from,
+            to,
+            Set.of("app-1", "app-2"),
+            Set.of("api-1")
+        );
+
+        assertThat(found).containsExactly("app-1");
+        verify(analyticsRepository).searchFilterValues(any(), queryCaptor.capture());
+        var query = queryCaptor.getValue();
+        assertThat(query.esFieldName()).isEqualTo("application-id");
+        assertThat(query.values()).containsExactlyInAnyOrder("app-1", "app-2");
+        assertThat(query.apiIds()).containsExactly("api-1");
+        assertThat(query.size()).isEqualTo(2);
+        assertThat(query.from()).isEqualTo(from.toEpochMilli());
+        assertThat(query.to()).isEqualTo(to.toEpochMilli());
+    }
+
+    @Test
+    void should_keep_the_calls_made_through_the_api_product_only() {
+        when(analyticsRepository.searchFilterValues(any(), any())).thenReturn(new FilterValuesResult(List.of("app-1"), null, 1));
+
+        service.findValuesInCalls(ORG_ID, ENV_ID, FilterSpec.Name.APPLICATION, null, null, Set.of("app-1"), Set.of("api-1"), "product-1");
+        service.searchFilterValues(
+            ORG_ID,
+            ENV_ID,
+            FilterSpec.Name.APPLICATION,
+            null,
+            null,
+            1,
+            10,
+            null,
+            null,
+            Set.of("api-1"),
+            null,
+            "product-1"
+        );
+
+        verify(analyticsRepository, times(2)).searchFilterValues(any(), queryCaptor.capture());
+        assertThat(queryCaptor.getAllValues()).extracting(FilterValuesQuery::apiProductId).containsExactly("product-1", "product-1");
+    }
+
+    @Test
+    void should_split_many_values_into_bounded_queries_and_merge_what_they_find() {
+        var values = IntStream.range(0, 2_500)
+            .mapToObj(i -> "app-" + i)
+            .collect(Collectors.toSet());
+        when(analyticsRepository.searchFilterValues(any(), any())).thenAnswer(invocation -> {
+            FilterValuesQuery query = invocation.getArgument(1);
+            var inCalls = query
+                .values()
+                .stream()
+                .filter(value -> value.endsWith("7"))
+                .toList();
+            return new FilterValuesResult(inCalls, null, inCalls.size());
+        });
+
+        var found = service.findValuesInCalls(ORG_ID, ENV_ID, FilterSpec.Name.APPLICATION, null, null, values, Set.of("api-1"));
+
+        assertThat(found)
+            .hasSize(250)
+            .allSatisfy(value -> assertThat(value).endsWith("7"));
+        verify(analyticsRepository, times(3)).searchFilterValues(any(), queryCaptor.capture());
+        assertThat(queryCaptor.getAllValues()).allSatisfy(query -> {
+            assertThat(query.values()).hasSizeLessThanOrEqualTo(1_000);
+            assertThat(query.size()).isEqualTo(query.values().size());
+        });
+        assertThat(
+            queryCaptor
+                .getAllValues()
+                .stream()
+                .flatMap(query -> query.values().stream())
+        ).containsExactlyInAnyOrderElementsOf(values);
+    }
+
+    @Test
+    void should_find_no_value_without_querying_the_calls_when_no_api_is_authorized() {
+        var found = service.findValuesInCalls(ORG_ID, ENV_ID, FilterSpec.Name.APPLICATION, null, null, Set.of("app-1"), Set.of());
+
+        assertThat(found).isEmpty();
+        verifyNoInteractions(analyticsRepository);
+    }
+
+    @Test
+    void should_find_no_value_without_querying_the_calls_when_none_is_asked() {
+        var found = service.findValuesInCalls(ORG_ID, ENV_ID, FilterSpec.Name.APPLICATION, null, null, Set.of(), Set.of("api-1"));
+
+        assertThat(found).isEmpty();
+        verifyNoInteractions(analyticsRepository);
     }
 
     @ParameterizedTest
@@ -231,7 +359,10 @@ class FilterValuesQueryServiceImplTest {
             Arguments.of(FilterSpec.Name.ENTRYPOINT, "entrypoint-id"),
             Arguments.of(FilterSpec.Name.ERROR_KEY, "error-key"),
             Arguments.of(FilterSpec.Name.REQUEST_ID, "request-id"),
-            Arguments.of(FilterSpec.Name.TRANSACTION_ID, "transaction-id")
+            Arguments.of(FilterSpec.Name.TRANSACTION_ID, "transaction-id"),
+            // The field the analytics engine filters on (HTTPFieldResolver): `path` is declared but never written.
+            Arguments.of(FilterSpec.Name.HTTP_PATH, "path-info.keyword"),
+            Arguments.of(FilterSpec.Name.URI, "uri")
         );
     }
 }

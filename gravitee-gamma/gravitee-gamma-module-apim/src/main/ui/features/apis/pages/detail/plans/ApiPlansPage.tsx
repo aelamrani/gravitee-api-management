@@ -19,7 +19,8 @@ import { useParams } from 'react-router-dom';
 import { PlansPage } from './PlansPage';
 import { useApiDetailContext } from '../../../context/ApiDetailContext';
 import type { PlanContext } from '../../../types/plan';
-import { hasTcpListeners } from '../../../utils/apiHttpProxy';
+import { areAllListenersTcp } from '../../../utils/apiHttpProxy';
+import { isFederatedApi } from '../../../utils/federatedApi';
 
 export function ApiPlansPage() {
     const { apiId } = useParams<{ apiId: string }>();
@@ -36,7 +37,11 @@ export function ApiPlansPage() {
             canCreate={canCreate}
             canUpdate={canUpdate}
             canDelete={canDelete}
-            isTcpApi={hasTcpListeners(api)}
+            restrictToKeyless={areAllListenersTcp(api)}
+            isFederated={isFederatedApi(api)}
+            // `api` is null both while the detail query is in flight and while it is disabled because the
+            // environment has not resolved — a window `isLoading` reports as false.
+            isApiTypeUnknown={api === null}
         />
     );
 }

@@ -18,6 +18,7 @@ package io.gravitee.apim.core.portal_page.domain_service;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import fixtures.core.model.PortalNavigationItemFixtures;
+import fixtures.core.model.PortalPageContentFixtures;
 import inmemory.ApiCrudServiceInMemory;
 import inmemory.PortalNavigationItemSourceDomainServiceInMemory;
 import inmemory.PortalNavigationItemsCrudServiceInMemory;
@@ -26,14 +27,20 @@ import inmemory.PortalPageContentCrudServiceInMemory;
 import inmemory.PortalPageContentQueryServiceInMemory;
 import io.gravitee.apim.core.exception.TechnicalDomainException;
 import io.gravitee.apim.core.portal.model.PortalArea;
+import io.gravitee.apim.core.portal.model.PortalId;
 import io.gravitee.apim.core.portal.model.PortalVisibility;
 import io.gravitee.apim.core.portal_page.model.CreatePortalNavigationItem;
 import io.gravitee.apim.core.portal_page.model.GraviteeMarkdownPageContent;
+import io.gravitee.apim.core.portal_page.model.NavigationItemReference;
+import io.gravitee.apim.core.portal_page.model.PortalNavigationApi;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationFolder;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItem;
+import io.gravitee.apim.core.portal_page.model.PortalNavigationItemId;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItemSource;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItemType;
+import io.gravitee.apim.core.portal_page.model.PortalNavigationLink;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationPage;
+import io.gravitee.apim.core.portal_page.model.PortalPageContentId;
 import io.gravitee.apim.core.portal_page.model.PortalPageContentType;
 import io.gravitee.apim.core.portal_page.model.UpdatePortalNavigationItem;
 import io.gravitee.common.utils.TimeProvider;
@@ -49,9 +56,16 @@ import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
 public class PortalNavigationItemDomainServiceTest {
+
+    /** What PortalLinkSyncDomainService stamps on a portal-attached link: a real portal, never PortalId.ZERO. */
+    private static final NavigationItemReference A_PORTAL = new NavigationItemReference.PortalReference(
+        PortalId.of("11111111-1111-1111-1111-111111111111")
+    );
 
     private final PortalNavigationItemsCrudServiceInMemory portalNavigationItemsCrudService =
         new PortalNavigationItemsCrudServiceInMemory();
@@ -76,7 +90,8 @@ public class PortalNavigationItemDomainServiceTest {
             portalPageContentCrudService,
             PortalPageContentQueryServiceInMemory.sharing(portalPageContentCrudService.storage()),
             apiCrudService,
-            sourceDomainService
+            sourceDomainService,
+            new ApiOwnedNavigationDomainService(portalNavigationItemsQueryService, portalNavigationItemsCrudService)
         );
     }
 
@@ -210,6 +225,178 @@ public class PortalNavigationItemDomainServiceTest {
     }
 
     @Nested
+    class FetchPageContent {
+
+        private static final Instant NOW = Instant.parse("2026-10-08T10:00:00Z");
+        private static final Instant EARLIER = Instant.parse("2026-10-01T10:00:00Z");
+        private static final String ORIGINAL_CONTENT = "# Original content";
+
+        private PortalNavigationPage page;
+
+        @BeforeEach
+        void setUp() {
+            TimeProvider.overrideClock(Clock.fixed(NOW, ZoneId.systemDefault()));
+            var content = PortalPageContentFixtures.aGraviteeMarkdownPageContent(
+                PortalPageContentId.random(),
+                PortalNavigationItemFixtures.ORG_ID,
+                PortalNavigationItemFixtures.ENV_ID,
+                ORIGINAL_CONTENT
+            );
+            portalPageContentCrudService.initWith(List.of(content));
+            page = PortalNavigationItemFixtures.aPage("00000000-0000-0000-0000-00000000f001", "Sourced Page", null)
+                .toBuilder()
+                .portalPageContentId(content.getId())
+                .source(
+                    PortalNavigationItemSource.builder()
+                        .sourceType("http-fetcher")
+                        .sourceConfiguration("{\"url\":\"https://example.com/doc.md\"}")
+                        .lastFetchedAt(EARLIER)
+                        .lastFetchAttemptAt(EARLIER)
+                        .build()
+                )
+                .build();
+            // Storage holds its own copy: a stamp must reach it through the crud service, not through a shared reference
+            portalNavigationItemsCrudService.initWith(List.of(page.toBuilder().source(page.getSource().toBuilder().build()).build()));
+        }
+
+        @AfterEach
+        void unfreezeTime() {
+            TimeProvider.overrideClock(Clock.systemDefaultZone());
+        }
+
+        private PortalNavigationPage stored() {
+            return (PortalNavigationPage) portalNavigationItemsQueryService.findByIdAndEnvironmentId(
+                PortalNavigationItemFixtures.ENV_ID,
+                page.getId()
+            );
+        }
+
+        private String storedContent() {
+            return ((GraviteeMarkdownPageContent) portalPageContentCrudService.storage().getFirst()).getContent().value();
+        }
+
+        @Test
+        void should_overwrite_content_and_stamp_a_successful_fetch() {
+            domainService.fetchPageContent(page);
+
+            assertThat(storedContent()).isEqualTo(PortalNavigationItemSourceDomainServiceInMemory.MARKDOWN);
+            assertThat(stored().getSource().getLastFetchedAt()).isEqualTo(NOW);
+            assertThat(stored().getSource().getLastFetchAttemptAt()).isEqualTo(NOW);
+            assertThat(stored().getSource().getLastFetchError()).isNull();
+        }
+
+        @Test
+        void should_keep_a_rename_done_while_the_fetch_was_in_flight() {
+            sourceDomainService.duringNextFetch(() ->
+                portalNavigationItemsCrudService.update(page.toBuilder().title("Renamed meanwhile").published(false).build())
+            );
+
+            domainService.fetchPageContent(page);
+
+            assertThat(stored().getTitle()).isEqualTo("Renamed meanwhile");
+            assertThat(stored().getPublished()).isFalse();
+            assertThat(stored().getSource().getLastFetchedAt()).isEqualTo(NOW);
+            assertThat(storedContent()).isEqualTo(PortalNavigationItemSourceDomainServiceInMemory.MARKDOWN);
+        }
+
+        @Test
+        void should_not_overwrite_content_nor_stamp_a_success_when_the_source_was_removed_during_the_fetch() {
+            sourceDomainService.duringNextFetch(() -> portalNavigationItemsCrudService.update(page.toBuilder().source(null).build()));
+
+            domainService.fetchPageContent(page);
+
+            assertThat(storedContent()).isEqualTo(ORIGINAL_CONTENT);
+            assertThat(stored().getSource()).isNull();
+        }
+
+        @Test
+        void should_not_overwrite_content_nor_stamp_a_success_when_the_source_was_changed_during_the_fetch() {
+            var otherSource = page.getSource().toBuilder().sourceConfiguration("{\"url\":\"https://example.com/other.md\"}").build();
+            sourceDomainService.duringNextFetch(() ->
+                portalNavigationItemsCrudService.update(page.toBuilder().source(otherSource).build())
+            );
+
+            domainService.fetchPageContent(page);
+
+            assertThat(storedContent()).isEqualTo(ORIGINAL_CONTENT);
+            assertThat(stored().getSource().getSourceConfiguration()).isEqualTo(otherSource.getSourceConfiguration());
+            assertThat(stored().getSource().getLastFetchedAt()).isEqualTo(EARLIER);
+            assertThat(stored().getSource().getLastFetchError()).isNull();
+        }
+
+        @Test
+        void should_neither_resurrect_the_item_nor_fail_when_it_was_deleted_during_the_fetch() {
+            sourceDomainService.duringNextFetch(() -> domainService.delete(page));
+
+            domainService.fetchPageContent(page);
+
+            assertThat(portalNavigationItemsCrudService.storage()).isEmpty();
+            assertThat(portalPageContentCrudService.storage()).isEmpty();
+        }
+
+        @Test
+        void should_stamp_only_the_attempt_and_the_error_when_the_fetch_fails() {
+            sourceDomainService.failNextFetchWith(new TechnicalDomainException("fetch failed"));
+
+            domainService.fetchPageContent(page);
+
+            assertThat(storedContent()).isEqualTo(ORIGINAL_CONTENT);
+            assertThat(stored().getSource().getLastFetchAttemptAt()).isEqualTo(NOW);
+            assertThat(stored().getSource().getLastFetchedAt()).isEqualTo(EARLIER);
+            assertThat(stored().getSource().getLastFetchError()).isEqualTo("Unable to fetch content from source type http-fetcher.");
+        }
+
+        @Test
+        void should_keep_a_success_stamped_by_another_fetch_when_this_one_fails() {
+            var later = Instant.parse("2026-10-05T10:00:00Z");
+            sourceDomainService.duringNextFetch(() ->
+                portalNavigationItemsCrudService.update(
+                    page.toBuilder().source(page.getSource().toBuilder().lastFetchedAt(later).lastFetchAttemptAt(later).build()).build()
+                )
+            );
+            sourceDomainService.failNextFetchWith(new TechnicalDomainException("fetch failed"));
+
+            domainService.fetchPageContent(page);
+
+            assertThat(stored().getSource().getLastFetchedAt()).isEqualTo(later);
+            assertThat(stored().getSource().getLastFetchAttemptAt()).isEqualTo(NOW);
+            assertThat(stored().getSource().getLastFetchError()).isNotNull();
+        }
+
+        @Test
+        void should_not_stamp_the_failure_on_a_source_swapped_during_the_fetch() {
+            var otherSource = PortalNavigationItemSource.builder()
+                .sourceType("github-fetcher")
+                .sourceConfiguration("{\"repository\":\"docs\"}")
+                .build();
+            sourceDomainService.duringNextFetch(() ->
+                portalNavigationItemsCrudService.update(page.toBuilder().source(otherSource).build())
+            );
+            sourceDomainService.failNextFetchWith(new TechnicalDomainException("fetch failed"));
+
+            domainService.fetchPageContent(page);
+
+            assertThat(stored().getSource().getSourceType()).isEqualTo("github-fetcher");
+            assertThat(stored().getSource().getLastFetchAttemptAt()).isNull();
+            assertThat(stored().getSource().getLastFetchedAt()).isNull();
+            assertThat(stored().getSource().getLastFetchError()).isNull();
+        }
+
+        @Test
+        void should_keep_a_rename_done_while_a_failing_fetch_was_in_flight() {
+            sourceDomainService.duringNextFetch(() ->
+                portalNavigationItemsCrudService.update(page.toBuilder().title("Renamed meanwhile").build())
+            );
+            sourceDomainService.failNextFetchWith(new TechnicalDomainException("fetch failed"));
+
+            domainService.fetchPageContent(page);
+
+            assertThat(stored().getTitle()).isEqualTo("Renamed meanwhile");
+            assertThat(stored().getSource().getLastFetchError()).isNotNull();
+        }
+    }
+
+    @Nested
     class Create {
 
         @Test
@@ -230,7 +417,7 @@ public class PortalNavigationItemDomainServiceTest {
         }
 
         @Test
-        void should_set_parentId_and_rootId_correctly_when_parent_already_has_correct_root_id() {
+        void should_set_parent_id_and_root_id_correctly_when_parent_already_has_correct_root_id() {
             // Given — grandparent (root), parent (child of grandparent with rootId already = grandparent.id)
             var grandparent = PortalNavigationItemFixtures.aFolder("grandparent-folder");
             grandparent.markAsRoot();
@@ -365,6 +552,42 @@ public class PortalNavigationItemDomainServiceTest {
 
             assertThat(created.getSegment()).isEqualTo("q-a-2");
         }
+
+        @Test
+        void should_append_suffix_when_a_portal_attached_root_link_already_holds_the_slug() {
+            var link = aRootLink("00000000-0000-0000-0000-0000000000c1", "Q&A", 0);
+            portalNavigationItemsCrudService.initWith(List.of(link));
+            portalNavigationItemsQueryService.initWith(List.of(link));
+
+            var toCreate = CreatePortalNavigationItem.builder()
+                .type(PortalNavigationItemType.FOLDER)
+                .title("Q/A")
+                .area(PortalArea.TOP_NAVBAR)
+                .order(0)
+                .build();
+
+            var created = domainService.create(PortalNavigationItemFixtures.ORG_ID, PortalNavigationItemFixtures.ENV_ID, toCreate);
+
+            assertThat(created.getSegment()).isEqualTo("q-a-2");
+        }
+
+        @Test
+        void should_place_a_new_root_after_portal_attached_root_links_when_no_order_is_given() {
+            var first = aRootLink("00000000-0000-0000-0000-0000000000c2", "Docs", 0);
+            var second = aRootLink("00000000-0000-0000-0000-0000000000c3", "Status", 1);
+            portalNavigationItemsCrudService.initWith(List.of(first, second));
+            portalNavigationItemsQueryService.initWith(List.of(first, second));
+
+            var toCreate = CreatePortalNavigationItem.builder()
+                .type(PortalNavigationItemType.FOLDER)
+                .title("Guides")
+                .area(PortalArea.TOP_NAVBAR)
+                .build();
+
+            var created = domainService.create(PortalNavigationItemFixtures.ORG_ID, PortalNavigationItemFixtures.ENV_ID, toCreate);
+
+            assertThat(created.getOrder()).isEqualTo(2);
+        }
     }
 
     @Nested
@@ -408,6 +631,82 @@ public class PortalNavigationItemDomainServiceTest {
             )
                 .containsOnlyKeys(expected.keySet())
                 .containsAllEntriesOf(expected);
+        }
+
+        @Test
+        void deleting_a_portal_root_does_not_reorder_api_subtree_roots() {
+            var portalRoot = PortalNavigationPage.builder()
+                .id(PortalNavigationItemId.of("00000000-0000-0000-0000-00000000a010"))
+                .organizationId(PortalNavigationItemFixtures.ORG_ID)
+                .environmentId(PortalNavigationItemFixtures.ENV_ID)
+                .title("Portal Root")
+                .segment("portal-root")
+                .area(PortalArea.TOP_NAVBAR)
+                .order(0)
+                .portalPageContentId(PortalPageContentId.random())
+                .published(true)
+                .visibility(PortalVisibility.PUBLIC)
+                .build();
+            portalRoot.markAsRoot();
+
+            var apiRoot1 = PortalNavigationPage.builder()
+                .id(PortalNavigationItemId.of("00000000-0000-0000-0000-00000000a011"))
+                .organizationId(PortalNavigationItemFixtures.ORG_ID)
+                .environmentId(PortalNavigationItemFixtures.ENV_ID)
+                .title("API 1 Root")
+                .segment("api-1-root")
+                .area(PortalArea.TOP_NAVBAR)
+                .order(1)
+                .portalPageContentId(PortalPageContentId.random())
+                .published(true)
+                .visibility(PortalVisibility.PUBLIC)
+                .reference(new NavigationItemReference.ApiReference("api-1"))
+                .build();
+            apiRoot1.markAsRoot();
+
+            var apiRoot2 = PortalNavigationPage.builder()
+                .id(PortalNavigationItemId.of("00000000-0000-0000-0000-00000000a012"))
+                .organizationId(PortalNavigationItemFixtures.ORG_ID)
+                .environmentId(PortalNavigationItemFixtures.ENV_ID)
+                .title("API 2 Root")
+                .segment("api-2-root")
+                .area(PortalArea.TOP_NAVBAR)
+                .order(2)
+                .portalPageContentId(PortalPageContentId.random())
+                .published(true)
+                .visibility(PortalVisibility.PUBLIC)
+                .reference(new NavigationItemReference.ApiReference("api-2"))
+                .build();
+            apiRoot2.markAsRoot();
+
+            portalNavigationItemsCrudService.initWith(List.of(portalRoot, apiRoot1, apiRoot2));
+            portalNavigationItemsQueryService.initWith(List.copyOf(portalNavigationItemsCrudService.storage()));
+
+            domainService.delete(portalRoot);
+
+            var reloaded = portalNavigationItemsCrudService
+                .storage()
+                .stream()
+                .collect(Collectors.toMap(PortalNavigationItem::getId, item -> item));
+            assertThat(reloaded.get(apiRoot1.getId()).getOrder()).isEqualTo(1);
+            assertThat(reloaded.get(apiRoot2.getId()).getOrder()).isEqualTo(2);
+        }
+
+        @Test
+        void deleting_a_console_root_reorders_portal_attached_root_links() {
+            var consoleRoot = PortalNavigationItemFixtures.aFolder("00000000-0000-0000-0000-0000000000d1", "Console Root", null);
+            var link = aRootLink("00000000-0000-0000-0000-0000000000d2", "Docs", 1);
+
+            portalNavigationItemsCrudService.initWith(List.of(consoleRoot, link));
+            portalNavigationItemsQueryService.initWith(List.copyOf(portalNavigationItemsCrudService.storage()));
+
+            domainService.delete(consoleRoot);
+
+            var reloaded = portalNavigationItemsCrudService
+                .storage()
+                .stream()
+                .collect(Collectors.toMap(PortalNavigationItem::getId, item -> item));
+            assertThat(reloaded.get(link.getId()).getOrder()).isEqualTo(0);
         }
 
         @Test
@@ -530,7 +829,7 @@ public class PortalNavigationItemDomainServiceTest {
         }
 
         @Test
-        void should_delete_legacy_item_with_zero_rootId_using_parent_child_traversal() {
+        void should_delete_legacy_item_with_zero_root_id_using_parent_child_traversal() {
             // Given — legacy items that never had markAsRoot() called, so rootId == ZERO
             PortalNavigationFolder folder = PortalNavigationItemFixtures.aFolder("33000000-0000-4000-8000-000000000001", "Legacy Folder");
             // No markAsRoot() → rootId stays at ZERO
@@ -770,6 +1069,36 @@ public class PortalNavigationItemDomainServiceTest {
             )
                 .containsOnlyKeys(expected.keySet())
                 .containsAllEntriesOf(expected);
+        }
+
+        @Test
+        void moving_a_console_root_reorders_portal_attached_root_links() {
+            // Completes the trio around create and delete: reordering an existing root has to see the
+            // whole rendered root list, which mixes a console root's PortalId.ZERO with a portal-attached
+            // link's own portal id.
+            var consoleRoot = PortalNavigationItemFixtures.aFolder("00000000-0000-0000-0000-0000000000e1", "Console Root", null);
+            var first = aRootLink("00000000-0000-0000-0000-0000000000e2", "Docs", 1);
+            var second = aRootLink("00000000-0000-0000-0000-0000000000e3", "Status", 2);
+            portalNavigationItemsCrudService.initWith(List.of(consoleRoot, first, second));
+            portalNavigationItemsQueryService.initWith(List.copyOf(portalNavigationItemsCrudService.storage()));
+
+            var toUpdate = UpdatePortalNavigationItem.builder()
+                .order(2)
+                .title(consoleRoot.getTitle())
+                .visibility(consoleRoot.getVisibility())
+                .type(consoleRoot.getType())
+                .parentId(consoleRoot.getParentId())
+                .published(consoleRoot.getPublished())
+                .build();
+
+            var result = domainService.update(toUpdate, consoleRoot);
+
+            assertThat(result.getOrder()).isEqualTo(2);
+            var orders = portalNavigationItemsCrudService
+                .storage()
+                .stream()
+                .collect(Collectors.toMap(PortalNavigationItem::getId, PortalNavigationItem::getOrder));
+            assertThat(orders).containsEntry(first.getId(), 0).containsEntry(second.getId(), 1).containsEntry(consoleRoot.getId(), 2);
         }
 
         @Test
@@ -1346,5 +1675,326 @@ public class PortalNavigationItemDomainServiceTest {
                 .containsEntry(childFolder.getId(), false)
                 .containsEntry(grandChildPage.getId(), false);
         }
+    }
+
+    @Nested
+    class ApiOwnedPublicationPropagation {
+
+        private static final String API_ID = "api-id";
+        private static final NavigationItemReference API_REFERENCE = new NavigationItemReference.ApiReference(API_ID);
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_propagate_publication_to_both_physical_and_api_owned_documentation_without_changing_structure(boolean published) {
+            var api = standaloneApi(!published);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Physical page", api.getId());
+            physicalPage.updateParent(api);
+            var ownedFolder = ownedFolder("Owned folder", null, !published);
+            var ownedPage = ownedPage("Owned page", null, !published);
+            ownedPage.setOrder(5);
+            var ownedLink = PortalNavigationLink.builder()
+                .id(PortalNavigationItemId.random())
+                .organizationId(PortalNavigationItemFixtures.ORG_ID)
+                .environmentId(PortalNavigationItemFixtures.ENV_ID)
+                .title("Owned link")
+                .segment("owned-link")
+                .area(PortalArea.TOP_NAVBAR)
+                .visibility(PortalVisibility.PUBLIC)
+                .url("https://example.com")
+                .reference(API_REFERENCE)
+                .published(!published)
+                .order(9)
+                .build();
+            ownedLink.markAsRoot();
+            var nestedFolder = ownedFolder("Nested folder", ownedFolder, !published);
+            var nestedPage = ownedPage("Nested page", nestedFolder, !published);
+            physicalPage.setPublished(!published);
+            portalNavigationItemsCrudService.initWith(
+                List.of(api, physicalPage, ownedFolder, ownedPage, ownedLink, nestedFolder, nestedPage)
+            );
+            var structureBefore = structureSnapshot();
+
+            domainService.update(publicationUpdate(api, published), api, published);
+
+            assertPublished(published, api, physicalPage, ownedFolder, ownedPage, ownedLink, nestedFolder, nestedPage);
+            assertThat(structureSnapshot()).isEqualTo(structureBefore);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_traverse_api_and_folders_already_having_target_publication_status(boolean published) {
+            var root = PortalNavigationItemFixtures.aFolder("Root");
+            root.markAsRoot();
+            root.setPublished(!published);
+            var api = standaloneApi(published);
+            api.updateParent(root);
+            var physicalFolder = PortalNavigationItemFixtures.aFolder("Physical folder", api.getId());
+            physicalFolder.updateParent(api);
+            physicalFolder.setPublished(published);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Physical page", physicalFolder.getId());
+            physicalPage.setPublished(!published);
+            var ownedFolder = ownedFolder("Owned folder", null, published);
+            var nestedFolder = ownedFolder("Nested folder", ownedFolder, published);
+            var nestedPage = ownedPage("Nested page", nestedFolder, !published);
+            portalNavigationItemsCrudService.initWith(
+                List.of(root, api, physicalFolder, physicalPage, ownedFolder, nestedFolder, nestedPage)
+            );
+
+            domainService.update(publicationUpdate(root, published), root, published);
+
+            assertPublished(published, root, api, physicalFolder, physicalPage, ownedFolder, nestedFolder, nestedPage);
+        }
+
+        @Test
+        void should_not_publish_documentation_when_propagation_is_disabled() {
+            var api = standaloneApi(false);
+            var ownedFolder = ownedFolder("Owned folder", null, false);
+            var ownedPage = ownedPage("Owned page", ownedFolder, false);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Physical page", api.getId());
+            physicalPage.setPublished(false);
+            portalNavigationItemsCrudService.initWith(List.of(api, ownedFolder, ownedPage, physicalPage));
+
+            domainService.update(publicationUpdate(api, true), api, false);
+
+            assertPublished(true, api);
+            assertPublished(false, ownedFolder, ownedPage, physicalPage);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_not_propagate_when_selected_item_publication_status_is_unchanged(boolean published) {
+            var api = standaloneApi(published);
+            var ownedFolder = ownedFolder("Owned folder", null, !published);
+            var ownedPage = ownedPage("Owned page", ownedFolder, !published);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Physical page", api.getId());
+            physicalPage.setPublished(!published);
+            portalNavigationItemsCrudService.initWith(List.of(api, ownedFolder, ownedPage, physicalPage));
+
+            domainService.update(publicationUpdate(api, published), api, true);
+
+            assertPublished(published, api);
+            assertPublished(!published, ownedFolder, ownedPage, physicalPage);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_not_change_product_documentation_when_updating_standalone_api(boolean published) {
+            var api = standaloneApi(!published);
+            var ownedPage = ownedPage("Owned page", null, !published);
+            var product = PortalNavigationItemFixtures.anApiProduct();
+            product.markAsRoot();
+            var productApi = PortalNavigationItemFixtures.anApi(
+                PortalNavigationItemFixtures.API1_ID,
+                "Product API",
+                product.getId(),
+                API_ID
+            );
+            productApi.updateParent(product);
+            var productPage = PortalNavigationItemFixtures.aPage("Product page", productApi.getId());
+            productPage.updateParent(productApi);
+            product.setPublished(!published);
+            productApi.setPublished(!published);
+            productPage.setPublished(!published);
+            portalNavigationItemsCrudService.initWith(List.of(api, ownedPage, product, productApi, productPage));
+
+            domainService.update(publicationUpdate(api, published), api, published);
+
+            assertPublished(published, api, ownedPage);
+            assertPublished(!published, product, productApi, productPage);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_only_unpublish_physical_documentation_when_api_is_directly_or_indirectly_inside_product(boolean nested) {
+            var product = PortalNavigationItemFixtures.anApiProduct();
+            product.markAsRoot();
+            var folder = PortalNavigationItemFixtures.aFolder("Product folder", product.getId());
+            folder.updateParent(product);
+            var api = standaloneApi(true);
+            api.updateParent(nested ? folder : product);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Product page", api.getId());
+            var ownedPage = ownedPage("Owned page", null, true);
+            portalNavigationItemsCrudService.initWith(List.of(product, folder, api, physicalPage, ownedPage));
+
+            domainService.update(publicationUpdate(api, false), api, false);
+
+            assertPublished(false, api, physicalPage);
+            assertPublished(true, ownedPage, folder, product);
+        }
+
+        @Test
+        void should_keep_product_context_when_unpublishing_a_folder_inside_product() {
+            var product = PortalNavigationItemFixtures.anApiProduct();
+            product.markAsRoot();
+            var folder = PortalNavigationItemFixtures.aFolder("Product folder", product.getId());
+            folder.updateParent(product);
+            var api = standaloneApi(true);
+            api.updateParent(folder);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Product page", api.getId());
+            var ownedPage = ownedPage("Owned page", null, true);
+            portalNavigationItemsCrudService.initWith(List.of(product, folder, api, physicalPage, ownedPage));
+
+            domainService.update(publicationUpdate(folder, false), folder, false);
+
+            assertPublished(false, folder, api, physicalPage);
+            assertPublished(true, product, ownedPage);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_propagate_through_product_physical_subtree_without_api_owned_documentation(boolean published) {
+            var root = PortalNavigationItemFixtures.aFolder("Root");
+            root.markAsRoot();
+            var product = PortalNavigationItemFixtures.anApiProduct();
+            product.updateParent(root);
+            var folder = PortalNavigationItemFixtures.aFolder("Product folder", product.getId());
+            folder.updateParent(product);
+            var api = standaloneApi(!published);
+            api.updateParent(folder);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Product page", api.getId());
+            var ownedPage = ownedPage("Owned page", null, !published);
+            List.of(root, product, folder, physicalPage).forEach(item -> item.setPublished(!published));
+            portalNavigationItemsCrudService.initWith(List.of(root, product, folder, api, physicalPage, ownedPage));
+
+            domainService.update(publicationUpdate(root, published), root, published);
+
+            assertPublished(published, root, product, folder, api, physicalPage);
+            assertPublished(!published, ownedPage);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_not_propagate_private_visibility_to_api_owned_documentation(boolean changePublication) {
+            var api = standaloneApi(true);
+            var physicalPage = PortalNavigationItemFixtures.aPage("Physical page", api.getId());
+            var ownedFolder = ownedFolder("Owned folder", null, true);
+            var ownedPage = ownedPage("Owned page", ownedFolder, true);
+            portalNavigationItemsCrudService.initWith(List.of(api, physicalPage, ownedFolder, ownedPage));
+            var update = publicationUpdate(api, !changePublication).toBuilder().visibility(PortalVisibility.PRIVATE).build();
+
+            domainService.update(update, api, false);
+
+            assertPublished(!changePublication, api, physicalPage, ownedFolder, ownedPage);
+            assertThat(stored(api).getVisibility()).isEqualTo(PortalVisibility.PRIVATE);
+            assertThat(stored(physicalPage).getVisibility()).isEqualTo(PortalVisibility.PRIVATE);
+            assertThat(stored(ownedFolder).getVisibility()).isEqualTo(PortalVisibility.PUBLIC);
+            assertThat(stored(ownedPage).getVisibility()).isEqualTo(PortalVisibility.PUBLIC);
+        }
+
+        @Test
+        void should_not_propagate_publication_to_documentation_of_another_api_environment_or_area() {
+            var api = standaloneApi(true);
+            var ownedPage = ownedPage("Owned page", null, true);
+            var otherApiPage = ownedPage("Other API page", null, true)
+                .toBuilder()
+                .reference(new NavigationItemReference.ApiReference("other-api"))
+                .build();
+            var otherEnvironmentPage = ownedPage("Other environment page", null, true)
+                .toBuilder()
+                .environmentId("other-environment")
+                .build();
+            var otherAreaPage = ownedPage("Other area page", null, true).toBuilder().area(PortalArea.HOMEPAGE).build();
+            portalNavigationItemsCrudService.initWith(List.of(api, ownedPage, otherApiPage, otherEnvironmentPage, otherAreaPage));
+
+            domainService.update(publicationUpdate(api, false), api, false);
+
+            assertPublished(false, api, ownedPage);
+            assertPublished(true, otherApiPage, otherEnvironmentPage, otherAreaPage);
+        }
+
+        private PortalNavigationApi standaloneApi(boolean published) {
+            var api = PortalNavigationItemFixtures.anApi();
+            api.setApiId(API_ID);
+            api.setOrder(0);
+            api.setPublished(published);
+            api.markAsRoot();
+            return api;
+        }
+
+        private PortalNavigationFolder ownedFolder(String title, PortalNavigationFolder parent, boolean published) {
+            var folder = PortalNavigationItemFixtures.aFolder(title).toBuilder().reference(API_REFERENCE).published(published).build();
+            folder.attachTo(parent);
+            return folder;
+        }
+
+        private PortalNavigationPage ownedPage(String title, PortalNavigationFolder parent, boolean published) {
+            var page = PortalNavigationItemFixtures.aPage(title, null).toBuilder().reference(API_REFERENCE).published(published).build();
+            page.attachTo(parent);
+            return page;
+        }
+
+        private UpdatePortalNavigationItem publicationUpdate(PortalNavigationItem item, boolean published) {
+            return UpdatePortalNavigationItem.builder()
+                .type(item.getType())
+                .title(item.getTitle())
+                .segment(item.getSegment())
+                .order(item.getOrder())
+                .parentId(item.getParentId())
+                .visibility(item.getVisibility())
+                .published(published)
+                .build();
+        }
+
+        private void assertPublished(boolean published, PortalNavigationItem... items) {
+            for (var item : items) {
+                assertThat(stored(item).getPublished()).as(item.getTitle()).isEqualTo(published);
+            }
+        }
+
+        private PortalNavigationItem stored(PortalNavigationItem item) {
+            return portalNavigationItemsQueryService.findByIdAndEnvironmentId(item.getEnvironmentId(), item.getId());
+        }
+
+        private List<ItemStructure> structureSnapshot() {
+            return portalNavigationItemsCrudService
+                .storage()
+                .stream()
+                .map(item ->
+                    new ItemStructure(
+                        item.getId(),
+                        item.getReference(),
+                        item.getParentId(),
+                        item.getRootId(),
+                        item.getOrder(),
+                        item.getSegment(),
+                        item.getArea(),
+                        item.getEnvironmentId(),
+                        item instanceof PortalNavigationPage page ? page.getPortalPageContentId() : null,
+                        item instanceof PortalNavigationLink link ? link.getUrl() : null
+                    )
+                )
+                .toList();
+        }
+
+        private record ItemStructure(
+            PortalNavigationItemId id,
+            NavigationItemReference reference,
+            PortalNavigationItemId parentId,
+            PortalNavigationItemId rootId,
+            Integer order,
+            String segment,
+            PortalArea area,
+            String environmentId,
+            PortalPageContentId contentId,
+            String url
+        ) {}
+    }
+
+    private static PortalNavigationLink aRootLink(String id, String title, int order) {
+        var link = PortalNavigationLink.builder()
+            .id(PortalNavigationItemId.of(id))
+            .organizationId(PortalNavigationItemFixtures.ORG_ID)
+            .environmentId(PortalNavigationItemFixtures.ENV_ID)
+            .title(title)
+            .segment(PortalNavigationItem.slugify(title).value())
+            .area(PortalArea.TOP_NAVBAR)
+            .order(order)
+            .url("https://example.com")
+            .published(true)
+            .visibility(PortalVisibility.PUBLIC)
+            .reference(A_PORTAL)
+            .build();
+        link.markAsRoot();
+        return link;
     }
 }

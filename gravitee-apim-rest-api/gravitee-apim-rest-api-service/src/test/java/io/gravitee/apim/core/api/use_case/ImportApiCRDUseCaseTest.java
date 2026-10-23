@@ -36,6 +36,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -94,6 +95,7 @@ import io.gravitee.apim.core.api.domain_service.ValidateHealthCheckScheduleDomai
 import io.gravitee.apim.core.api.domain_service.VerifyApiHostsDomainService;
 import io.gravitee.apim.core.api.domain_service.VerifyApiPathDomainService;
 import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
+import io.gravitee.apim.core.api.exception.ApiPropertyEncryptedToPlainException;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.ApiMetadata;
 import io.gravitee.apim.core.api.model.crd.ApiCRDSpec;
@@ -184,7 +186,9 @@ import io.gravitee.rest.api.model.notification.PortalNotificationConfigEntity;
 import io.gravitee.rest.api.model.parameters.Key;
 import io.gravitee.rest.api.model.settings.ApiPrimaryOwnerMode;
 import io.gravitee.rest.api.service.common.UuidString;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.vertx.rxjava3.core.Vertx;
+import java.security.GeneralSecurityException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -392,6 +396,8 @@ class ImportApiCRDUseCaseTest {
             )
         );
 
+        propertyDomainService = new PropertyDomainService(dataEncryptor);
+
         var crdValidator = new ValidateApiCRDDomainService(
             new ValidateCategoryIdsDomainService(categoryQueryService),
             verifyApiPathDomainService,
@@ -399,10 +405,13 @@ class ImportApiCRDUseCaseTest {
             new ValidateCRDMembersDomainService(userDomainService, roleQueryService),
             new ValidateGroupsDomainService(groupQueryService),
             validateResourceDomainService,
-            new ValidatePagesDomainService(pageSourceValidator, accessControlValidator, validationDomainService),
+            new ValidatePagesDomainService(pageSourceValidator, accessControlValidator, validationDomainService, pageCrudService),
             new ValidatePlanDomainService(planValidatorService, verifyPlanPortRanges),
             new ValidatePortalNotificationDomainService(new ValidateGroupsDomainService(groupQueryService)),
-            new ValidateHealthCheckScheduleDomainService(new ObjectMapper())
+            new ValidateHealthCheckScheduleDomainService(new ObjectMapper()),
+            apiQueryService,
+            propertyDomainService,
+            crdMembersDomainService
         );
 
         planQueryService = new PlanQueryServiceInMemory(planCrudService);
@@ -459,8 +468,6 @@ class ImportApiCRDUseCaseTest {
             )
         );
 
-        propertyDomainService = new PropertyDomainService(dataEncryptor);
-
         updateNativeApiUseCase = new UpdateNativeApiUseCase(
             apiPrimaryOwnerService,
             propertyDomainService,
@@ -494,7 +501,8 @@ class ImportApiCRDUseCaseTest {
             updateApiDocumentationDomainService,
             crdValidator,
             notificationCRDService,
-            mock(PortalListingSyncDomainService.class)
+            mock(PortalListingSyncDomainService.class),
+            propertyDomainService
         );
 
         enableApiPrimaryOwnerMode();
@@ -522,7 +530,7 @@ class ImportApiCRDUseCaseTest {
 
         groupQueryService.initWith(
             List.of(
-                Group.builder().id(GROUP_ID_1).build(),
+                Group.builder().id(GROUP_ID_1).environmentId(ENVIRONMENT_ID).build(),
                 Group.builder().id(GROUP_ID_2).environmentId(ENVIRONMENT_ID).name(GROUP_NAME).build()
             )
         );
@@ -615,6 +623,33 @@ class ImportApiCRDUseCaseTest {
                 soft.assertThat(throwable).isInstanceOf(ValidationDomainException.class);
                 soft.assertThat(apiCrudService.storage()).isEmpty();
             });
+        }
+
+        @Test
+        void should_store_encryptable_properties_encrypted() throws GeneralSecurityException {
+            when(dataEncryptor.encrypt("prop-value")).thenReturn("ciphertext");
+
+            useCase.execute(
+                new ImportApiCRDUseCase.Input(
+                    AUDIT_INFO,
+                    aCRD()
+                        .plans(Map.of())
+                        .properties(List.of(EncryptableProperty.builder().key("prop-key").value("prop-value").encryptable(true).build()))
+                        .build()
+                )
+            );
+
+            assertThat(apiCrudService.storage().getFirst().getApiDefinitionHttpV4().getProperties()).containsExactly(
+                Property.builder().key("prop-key").value("ciphertext").encrypted(true).build()
+            );
+            var created = auditCrudService
+                .storage()
+                .stream()
+                .filter(audit -> audit.getEvent().equals("API_CREATED"))
+                .findFirst()
+                .orElseThrow();
+            assertThat(created.getPatch()).doesNotContain("ciphertext").doesNotContain("prop-value");
+            assertThat(created.getProperties()).containsEntry("ENCRYPTED", "true");
         }
 
         @Test
@@ -720,6 +755,13 @@ class ImportApiCRDUseCaseTest {
                 soft.assertThat(throwable).isInstanceOf(InvalidFlowException.class);
                 soft.assertThat(flowCrudService.storage()).extracting(AbstractFlow::getName).doesNotContain("api-flow");
             });
+        }
+
+        @Test
+        void should_not_validate_ignored_groups_on_create() {
+            var result = useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().ignoreGroups(true).build()));
+
+            assertThat(result.status().getErrors().warning()).isEmpty();
         }
 
         @Test
@@ -946,6 +988,35 @@ class ImportApiCRDUseCaseTest {
             var throwable = catchThrowable(() -> useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().pages(pages).build())));
 
             assertThat(throwable).isInstanceOf(InvalidPageParentException.class);
+        }
+
+        @Test
+        void should_reject_a_page_id_of_another_api() {
+            pageCrudService.initWith(List.of(aStoredPage("foreign-page-id", "other-api-id", Page.ReferenceType.API)));
+            givenPagesPassValidation();
+
+            var pages = Map.of("markdown", aMarkdownPageCRD("foreign-page-id", null));
+            var throwable = catchThrowable(() -> useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().pages(pages).build())));
+
+            assertThat(throwable).isInstanceOf(ValidationDomainException.class);
+            assertThat(apiCrudService.storage()).isEmpty();
+            assertThat(pageCrudService.storage()).containsExactly(aStoredPage("foreign-page-id", "other-api-id", Page.ReferenceType.API));
+        }
+
+        @Test
+        void should_not_attach_a_group_of_another_environment() {
+            groupQueryService.initWith(
+                List.of(Group.builder().id("other-environment-group-id").environmentId("other-environment-id").build())
+            );
+
+            var result = useCase.execute(
+                new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().groups(Set.of("other-environment-group-id")).build())
+            );
+
+            assertThat(apiCrudService.get(API_ID).getGroups()).doesNotContain("other-environment-group-id");
+            assertThat(result.status().getErrors().warning()).containsExactly(
+                "Group [other-environment-group-id] could not be found in environment [environment-id]"
+            );
         }
 
         @Test
@@ -1243,6 +1314,121 @@ class ImportApiCRDUseCaseTest {
                     )
                     .build()
             );
+        }
+
+        @Test
+        void should_keep_existing_groups_when_ignoring_groups() {
+            apiQueryService.initWith(List.of(API_PROXY_V4.toBuilder().groups(Set.of(GROUP_ID_2)).build()));
+            givenExistingPlans(List.of(KEYLESS));
+
+            var result = useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().ignoreGroups(true).build()));
+
+            var spec = org.mockito.ArgumentCaptor.forClass(ApiCRDSpec.class);
+            verify(updateApiDomainService).update(eq(API_ID), spec.capture(), any());
+            SoftAssertions.assertSoftly(soft -> {
+                soft.assertThat(spec.getValue().getGroups()).containsExactly(GROUP_ID_2);
+                soft.assertThat(result.status().getErrors().warning()).isEmpty();
+            });
+        }
+
+        @Test
+        void should_apply_spec_groups_when_not_ignoring_groups() {
+            apiQueryService.initWith(List.of(API_PROXY_V4.toBuilder().groups(Set.of(GROUP_ID_2)).build()));
+            givenExistingPlans(List.of(KEYLESS));
+
+            useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().build()));
+
+            var spec = org.mockito.ArgumentCaptor.forClass(ApiCRDSpec.class);
+            verify(updateApiDomainService).update(eq(API_ID), spec.capture(), any());
+            assertThat(spec.getValue().getGroups()).containsExactlyInAnyOrder(GROUP_ID_1, GROUP_ID_2, DEFAULT_GROUP);
+        }
+
+        @Test
+        void should_reject_making_an_encrypted_property_plain() {
+            var existing = API_PROXY_V4.toBuilder()
+                .apiDefinitionValue(
+                    API_PROXY_V4.getApiDefinitionHttpV4()
+                        .toBuilder()
+                        .properties(List.of(Property.builder().key("prop-key").value("ciphertext").encrypted(true).build()))
+                        .build()
+                )
+                .build();
+            apiQueryService.initWith(List.of(existing));
+
+            var throwable = catchThrowable(() ->
+                useCase.execute(
+                    new ImportApiCRDUseCase.Input(
+                        AUDIT_INFO,
+                        aCRD().properties(List.of(EncryptableProperty.builder().key("prop-key").value("ciphertext").build())).build()
+                    )
+                )
+            );
+
+            assertThat(throwable).isInstanceOf(ApiPropertyEncryptedToPlainException.class);
+            verify(updateApiDomainService, never()).update(any(), any(), any());
+        }
+
+        @Test
+        void should_write_nothing_when_the_members_update_is_refused() {
+            givenExistingApi();
+            givenExistingPlans(List.of(KEYLESS, API_KEY));
+            var application = givenExistingApplication(anApplicationEntity());
+            givenExistingSubscriptions(
+                aSubscription()
+                    .toBuilder()
+                    .id("sub1")
+                    .apiId(API_ID)
+                    .applicationId(application.getId())
+                    .planId(API_KEY.getId())
+                    .status(SubscriptionEntity.Status.ACCEPTED)
+                    .build()
+            );
+            crdMembersDomainService.denyApiMembersUpdate(API_ID);
+
+            var throwable = catchThrowable(() ->
+                useCase.execute(
+                    new ImportApiCRDUseCase.Input(
+                        AUDIT_INFO,
+                        aCRD().state("STARTED").plans(Map.of("keyless-key", PlanAdapter.INSTANCE.toCRD(KEYLESS))).build()
+                    )
+                )
+            );
+
+            assertThat(throwable).isInstanceOf(ForbiddenAccessException.class);
+            verify(updateApiDomainService, never()).update(any(), any(), any());
+            verifyNoInteractions(apiStateDomainService);
+            assertThat(planCrudService.storage()).extracting(Plan::getId).containsExactlyInAnyOrder(KEYLESS.getId(), API_KEY.getId());
+            assertThat(subscriptionCrudService.storage())
+                .extracting(SubscriptionEntity::getId, SubscriptionEntity::getStatus)
+                .containsExactly(tuple("sub1", SubscriptionEntity.Status.ACCEPTED));
+            assertThat(crdMembersDomainService.getApiMembers(API_ID)).isEmpty();
+        }
+
+        @Test
+        void should_reject_a_body_id_that_differs_from_the_existing_api() {
+            var otherApi = NATIVE_API.toBuilder().id("other-api-id").crossId("other-cross-id").name("other-api").build();
+            apiQueryService.initWith(List.of(NATIVE_API, otherApi));
+
+            var throwable = catchThrowable(() ->
+                useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aNativeApiCRD().id(otherApi.getId()).name("renamed").build()))
+            );
+
+            assertThat(throwable).isInstanceOf(ValidationDomainException.class);
+            assertThat(apiCrudService.get(otherApi.getId()).getName()).isEqualTo("other-api");
+            assertThat(apiCrudService.get(API_ID).getName()).isEqualTo(NATIVE_API.getName());
+            verifyNoInteractions(apiStateDomainService);
+        }
+
+        @Test
+        void should_let_domain_exceptions_propagate_without_wrapping_in_technical_management_exception() {
+            givenExistingApi();
+            givenExistingPlans(List.of(KEYLESS));
+            var domain = new ValidationDomainException("boom");
+            when(updateApiDomainService.update(any(), any(), any())).thenThrow(domain);
+
+            var throwable = catchThrowable(() -> useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().build())));
+
+            assertThat(throwable).isSameAs(domain);
         }
 
         @Test
@@ -1757,6 +1943,54 @@ class ImportApiCRDUseCaseTest {
                     tuple(markdown.getId(), markdown.getCrossId(), markdown.getName()),
                     tuple(folder.getId(), folder.getCrossId(), folder.getName())
                 );
+        }
+
+        @Test
+        void should_reject_a_page_id_of_another_api() {
+            givenExistingApi();
+            pageCrudService.initWith(List.of(aStoredPage("foreign-page-id", "other-api-id", Page.ReferenceType.API)));
+            givenPagesPassValidation();
+
+            var pages = Map.of("markdown", aMarkdownPageCRD("foreign-page-id", null));
+            var throwable = catchThrowable(() -> useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().pages(pages).build())));
+
+            assertThat(throwable).isInstanceOf(ValidationDomainException.class).hasMessageContaining("page id [foreign-page-id]");
+            assertThat(pageCrudService.storage()).containsExactly(aStoredPage("foreign-page-id", "other-api-id", Page.ReferenceType.API));
+            assertThat(auditCrudService.storage()).isEmpty();
+        }
+
+        @Test
+        void should_reject_a_parent_id_of_another_api() {
+            givenExistingApi();
+            var foreignFolder = aStoredPage("foreign-folder-id", "other-api-id", Page.ReferenceType.API)
+                .toBuilder()
+                .type(Page.Type.FOLDER)
+                .build();
+            pageCrudService.initWith(List.of(foreignFolder));
+            givenPagesPassValidation();
+
+            var pages = Map.of("markdown", aMarkdownPageCRD("markdown-page-id", "foreign-folder-id"));
+            var throwable = catchThrowable(() -> useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().pages(pages).build())));
+
+            assertThat(throwable).isInstanceOf(ValidationDomainException.class).hasMessageContaining("parent page [foreign-folder-id]");
+            assertThat(pageCrudService.storage()).containsExactly(foreignFolder);
+            assertThat(auditCrudService.storage()).isEmpty();
+        }
+
+        @Test
+        void should_reject_a_page_id_of_an_environment_page() {
+            givenExistingApi();
+            pageCrudService.initWith(List.of(aStoredPage("portal-page-id", ENVIRONMENT_ID, Page.ReferenceType.ENVIRONMENT)));
+            givenPagesPassValidation();
+
+            var pages = Map.of("markdown", aMarkdownPageCRD("portal-page-id", null));
+            var throwable = catchThrowable(() -> useCase.execute(new ImportApiCRDUseCase.Input(AUDIT_INFO, aCRD().pages(pages).build())));
+
+            assertThat(throwable).isInstanceOf(ValidationDomainException.class);
+            assertThat(pageCrudService.storage()).containsExactly(
+                aStoredPage("portal-page-id", ENVIRONMENT_ID, Page.ReferenceType.ENVIRONMENT)
+            );
+            assertThat(auditCrudService.storage()).isEmpty();
         }
 
         @Test
@@ -2466,6 +2700,35 @@ class ImportApiCRDUseCaseTest {
             .type(PageCRD.Type.MARKDOWN)
             .parentId("markdowns-folder-id")
             .content("Hello world!")
+            .visibility(PageCRD.Visibility.PUBLIC)
+            .build();
+    }
+
+    private void givenPagesPassValidation() {
+        when(validationDomainService.validateAndSanitizeForUpdate(any(), anyString(), anyBoolean())).thenAnswer(call ->
+            call.getArgument(0)
+        );
+    }
+
+    private static Page aStoredPage(String id, String referenceId, Page.ReferenceType referenceType) {
+        return Page.builder()
+            .id(id)
+            .name("stored-page")
+            .type(Page.Type.MARKDOWN)
+            .content("stored content")
+            .referenceId(referenceId)
+            .referenceType(referenceType)
+            .visibility(Page.Visibility.PUBLIC)
+            .build();
+    }
+
+    private static PageCRD aMarkdownPageCRD(String id, String parentId) {
+        return PageCRD.builder()
+            .id(id)
+            .name("imported-page")
+            .type(PageCRD.Type.MARKDOWN)
+            .parentId(parentId)
+            .content("imported content")
             .visibility(PageCRD.Visibility.PUBLIC)
             .build();
     }

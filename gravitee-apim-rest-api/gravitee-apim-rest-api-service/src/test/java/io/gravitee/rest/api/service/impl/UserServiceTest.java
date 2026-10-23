@@ -39,6 +39,7 @@ import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.MembershipRepository;
 import io.gravitee.repository.management.api.UserRepository;
 import io.gravitee.repository.management.model.*;
+import io.gravitee.rest.api.idp.api.authentication.UserDetails;
 import io.gravitee.rest.api.model.*;
 import io.gravitee.rest.api.model.MembershipMemberType;
 import io.gravitee.rest.api.model.MembershipReferenceType;
@@ -67,7 +68,9 @@ import java.time.Instant;
 import java.util.*;
 import java.util.Base64;
 import org.apache.commons.io.IOUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -80,9 +83,12 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.mockito.stubbing.Answer;
 import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.context.SecurityContextImpl;
 
 /**
  * @author Azize Elamrani (azize dot elamrani at gmail dot com)
@@ -2378,7 +2384,7 @@ public class UserServiceTest {
 
         when(roleService.findByScopeAndName(RoleScope.ORGANIZATION, "ADMIN", ORGANIZATION)).thenReturn(Optional.of(roleOrganizationAdmin));
         when(roleService.findByScopeAndName(RoleScope.ORGANIZATION, "USER", ORGANIZATION)).thenReturn(Optional.of(roleOrganizationUser));
-        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION)).thenReturn(
+        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT)).thenReturn(
             Arrays.asList(roleApiUser, roleApplicationAdmin)
         );
 
@@ -2532,7 +2538,7 @@ public class UserServiceTest {
 
         when(roleService.findByScopeAndName(RoleScope.ORGANIZATION, "ADMIN", ORGANIZATION)).thenReturn(Optional.of(roleOrganizationAdmin));
         when(roleService.findByScopeAndName(RoleScope.ORGANIZATION, "USER", ORGANIZATION)).thenReturn(Optional.of(roleOrganizationUser));
-        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION)).thenReturn(
+        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT)).thenReturn(
             Arrays.asList(roleApiUser, roleApplicationAdmin)
         );
 
@@ -2859,6 +2865,48 @@ public class UserServiceTest {
     }
 
     @Test
+    public void shouldApplyGroupApiProductDefaultRoleOnGroupMapping() throws Exception {
+        reset(identityProvider, userRepository, groupService, roleService, membershipService);
+        mockDefaultEnvironment();
+        GroupMappingEntity mapping = new GroupMappingEntity();
+        mapping.setCondition("true");
+        mapping.setGroups(List.of("Group with roles"));
+        when(identityProvider.getGroupMappings()).thenReturn(List.of(mapping));
+        when(userRepository.findBySource(any(), any(), eq(ORGANIZATION))).thenReturn(Optional.empty());
+        when(identityProvider.getId()).thenReturn("oauth2");
+
+        User createdUser = mockUser();
+        when(userRepository.create(any())).thenReturn(createdUser);
+
+        GroupEntity group = new GroupEntity();
+        group.setId("group-1");
+        group.setRoles(
+            Map.of(RoleScope.API, "API_OVERRIDE", RoleScope.APPLICATION, "APP_OVERRIDE", RoleScope.API_PRODUCT, "PRODUCT_OVERRIDE")
+        );
+        when(groupService.findById(EXECUTION_CONTEXT, "Group with roles")).thenReturn(group);
+        when(roleService.findDefaultRoleByScopes(eq(ORGANIZATION), any())).thenReturn(Collections.emptyList());
+        when(membershipService.updateRolesToMemberOnReferenceBySource(any(), any(), any(), any(), any())).thenReturn(
+            List.of(mockMemberEntity())
+        );
+
+        String userInfo = IOUtils.toString(read("/oauth2/json/user_info_response_body.json"), Charset.defaultCharset());
+        userService.createOrUpdateUserFromSocialIdentityProvider(EXECUTION_CONTEXT, identityProvider, userInfo, null, null);
+
+        verify(membershipService).updateRolesToMemberOnReferenceBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+            eq(new MembershipService.MembershipMember(createdUser.getId(), null, MembershipMemberType.USER)),
+            argThat(
+                roles ->
+                    roles.contains(new MembershipService.MembershipRole(RoleScope.API, "API_OVERRIDE")) &&
+                    roles.contains(new MembershipService.MembershipRole(RoleScope.APPLICATION, "APP_OVERRIDE")) &&
+                    roles.contains(new MembershipService.MembershipRole(RoleScope.API_PRODUCT, "PRODUCT_OVERRIDE"))
+            ),
+            eq("oauth2")
+        );
+    }
+
+    @Test
     public void shouldNotAssignRolesWhenNoOrgOrGroupDefaultRoles() throws Exception {
         reset(identityProvider, userRepository, groupService, roleService, membershipService);
         mockDefaultEnvironment();
@@ -2980,6 +3028,283 @@ public class UserServiceTest {
 
     private InputStream read(String resource) throws IOException {
         return this.getClass().getResourceAsStream(resource);
+    }
+
+    @Test
+    public void shouldPreserveManuallyAssignedGroupRoleWhenSyncingGroupMappingsFromIdp() throws Exception {
+        reset(identityProvider, userRepository, groupService, roleService, membershipService, membershipRepository);
+        mockDefaultEnvironment();
+
+        when(identityProvider.isSyncMappings()).thenReturn(true);
+        when(identityProvider.getId()).thenReturn("oauth2");
+        when(identityProvider.getRoleMappings()).thenReturn(null);
+
+        GroupMappingEntity mapping = new GroupMappingEntity();
+        mapping.setCondition("true");
+        mapping.setGroups(List.of("Mapped group"));
+        when(identityProvider.getGroupMappings()).thenReturn(List.of(mapping));
+
+        User user = mockUser();
+        when(userRepository.findBySource("oauth2", user.getSourceId(), ORGANIZATION)).thenReturn(Optional.of(user));
+        when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
+        when(userRepository.update(user)).thenReturn(user);
+
+        when(groupService.findById(EXECUTION_CONTEXT, "Mapped group")).thenReturn(mockGroupEntity("group-1", "Mapped group"));
+
+        RoleEntity roleApiUser = mockRoleEntity(RoleScope.API, "USER");
+        RoleEntity roleApiPrimaryOwner = mockRoleEntity(RoleScope.API, "PRIMARY_OWNER");
+        RoleEntity roleApplicationUser = mockRoleEntity(RoleScope.APPLICATION, "USER");
+        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT)).thenReturn(
+            Arrays.asList(roleApiUser, roleApplicationUser)
+        );
+        when(roleService.findById(roleApiPrimaryOwner.getId())).thenReturn(roleApiPrimaryOwner);
+        when(roleService.findById(roleApiUser.getId())).thenReturn(roleApiUser);
+
+        // IdP previously synced API USER on the same scope the admin later promoted to PRIMARY_OWNER.
+        Membership idpApiUserMembership = new Membership();
+        idpApiUserMembership.setId("membership-idp-api-user");
+        idpApiUserMembership.setSource("oauth2");
+        idpApiUserMembership.setReferenceId("group-1");
+        idpApiUserMembership.setReferenceType(io.gravitee.repository.management.model.MembershipReferenceType.GROUP);
+        idpApiUserMembership.setRoleId(roleApiUser.getId());
+
+        Membership idpApplicationMembership = new Membership();
+        idpApplicationMembership.setId("membership-idp-application-user");
+        idpApplicationMembership.setSource("oauth2");
+        idpApplicationMembership.setReferenceId("group-1");
+        idpApplicationMembership.setReferenceType(io.gravitee.repository.management.model.MembershipReferenceType.GROUP);
+        idpApplicationMembership.setRoleId(roleApplicationUser.getId());
+
+        Membership manualApiPrimaryOwnerMembership = new Membership();
+        manualApiPrimaryOwnerMembership.setId("membership-manual-api-po");
+        manualApiPrimaryOwnerMembership.setSource("system");
+        manualApiPrimaryOwnerMembership.setReferenceId("group-1");
+        manualApiPrimaryOwnerMembership.setReferenceType(io.gravitee.repository.management.model.MembershipReferenceType.GROUP);
+        manualApiPrimaryOwnerMembership.setRoleId(roleApiPrimaryOwner.getId());
+
+        when(
+            membershipRepository.findByMemberIdAndMemberTypeAndReferenceType(
+                user.getId(),
+                io.gravitee.repository.management.model.MembershipMemberType.USER,
+                io.gravitee.repository.management.model.MembershipReferenceType.GROUP
+            )
+        ).thenReturn(Set.of(idpApiUserMembership, idpApplicationMembership, manualApiPrimaryOwnerMembership));
+
+        when(
+            membershipService.updateRolesToMemberOnReferenceBySource(
+                eq(EXECUTION_CONTEXT),
+                eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+                eq(new MembershipService.MembershipMember(user.getId(), null, MembershipMemberType.USER)),
+                any(),
+                eq("oauth2")
+            )
+        ).thenReturn(List.of(mockMemberEntity()));
+
+        String userInfo = IOUtils.toString(read("/oauth2/json/user_info_response_body.json"), Charset.defaultCharset());
+        userService.createOrUpdateUserFromSocialIdentityProvider(EXECUTION_CONTEXT, identityProvider, userInfo, null, null);
+
+        verify(membershipService, never()).deleteReferenceMember(
+            eq(EXECUTION_CONTEXT),
+            eq(MembershipReferenceType.GROUP),
+            eq("group-1"),
+            eq(MembershipMemberType.USER),
+            eq(user.getId())
+        );
+        verify(membershipService, times(2)).deleteReferenceMemberBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(MembershipReferenceType.GROUP),
+            eq("group-1"),
+            eq(MembershipMemberType.USER),
+            eq(user.getId()),
+            eq("oauth2")
+        );
+        verify(membershipService).updateRolesToMemberOnReferenceBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+            eq(new MembershipService.MembershipMember(user.getId(), null, MembershipMemberType.USER)),
+            argThat(
+                roles ->
+                    roles.size() == 1 &&
+                    roles.contains(new MembershipService.MembershipRole(RoleScope.APPLICATION, "USER")) &&
+                    roles.stream().noneMatch(role -> role.getScope() == RoleScope.API)
+            ),
+            eq("oauth2")
+        );
+    }
+
+    @Test
+    public void shouldPreserveManualGroupRoleOnSameScopeWhenGroupNotInIdpMapping() throws Exception {
+        reset(identityProvider, userRepository, groupService, roleService, membershipService, membershipRepository);
+        mockDefaultEnvironment();
+
+        when(identityProvider.isSyncMappings()).thenReturn(true);
+        when(identityProvider.getId()).thenReturn("oauth2");
+        when(identityProvider.getRoleMappings()).thenReturn(null);
+
+        GroupMappingEntity mapping = new GroupMappingEntity();
+        mapping.setCondition("true");
+        mapping.setGroups(List.of("Mapped group"));
+        when(identityProvider.getGroupMappings()).thenReturn(List.of(mapping));
+
+        User user = mockUser();
+        when(userRepository.findBySource("oauth2", user.getSourceId(), ORGANIZATION)).thenReturn(Optional.of(user));
+        when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
+        when(userRepository.update(user)).thenReturn(user);
+
+        when(groupService.findById(EXECUTION_CONTEXT, "Mapped group")).thenReturn(mockGroupEntity("group-1", "Mapped group"));
+
+        RoleEntity roleApiUser = mockRoleEntity(RoleScope.API, "USER");
+        RoleEntity roleApiPrimaryOwner = mockRoleEntity(RoleScope.API, "PRIMARY_OWNER");
+        RoleEntity roleApplicationUser = mockRoleEntity(RoleScope.APPLICATION, "USER");
+        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT)).thenReturn(
+            Arrays.asList(roleApiUser, roleApplicationUser)
+        );
+        when(roleService.findById(roleApiPrimaryOwner.getId())).thenReturn(roleApiPrimaryOwner);
+        when(roleService.findById(roleApiUser.getId())).thenReturn(roleApiUser);
+
+        // Legacy group: IdP and manual roles share API scope; this group is not in the current IdP mapping.
+        Membership idpApiUserOnLegacyGroup = new Membership();
+        idpApiUserOnLegacyGroup.setId("membership-legacy-idp-api-user");
+        idpApiUserOnLegacyGroup.setSource("oauth2");
+        idpApiUserOnLegacyGroup.setReferenceId("group-legacy");
+        idpApiUserOnLegacyGroup.setReferenceType(io.gravitee.repository.management.model.MembershipReferenceType.GROUP);
+        idpApiUserOnLegacyGroup.setRoleId(roleApiUser.getId());
+
+        Membership manualApiPrimaryOwnerOnLegacyGroup = new Membership();
+        manualApiPrimaryOwnerOnLegacyGroup.setId("membership-legacy-manual-api-po");
+        manualApiPrimaryOwnerOnLegacyGroup.setSource("system");
+        manualApiPrimaryOwnerOnLegacyGroup.setReferenceId("group-legacy");
+        manualApiPrimaryOwnerOnLegacyGroup.setReferenceType(io.gravitee.repository.management.model.MembershipReferenceType.GROUP);
+        manualApiPrimaryOwnerOnLegacyGroup.setRoleId(roleApiPrimaryOwner.getId());
+
+        when(
+            membershipRepository.findByMemberIdAndMemberTypeAndReferenceType(
+                user.getId(),
+                io.gravitee.repository.management.model.MembershipMemberType.USER,
+                io.gravitee.repository.management.model.MembershipReferenceType.GROUP
+            )
+        ).thenReturn(Set.of(idpApiUserOnLegacyGroup, manualApiPrimaryOwnerOnLegacyGroup));
+
+        when(
+            membershipService.updateRolesToMemberOnReferenceBySource(
+                eq(EXECUTION_CONTEXT),
+                eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+                eq(new MembershipService.MembershipMember(user.getId(), null, MembershipMemberType.USER)),
+                any(),
+                eq("oauth2")
+            )
+        ).thenReturn(List.of(mockMemberEntity()));
+
+        String userInfo = IOUtils.toString(read("/oauth2/json/user_info_response_body.json"), Charset.defaultCharset());
+        userService.createOrUpdateUserFromSocialIdentityProvider(EXECUTION_CONTEXT, identityProvider, userInfo, null, null);
+
+        verify(membershipService, never()).deleteReferenceMember(
+            eq(EXECUTION_CONTEXT),
+            eq(MembershipReferenceType.GROUP),
+            eq("group-legacy"),
+            eq(MembershipMemberType.USER),
+            eq(user.getId())
+        );
+        verify(membershipService).deleteReferenceMemberBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(MembershipReferenceType.GROUP),
+            eq("group-legacy"),
+            eq(MembershipMemberType.USER),
+            eq(user.getId()),
+            eq("oauth2")
+        );
+        verify(membershipService, never()).updateRolesToMemberOnReferenceBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-legacy")),
+            any(),
+            any(),
+            eq("oauth2")
+        );
+        verify(membershipService).updateRolesToMemberOnReferenceBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+            eq(new MembershipService.MembershipMember(user.getId(), null, MembershipMemberType.USER)),
+            any(),
+            eq("oauth2")
+        );
+    }
+
+    @Test
+    public void shouldSyncIdpGroupRolesWhenManualMembershipReferencesStaleRoleId() throws Exception {
+        reset(identityProvider, userRepository, groupService, roleService, membershipService, membershipRepository);
+        mockDefaultEnvironment();
+
+        when(identityProvider.isSyncMappings()).thenReturn(true);
+        when(identityProvider.getId()).thenReturn("oauth2");
+        when(identityProvider.getRoleMappings()).thenReturn(null);
+
+        GroupMappingEntity mapping = new GroupMappingEntity();
+        mapping.setCondition("true");
+        mapping.setGroups(List.of("Mapped group"));
+        when(identityProvider.getGroupMappings()).thenReturn(List.of(mapping));
+
+        User user = mockUser();
+        when(userRepository.findBySource("oauth2", user.getSourceId(), ORGANIZATION)).thenReturn(Optional.of(user));
+        when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
+        when(userRepository.update(user)).thenReturn(user);
+
+        when(groupService.findById(EXECUTION_CONTEXT, "Mapped group")).thenReturn(mockGroupEntity("group-1", "Mapped group"));
+
+        RoleEntity roleApiUser = mockRoleEntity(RoleScope.API, "USER");
+        RoleEntity roleApplicationUser = mockRoleEntity(RoleScope.APPLICATION, "USER");
+        when(roleService.findDefaultRoleByScopes(ORGANIZATION, RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT)).thenReturn(
+            Arrays.asList(roleApiUser, roleApplicationUser)
+        );
+        when(roleService.findById(roleApiUser.getId())).thenReturn(roleApiUser);
+        when(roleService.findById(roleApplicationUser.getId())).thenReturn(roleApplicationUser);
+        when(roleService.findById("stale-role-id")).thenThrow(new RoleNotFoundException("stale-role-id"));
+
+        Membership staleManualMembership = new Membership();
+        staleManualMembership.setId("membership-stale-manual");
+        staleManualMembership.setSource("system");
+        staleManualMembership.setReferenceId("group-1");
+        staleManualMembership.setReferenceType(io.gravitee.repository.management.model.MembershipReferenceType.GROUP);
+        staleManualMembership.setRoleId("stale-role-id");
+
+        when(
+            membershipRepository.findByMemberIdAndMemberTypeAndReferenceType(
+                user.getId(),
+                io.gravitee.repository.management.model.MembershipMemberType.USER,
+                io.gravitee.repository.management.model.MembershipReferenceType.GROUP
+            )
+        ).thenReturn(Set.of(staleManualMembership));
+
+        when(
+            membershipService.updateRolesToMemberOnReferenceBySource(
+                eq(EXECUTION_CONTEXT),
+                eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+                eq(new MembershipService.MembershipMember(user.getId(), null, MembershipMemberType.USER)),
+                any(),
+                eq("oauth2")
+            )
+        ).thenReturn(List.of(mockMemberEntity()));
+
+        String userInfo = IOUtils.toString(read("/oauth2/json/user_info_response_body.json"), Charset.defaultCharset());
+        userService.createOrUpdateUserFromSocialIdentityProvider(EXECUTION_CONTEXT, identityProvider, userInfo, null, null);
+
+        verify(membershipService, never()).deleteReferenceMember(
+            eq(EXECUTION_CONTEXT),
+            eq(MembershipReferenceType.GROUP),
+            eq("group-1"),
+            eq(MembershipMemberType.USER),
+            eq(user.getId())
+        );
+        verify(membershipService).updateRolesToMemberOnReferenceBySource(
+            eq(EXECUTION_CONTEXT),
+            eq(new MembershipService.MembershipReference(MembershipReferenceType.GROUP, "group-1")),
+            eq(new MembershipService.MembershipMember(user.getId(), null, MembershipMemberType.USER)),
+            argThat(
+                roles ->
+                    roles.contains(new MembershipService.MembershipRole(RoleScope.API, "USER")) &&
+                    roles.contains(new MembershipService.MembershipRole(RoleScope.APPLICATION, "USER"))
+            ),
+            eq("oauth2")
+        );
     }
 
     @Test
@@ -3470,5 +3795,219 @@ public class UserServiceTest {
 
             userService.updateServiceAccountStatus(EXECUTION_CONTEXT, USER_NAME, true);
         });
+    }
+
+    @Nested
+    class UpdateUserRoles {
+
+        private static final String CALLER_ID = "caller";
+        private static final String ADMIN_ROLE_ID = "admin-role";
+        private static final String USER_ROLE_ID = "user-role";
+
+        private final RoleEntity adminRole = role(
+            ADMIN_ROLE_ID,
+            "ADMIN",
+            Map.of("USER", "CRUD".toCharArray(), "ROLE", "CRUD".toCharArray())
+        );
+        private final RoleEntity userRole = role(USER_ROLE_ID, "USER", Map.of("USER", "R".toCharArray()));
+
+        @BeforeEach
+        void setUp() throws TechnicalException {
+            User target = new User();
+            target.setId(USER_NAME);
+            target.setOrganizationId(ORGANIZATION);
+            when(userRepository.findById(USER_NAME)).thenReturn(of(target));
+            when(roleService.findById(ADMIN_ROLE_ID)).thenReturn(adminRole);
+            when(roleService.findById(USER_ROLE_ID)).thenReturn(userRole);
+        }
+
+        @AfterEach
+        void tearDown() {
+            SecurityContextHolder.clearContext();
+        }
+
+        @Test
+        void should_forbid_granting_a_role_with_permissions_the_caller_does_not_hold() {
+            authenticateCaller();
+            givenTargetMemberWithRoles(userRole);
+            givenCallerPermissions(Map.of("USER", "RU".toCharArray()));
+
+            assertThrows(ForbiddenAccessException.class, () ->
+                userService.updateUserRoles(
+                    EXECUTION_CONTEXT,
+                    USER_NAME,
+                    MembershipReferenceType.ORGANIZATION,
+                    ORGANIZATION,
+                    new ArrayList<>(List.of(ADMIN_ROLE_ID))
+                )
+            );
+
+            verify(membershipService, never()).removeRole(any(), any(), any(), any(), any());
+            verify(membershipService, never()).addRoleToMemberOnReference(any(), any(), any(), any());
+        }
+
+        @Test
+        void should_grant_a_role_whose_permissions_the_caller_holds() {
+            authenticateCaller();
+            givenTargetMemberWithRoles();
+            givenCallerPermissions(Map.of("USER", "RU".toCharArray()));
+
+            userService.updateUserRoles(
+                EXECUTION_CONTEXT,
+                USER_NAME,
+                MembershipReferenceType.ORGANIZATION,
+                ORGANIZATION,
+                new ArrayList<>(List.of(USER_ROLE_ID))
+            );
+
+            verify(membershipService).addRoleToMemberOnReference(
+                eq(EXECUTION_CONTEXT),
+                eq(new MembershipService.MembershipReference(MembershipReferenceType.ORGANIZATION, ORGANIZATION)),
+                eq(new MembershipService.MembershipMember(USER_NAME, null, MembershipMemberType.USER)),
+                eq(new MembershipService.MembershipRole(RoleScope.ORGANIZATION, "USER"))
+            );
+        }
+
+        @Test
+        void should_grant_any_role_when_the_caller_is_organization_admin() {
+            authenticateCaller("ORGANIZATION:ADMIN");
+            givenTargetMemberWithRoles(userRole);
+
+            userService.updateUserRoles(
+                EXECUTION_CONTEXT,
+                USER_NAME,
+                MembershipReferenceType.ORGANIZATION,
+                ORGANIZATION,
+                new ArrayList<>(List.of(ADMIN_ROLE_ID))
+            );
+
+            verify(membershipService).removeRole(
+                MembershipReferenceType.ORGANIZATION,
+                ORGANIZATION,
+                MembershipMemberType.USER,
+                USER_NAME,
+                USER_ROLE_ID
+            );
+            verify(membershipService).addRoleToMemberOnReference(
+                eq(EXECUTION_CONTEXT),
+                any(),
+                any(),
+                eq(new MembershipService.MembershipRole(RoleScope.ORGANIZATION, "ADMIN"))
+            );
+        }
+
+        @Test
+        void should_keep_a_role_the_user_already_holds_without_checking_the_caller() {
+            authenticateCaller();
+            givenTargetMemberWithRoles(adminRole);
+
+            userService.updateUserRoles(
+                EXECUTION_CONTEXT,
+                USER_NAME,
+                MembershipReferenceType.ORGANIZATION,
+                ORGANIZATION,
+                new ArrayList<>(List.of(ADMIN_ROLE_ID))
+            );
+
+            verify(membershipService, never()).removeRole(any(), any(), any(), any(), any());
+            verify(membershipService, never()).addRoleToMemberOnReference(any(), any(), any(), any());
+            verify(membershipService, never()).getUserMemberPermissions(any(), any(), any(), any());
+        }
+
+        @Test
+        void should_forbid_removing_a_role_with_permissions_the_caller_does_not_hold() {
+            authenticateCaller();
+            givenTargetMemberWithRoles(adminRole, userRole);
+            givenCallerPermissions(Map.of("USER", "RU".toCharArray()));
+
+            assertThrows(ForbiddenAccessException.class, () ->
+                userService.updateUserRoles(
+                    EXECUTION_CONTEXT,
+                    USER_NAME,
+                    MembershipReferenceType.ORGANIZATION,
+                    ORGANIZATION,
+                    new ArrayList<>(List.of(USER_ROLE_ID))
+                )
+            );
+
+            verify(membershipService, never()).removeRole(any(), any(), any(), any(), any());
+        }
+
+        @Test
+        void should_remove_a_role_whose_permissions_the_caller_holds() {
+            authenticateCaller();
+            givenTargetMemberWithRoles(userRole);
+            givenCallerPermissions(Map.of("USER", "RU".toCharArray()));
+
+            userService.updateUserRoles(
+                EXECUTION_CONTEXT,
+                USER_NAME,
+                MembershipReferenceType.ORGANIZATION,
+                ORGANIZATION,
+                new ArrayList<>()
+            );
+
+            verify(membershipService).removeRole(
+                MembershipReferenceType.ORGANIZATION,
+                ORGANIZATION,
+                MembershipMemberType.USER,
+                USER_NAME,
+                USER_ROLE_ID
+            );
+        }
+
+        @Test
+        void should_forbid_granting_an_environment_role_when_the_caller_only_holds_its_permissions_on_the_organization() {
+            authenticateCaller();
+            RoleEntity environmentRole = role("env-role", "USER", Map.of("USER", "R".toCharArray()));
+            environmentRole.setScope(RoleScope.ENVIRONMENT);
+            when(roleService.findById("env-role")).thenReturn(environmentRole);
+            givenCallerPermissions(Map.of("USER", "RU".toCharArray()));
+            when(
+                membershipService.getUserMemberPermissions(EXECUTION_CONTEXT, MembershipReferenceType.ENVIRONMENT, ENVIRONMENT, CALLER_ID)
+            ).thenReturn(Map.of());
+
+            assertThrows(ForbiddenAccessException.class, () ->
+                userService.updateUserRoles(
+                    EXECUTION_CONTEXT,
+                    USER_NAME,
+                    MembershipReferenceType.ENVIRONMENT,
+                    ENVIRONMENT,
+                    new ArrayList<>(List.of("env-role"))
+                )
+            );
+
+            verify(membershipService, never()).addRoleToMemberOnReference(any(), any(), any(), any());
+        }
+
+        private void authenticateCaller(String... authorities) {
+            var principal = new UserDetails(CALLER_ID, "", Arrays.stream(authorities).map(SimpleGrantedAuthority::new).toList());
+            SecurityContextHolder.setContext(
+                new SecurityContextImpl(new UsernamePasswordAuthenticationToken(principal, "", principal.getAuthorities()))
+            );
+        }
+
+        private void givenTargetMemberWithRoles(RoleEntity... roles) {
+            MemberEntity member = new MemberEntity();
+            member.setRoles(List.of(roles));
+            when(
+                membershipService.getUserMember(EXECUTION_CONTEXT, MembershipReferenceType.ORGANIZATION, ORGANIZATION, USER_NAME)
+            ).thenReturn(member);
+        }
+
+        private void givenCallerPermissions(Map<String, char[]> permissions) {
+            when(
+                membershipService.getUserMemberPermissions(EXECUTION_CONTEXT, MembershipReferenceType.ORGANIZATION, ORGANIZATION, CALLER_ID)
+            ).thenReturn(permissions);
+        }
+
+        private static RoleEntity role(String id, String name, Map<String, char[]> permissions) {
+            RoleEntity role = new RoleEntity();
+            role.setId(id);
+            role.setName(name);
+            role.setScope(RoleScope.ORGANIZATION);
+            role.setPermissions(permissions);
+            return role;
+        }
     }
 }

@@ -30,7 +30,7 @@ export const ConfigureTestingGmdFormEditor = () => {
         imports: [MockMonacoEditorStandaloneComponent],
       },
     });
-  } catch (e) {
+  } catch {
     // Do nothing
   }
 };
@@ -51,6 +51,11 @@ export class GmdFormEditorHarness extends ComponentHarness {
     const input = await this.getEditorInput();
     const disabled = await input.getAttribute('disabled');
     return disabled !== null;
+  }
+
+  async isPreviewVisible(): Promise<boolean> {
+    const preview = await this.locatorForOptional('.container__preview')();
+    return preview !== null && (await preview.getProperty<boolean>('hidden')) === false;
   }
 
   async getStatusLabelText(): Promise<string | null> {

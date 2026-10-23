@@ -129,11 +129,10 @@ data:
         {{- else if (eq .Values.api.analytics.type "none") }}
         type: none
         {{- end }}
-
-      {{- if ne .Values.api.otelTraces.type "none" }}
+      {{- $otelTracesType := (.Values.api.otelTraces).type | default "none" }}
       otel-traces:
-        type: {{ .Values.api.otelTraces.type }}
-        {{- if (eq .Values.api.otelTraces.type "elasticsearch") }}
+        type: {{ $otelTracesType }}
+        {{- if (eq $otelTracesType "elasticsearch") }}
         elasticsearch:
           {{- with .Values.api.otelTraces.elasticsearch.endpoints }}
           endpoints:
@@ -165,12 +164,10 @@ data:
           {{- end }}
           index: {{ .Values.api.otelTraces.elasticsearch.index }}
         {{- end }}
-      {{- end }}
-
-      {{- if ne .Values.api.otelLogs.type "none" }}
+      {{- $otelLogsType := (.Values.api.otelLogs).type | default "none" }}
       otel-logs:
-        type: {{ .Values.api.otelLogs.type }}
-        {{- if (eq .Values.api.otelLogs.type "elasticsearch") }}
+        type: {{ $otelLogsType }}
+        {{- if (eq $otelLogsType "elasticsearch") }}
         elasticsearch:
           {{- with .Values.api.otelLogs.elasticsearch.endpoints }}
           endpoints:
@@ -202,7 +199,6 @@ data:
           {{- end }}
           index: {{ .Values.api.otelLogs.elasticsearch.index }}
         {{- end }}
-      {{- end }}
 
     # Secret Manager configuration
     {{- if .Values.secrets }}
@@ -262,6 +258,17 @@ data:
           url: {{ include "gammaUi.consoleUrl" . }}
           {{- end }}
         {{- end}}
+        {{- $edgeReactor := index .Values.installation.standalone "edge-reactor" }}
+        {{- if or $edgeReactor.urls $edgeReactor.url }}
+        edge-reactor:
+          {{- with $edgeReactor.urls }}
+          urls:
+            {{- toYaml . | nindent 10 }}
+          {{- end }}
+          {{- with $edgeReactor.url }}
+          url: {{ . | quote }}
+          {{- end }}
+        {{- end }}
       {{ else }}
       multi-tenant:
         {{- toYaml (index .Values "installation" "multi-tenant") | nindent 8 }}
@@ -272,6 +279,10 @@ data:
       analytics:
         {{ toYaml .Values.ui.analytics | indent 8 | trim -}}
       {{- end }}
+      authentication:
+        expose:
+          accessToken: {{ dig "console" "exposeAccessToken" true .Values.api.authentication }}
+          idToken: {{ dig "console" "exposeIdToken" true .Values.api.authentication }}
     services:
       core:
         http:
@@ -474,6 +485,12 @@ data:
                 }
           lookup:
             allow-email-in-search-results: {{ .Values.ldap.lookup.allowEmailInSearchResults }}
+            {{- if .Values.ldap.lookup.activations }}
+            activations:
+              {{- range .Values.ldap.lookup.activations }}
+              - {{ . | quote }}
+              {{- end }}
+            {{- end }}
             user:
               base: {{ .Values.ldap.lookup.user.base | quote }}
               filter: {{ .Values.ldap.lookup.user.filter | quote }}
@@ -643,6 +660,12 @@ data:
     {{- end }}
     {{- end }}
     {{- end }}
+
+    portal:
+      authentication:
+        expose:
+          accessToken: {{ dig "portal" "exposeAccessToken" true .Values.api.authentication }}
+          idToken: {{ dig "portal" "exposeIdToken" true .Values.api.authentication }}
 
     # The portal URL used in emails
     {{- if .Values.api.portalURL }}

@@ -15,6 +15,7 @@
  */
 package io.gravitee.repository.mongodb.management.internal.model;
 
+import java.util.List;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NonNull;
@@ -35,9 +36,14 @@ public class SubscriptionFormMongo {
     private String id;
 
     private String environmentId;
+    private String name;
+
+    /** Trimmed and lowercased {@link #name}, carrying the unique index that keeps names unique per environment. */
+    private String normalizedName;
+
     private String gmdContent;
-    private String portalPageContentId;
     private boolean enabled;
+    private List<String> apiIds = List.of();
 
     @NonNull
     private String validationConstraints;

@@ -21,13 +21,13 @@ import io.gravitee.gamma.rest.resources.GammaUIResource;
 import io.gravitee.gamma.rest.resources.OpenAPIResource;
 import io.gravitee.gamma.rest.resources.observability.GammaObservabilityResource;
 import io.gravitee.gamma.rest.resources.observability.analytics.AnalyticsResource;
+import io.gravitee.gamma.rest.resources.observability.capabilities.ObservabilityCapabilitiesResource;
 import io.gravitee.gamma.rest.resources.observability.dashboards.ObservabilityDashboardResource;
 import io.gravitee.gamma.rest.resources.observability.dashboards.ObservabilityDashboardsResource;
 import io.gravitee.gamma.rest.resources.observability.dashboards.exception.DashboardVersionConflictExceptionMapper;
 import io.gravitee.gamma.rest.resources.observability.filters.ObservabilityFiltersResource;
 import io.gravitee.gamma.rest.resources.observability.logs.LogsResource;
 import io.gravitee.gamma.rest.resources.tracing.TracingResource;
-import io.gravitee.rest.api.management.rest.mapper.ObjectMapperResolver;
 import io.gravitee.rest.api.management.rest.provider.BadRequestExceptionMapper;
 import io.gravitee.rest.api.management.rest.provider.ByteArrayOutputStreamWriter;
 import io.gravitee.rest.api.management.rest.provider.ConflictDomainExceptionMapper;
@@ -70,10 +70,11 @@ public class GammaModuleApplication extends ResourceConfig {
         register(AnalyticsResource.class);
         register(ObservabilityDashboardsResource.class);
         register(ObservabilityDashboardResource.class);
+        register(ObservabilityCapabilitiesResource.class);
 
         register(MultiPartFeature.class);
         register(PayloadInputBodyReader.class);
-        register(ObjectMapperResolver.class);
+        register(GammaObjectMapperResolver.class);
         register(ManagementExceptionMapper.class);
         register(ConstraintValidationExceptionMapper.class);
         register(UnrecognizedPropertyExceptionMapper.class);

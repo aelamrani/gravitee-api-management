@@ -16,12 +16,15 @@
 import {
     ActivityIcon,
     CloudIcon,
+    EyeIcon,
     FileTextIcon,
     GlobeIcon,
     MailIcon,
     MessageSquareIcon,
     SettingsIcon,
+    ShieldCheckIcon,
     ShieldIcon,
+    UserIcon,
     UsersIcon,
     UsersRoundIcon,
 } from '@gravitee/graphene-core/icons';
@@ -73,24 +76,38 @@ describe('platform navigation config', () => {
         expect(systemItems.find(item => item.key === 'templates')?.icon).toBe(FileTextIcon);
     });
 
-    it('places Applications, Integrations, Metadata, Dictionaries, Shared Policy Groups, then Broadcasts under Environment / APIs & Assets', () => {
+    it('places Applications, API Score, Integrations, Metadata, Dictionaries, User Fields, Shared Policy Groups, then Broadcasts under Environment / APIs & Assets', () => {
         expect(sectionKeys('Environment', 'APIs & Assets')).toEqual([
             'applications',
+            'api-score',
             'integrations',
             'metadata',
             'dictionaries',
+            'user-fields',
             'shared-policy-groups',
             'broadcasts',
         ]);
         const assetItems =
             NAV_SECTIONS.find(section => section.key === 'environment')?.groups.find(group => group.label === 'APIs & Assets')?.items ?? [];
+        expect(assetItems.find(item => item.key === 'api-score')?.icon).toBe(ShieldCheckIcon);
+        expect(assetItems.find(item => item.key === 'api-score')?.title).toBe('API Score');
         expect(assetItems.find(item => item.key === 'broadcasts')?.icon).toBe(MessageSquareIcon);
         expect(assetItems.find(item => item.key === 'broadcasts')?.title).toBe('Broadcasts');
+        expect(assetItems.find(item => item.key === 'user-fields')?.icon).toBe(UserIcon);
+        expect(assetItems.find(item => item.key === 'user-fields')?.title).toBe('User Fields');
     });
 
-    it('places Access Management, Gateways, Alerts, Notifications, API Health Check, SMTP, CORS, API Logging, Security Plan Types, and Audit under Environment / System & Security', () => {
+    it('declares the user-fields route in platform routing config', () => {
+        expect(PLATFORM_ROUTE_CONFIG.routeKeys).toContain('user-fields');
+        expect(ROUTES['user-fields']).toEqual({ path: 'user-fields', label: 'User Fields' });
+        expect(findNavSectionKey(NAV_SECTIONS, 'user-fields')).toBe('environment');
+    });
+
+    it('places Primary Owner Mode, Access Management, API Review, Gateways, Alerts, Notifications, API Health Check, SMTP, CORS, API Logging, Security Plan Types, Client Registration, and Audit under Environment / System & Security', () => {
         expect(sectionKeys('Environment', 'System & Security')).toEqual([
+            'primary-owner-mode',
             'access-management',
+            'api-review',
             'gateways',
             'alerts',
             'notification-settings',
@@ -99,16 +116,39 @@ describe('platform navigation config', () => {
             'environment-cors',
             'api-logging',
             'security-plan-types',
+            'client-registration',
             'environment-audit',
         ]);
         const systemItems =
             NAV_SECTIONS.find(section => section.key === 'environment')?.groups.find(group => group.label === 'System & Security')?.items ??
             [];
+        expect(systemItems.find(item => item.key === 'primary-owner-mode')?.title).toBe('Primary Owner Mode');
+        expect(systemItems.find(item => item.key === 'primary-owner-mode')?.icon).toBe(UsersRoundIcon);
         expect(systemItems.find(item => item.key === 'notification-settings')?.title).toBe('Notifications');
+        expect(systemItems.find(item => item.key === 'api-review')?.icon).toBe(EyeIcon);
+        expect(systemItems.find(item => item.key === 'api-review')?.title).toBe('API Review');
         expect(systemItems.find(item => item.key === 'api-health-check')?.icon).toBe(ActivityIcon);
         expect(systemItems.find(item => item.key === 'api-health-check')?.title).toBe('API Health Check');
         expect(systemItems.find(item => item.key === 'environment-smtp')?.icon).toBe(SettingsIcon);
         expect(systemItems.find(item => item.key === 'environment-cors')?.icon).toBe(GlobeIcon);
+    });
+
+    it('declares the primary-owner-mode route in platform routing config', () => {
+        expect(PLATFORM_ROUTE_CONFIG.routeKeys).toContain('primary-owner-mode');
+        expect(ROUTES['primary-owner-mode']).toEqual({ path: 'primary-owner-mode', label: 'Primary Owner Mode' });
+        expect(findNavSectionKey(NAV_SECTIONS, 'primary-owner-mode')).toBe('environment');
+    });
+
+    it('declares the api-review route in platform routing config', () => {
+        expect(PLATFORM_ROUTE_CONFIG.routeKeys).toContain('api-review');
+        expect(ROUTES['api-review']).toEqual({ path: 'api-review', label: 'API Review' });
+        expect(findNavSectionKey(NAV_SECTIONS, 'api-review')).toBe('environment');
+    });
+
+    it('declares the client-registration route in platform routing config', () => {
+        expect(PLATFORM_ROUTE_CONFIG.routeKeys).toContain('client-registration');
+        expect(ROUTES['client-registration']).toEqual({ path: 'client-registration', label: 'Client Registration' });
+        expect(findNavSectionKey(NAV_SECTIONS, 'client-registration')).toBe('environment');
     });
 
     it('declares the api-health-check route in platform routing config', () => {
@@ -128,11 +168,25 @@ describe('platform navigation config', () => {
         expect(teamGroup?.items[2]?.icon).toBe(ShieldIcon);
     });
 
-    it('builds unlabeled primary items from visible sections', () => {
-        const items = platformPrimaryNavItems(NAV_SECTIONS);
+    it('builds primary items from visible sections', () => {
+        const items = platformPrimaryNavItems(NAV_SECTIONS, itemKey => `/${itemKey}`);
         expect(items.map(item => item.key)).toEqual(['organization', 'environment', 'team']);
         expect(items.map(item => item.title)).toEqual(['Organization', 'Environment', 'Team']);
         expect(items.some(item => item.title === 'Platform')).toBe(false);
+    });
+
+    it('links each primary item to the first item of its section', () => {
+        const items = platformPrimaryNavItems(NAV_SECTIONS, itemKey => `/${itemKey}`);
+        expect(items.map(item => item.href)).toEqual(['/tenants', '/applications', '/users']);
+    });
+
+    it('leaves a primary item without a link when its section has no items', () => {
+        const emptySections = NAV_SECTIONS.map(section => ({ ...section, groups: [] }));
+        expect(platformPrimaryNavItems(emptySections, itemKey => `/${itemKey}`).map(item => item.href)).toEqual([
+            undefined,
+            undefined,
+            undefined,
+        ]);
     });
 
     it('resolves the section that owns a nav item', () => {
@@ -174,6 +228,12 @@ describe('platform navigation config', () => {
 
         expect(findAlerts(lockNavItem([...NAV_SECTIONS], 'alerts', true))?.access).toBe('locked');
         expect(findAlerts(lockNavItem([...NAV_SECTIONS], 'alerts', false))?.access).toBeUndefined();
+    });
+
+    it('declares the api-score route in platform routing config', () => {
+        expect(PLATFORM_ROUTE_CONFIG.routeKeys).toContain('api-score');
+        expect(ROUTES['api-score']).toEqual({ path: 'api-score', label: 'API Score' });
+        expect(findNavSectionKey(NAV_SECTIONS, 'api-score')).toBe('environment');
     });
 
     it('declares the integrations route in platform routing config', () => {

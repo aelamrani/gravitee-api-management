@@ -31,15 +31,15 @@ for POM in "$POM_FILE" "$DISTRIBUTION_POM_FILE"; do
     rm -f "$POM.bak"
 done
 
+# The pin follows the revision, or master keeps assembling a version it no longer publishes.
+set_core_pin "${NEXT_REVISION}-SNAPSHOT"
+
 # portal-openapi.yaml: bump version
 sed -i.bak "s|version: \"${REVISION}-SNAPSHOT\"|version: \"${NEXT_REVISION}-SNAPSHOT\"|" "$PORTAL_OPENAPI"
 rm -f "$PORTAL_OPENAPI.bak"
 
-# helm/Chart.yaml: bump version and appVersion, clear artifacthub changes
-sed -i.bak "s|version: ${REVISION}|version: ${NEXT_REVISION}|" "$HELM_CHART"
-rm -f "$HELM_CHART.bak"
-sed -i.bak "s|appVersion: ${REVISION}|appVersion: ${NEXT_REVISION}|" "$HELM_CHART"
-rm -f "$HELM_CHART.bak"
+# helm/Chart.yaml: bump the chart, clear artifacthub changes
+set_chart_version "${NEXT_REVISION}"
 awk '
   !in_block && /^  artifacthub.io\/changes:/ {
     print "  artifacthub.io/changes:"
@@ -54,17 +54,8 @@ awk '
   }
 ' "$HELM_CHART" > "${HELM_CHART}.tmp" && mv "${HELM_CHART}.tmp" "$HELM_CHART"
 
-# .mergify.yml: replace the oldest branch with the newly created branch
-OLDEST_BRANCH=$(grep -oE '[0-9]+\.[0-9]+\.x' "$MERGIFY_FILE" | sort -t. -k1,1n -k2,2n | head -1)
-OLDEST_LABEL=$(echo "$OLDEST_BRANCH" | sed 's/\./-/g')
-NEW_LABEL="${MAJOR}-${MINOR}-x"
-
-echo "Replacing oldest mergify branch '${OLDEST_BRANCH}' with '${BRANCH_NAME}'..."
-
-sed -i.bak "s|${OLDEST_BRANCH}|${BRANCH_NAME}|g" "$MERGIFY_FILE"
-rm -f "$MERGIFY_FILE.bak"
-sed -i.bak "s|${OLDEST_LABEL}|${NEW_LABEL}|g" "$MERGIFY_FILE"
-rm -f "$MERGIFY_FILE.bak"
+# .mergify.yml: the new line gets its backport rule; no line loses one here.
+add_mergify_rule "${BRANCH_NAME}" "${BRANCH_LABEL}"
 
 # Commit
 git -C "$REPO_ROOT" add pom.xml \
@@ -75,6 +66,7 @@ git -C "$REPO_ROOT" add pom.xml \
 
 git -C "$REPO_ROOT" commit -m "chore: prepare next version (${MAJOR}.${NEXT_MINOR})"
 
-git -C "$REPO_ROOT" push origin master
+git -C "$REPO_ROOT" --no-pager show HEAD
+run_confirmed git -C "$REPO_ROOT" push origin master
 
 echo "Changes committed and pushed on master."

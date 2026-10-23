@@ -18,13 +18,16 @@ package io.gravitee.gamma.rest.resources.observability.logs.dto;
 import io.gravitee.gamma.rest.core.observability.filter.exception.UnsupportedObservabilityFilterException;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterCondition;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterOperator;
+import io.gravitee.gamma.rest.resources.RejectUnknownProperties;
 import io.gravitee.gamma.rest.resources.observability.dto.FilterValues;
+import java.util.Locale;
 
 /**
  * Wire shape for one filter condition on the POST search body. Same polymorphic {@code value}
  * contract as the tracing endpoint's {@code FilterConditionDto}: scalar for
  * {@code EQ}/{@code GTE}/{@code LTE}, array for {@code IN}. Operator is UPPERCASE on the wire.
  */
+@RejectUnknownProperties
 public record FilterConditionDto(String name, String operator, Object value) {
     public FilterCondition toCore() {
         if (name == null || name.isBlank()) {
@@ -35,10 +38,10 @@ public record FilterConditionDto(String name, String operator, Object value) {
         }
         FilterOperator op;
         try {
-            op = FilterOperator.valueOf(operator.toUpperCase());
+            op = FilterOperator.valueOf(operator.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
             throw UnsupportedObservabilityFilterException.unsupportedOperator(name, operator);
         }
-        return new FilterCondition(name, op, FilterValues.normalize(value));
+        return new FilterCondition(name, op, FilterValues.normalize(name, value));
     }
 }

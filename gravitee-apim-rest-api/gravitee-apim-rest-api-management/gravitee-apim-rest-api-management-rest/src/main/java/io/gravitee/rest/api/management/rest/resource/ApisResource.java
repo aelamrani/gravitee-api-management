@@ -97,6 +97,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 /**
@@ -549,7 +550,11 @@ public class ApisResource extends AbstractResource {
 
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
         if (!isAdmin()) {
-            filters.put("api", apiAuthorizationService.findIdsByUser(executionContext, getAuthenticatedUser(), manageOnly));
+            Set<String> userApiIds = apiAuthorizationService.findIdsByUser(executionContext, getAuthenticatedUser(), manageOnly);
+            if (userApiIds.isEmpty()) {
+                return new PagedResult<>(List.of(), 0, 0, 0);
+            }
+            filters.put("api", userApiIds);
         }
 
         final boolean isRatingServiceEnabled = ratingService.isEnabled(executionContext);
@@ -579,7 +584,7 @@ public class ApisResource extends AbstractResource {
     @Path("import")
     @Operation(
         summary = "Update the API from the API definition",
-        description = "Update the API from the API definition in JSON format either with json or via an URL"
+        description = "Requires API_DEFINITION[UPDATE] on the API in the definition. A URL body also requires ENVIRONMENT_API[UPDATE] before it is fetched."
     )
     @ApiResponse(
         responseCode = "200",

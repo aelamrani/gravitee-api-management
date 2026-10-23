@@ -153,7 +153,8 @@ public class MembershipService_AddRoleToMemberOnReferenceTest {
             commandRepository,
             null,
             null,
-            apiProductGroupService
+            apiProductGroupService,
+            null
         );
     }
 

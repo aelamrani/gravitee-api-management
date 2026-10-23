@@ -16,17 +16,29 @@
 package io.gravitee.apim.core.portal_page.domain_service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
+import inmemory.ApiCrudServiceInMemory;
+import inmemory.ApiProductQueryServiceInMemory;
+import inmemory.PortalListingCrudServiceInMemory;
+import inmemory.PortalNavigationItemSourceDomainServiceInMemory;
 import inmemory.PortalNavigationItemsCrudServiceInMemory;
 import inmemory.PortalNavigationItemsQueryServiceInMemory;
+import inmemory.PortalPageContentCrudServiceInMemory;
+import inmemory.PortalPageContentQueryServiceInMemory;
 import io.gravitee.apim.core.audit.model.AuditActor;
 import io.gravitee.apim.core.audit.model.AuditInfo;
+import io.gravitee.apim.core.portal.domain_service.PortalNavigationSyncDomainService;
+import io.gravitee.apim.core.portal.domain_service.navigation.plan.NavigationSyncPlanExecutor;
 import io.gravitee.apim.core.portal.exception.PathConflictException;
+import io.gravitee.apim.core.portal.model.NavigationPath;
 import io.gravitee.apim.core.portal.model.PortalArea;
 import io.gravitee.apim.core.portal.model.PortalId;
+import io.gravitee.apim.core.portal.model.PortalNavigationStructure;
 import io.gravitee.apim.core.portal.model.PortalVisibility;
+import io.gravitee.apim.core.portal.query_service.AutomationManagedNavigationItemsQueryService;
 import io.gravitee.apim.core.portal_page.model.AutomationMetadata;
 import io.gravitee.apim.core.portal_page.model.NavigationItemReference;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationFolder;
@@ -104,6 +116,42 @@ class PortalLinkSyncDomainServiceTest {
         );
 
         assertThat(link.getParentId()).isEqualTo(expectedFolderId("/unknown"));
+    }
+
+    @Test
+    void adding_the_missing_folder_of_an_orphan_link_to_the_portal_passes_validation() {
+        var orphanLink = syncService.materialize(
+            AUDIT_INFO,
+            PORTAL_ID,
+            "external-docs",
+            "External Docs",
+            "https://docs.example.com",
+            "/missing",
+            0,
+            null
+        );
+        assertThat(orphanLink.getParentId()).isEqualTo(expectedFolderId("/missing"));
+        var portalNavigationSync = new PortalNavigationSyncDomainService(
+            navItemQuery,
+            new AutomationManagedNavigationItemsQueryService(new PortalListingCrudServiceInMemory(), navItemQuery),
+            new NavigationSyncPlanExecutor(navItemCrud, navItemQuery, new PortalPageContentCrudServiceInMemory()),
+            new PortalNavigationItemValidatorService(
+                navItemQuery,
+                new PortalPageContentQueryServiceInMemory(),
+                new ApiProductQueryServiceInMemory(),
+                new PortalNavigationItemSourceDomainServiceInMemory(),
+                new ApiCrudServiceInMemory()
+            )
+        );
+
+        assertThatCode(() ->
+            portalNavigationSync.validateForConflicts(
+                AUDIT_INFO,
+                PortalId.of(PORTAL_ID),
+                PortalNavigationStructure.empty(),
+                PortalNavigationStructure.ofTopNavbar(List.of(new NavigationPath("/missing", null)))
+            )
+        ).doesNotThrowAnyException();
     }
 
     @Test
@@ -361,6 +409,33 @@ class PortalLinkSyncDomainServiceTest {
 
         var throwable = catchThrowable(() ->
             syncService.materializeForApi(AUDIT_INFO, API_ID, "external-docs", "External Docs", "https://d.example", "/guides", 0, null)
+        );
+
+        assertThat(throwable).isInstanceOf(PathConflictException.class);
+    }
+
+    @Test
+    void materialize_for_api_allows_a_root_segment_already_owned_by_a_portal_root() {
+        // An API-attached item with no location is a root of the API's own subtree, spliced in under
+        // every nav-api row that lists the API. It never renders as a sibling of a portal root, so the
+        // two may hold the same segment: /docs under the API is not the portal's own "docs".
+        navItemCrud.create(linkRow("docs", null, 0));
+
+        var link = syncService.materializeForApi(AUDIT_INFO, API_ID, "docs", "Docs", "https://d.example", null, 0, null);
+
+        assertThat(link.isRoot()).isTrue();
+        assertThat(link.getReference()).isEqualTo(new NavigationItemReference.ApiReference(API_ID));
+    }
+
+    @Test
+    void materialize_still_rejects_a_portal_attached_link_whose_root_segment_is_owned_by_another_portal_item() {
+        // Console-created and seeded roots carry PortalReference(ZERO) while an automation portal link
+        // carries PortalReference(portalId). Both render at the portal's top level, so they do clash —
+        // scoping the root check by exact reference equality would wrongly let this through.
+        navItemCrud.create(linkRow("docs", null, 0));
+
+        var throwable = catchThrowable(() ->
+            syncService.materialize(AUDIT_INFO, PORTAL_ID, "docs", "Docs", "https://d.example", null, 0, null)
         );
 
         assertThat(throwable).isInstanceOf(PathConflictException.class);

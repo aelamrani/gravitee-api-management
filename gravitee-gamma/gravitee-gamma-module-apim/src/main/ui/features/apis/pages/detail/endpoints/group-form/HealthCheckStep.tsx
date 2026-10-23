@@ -26,6 +26,7 @@ import {
     SelectItem,
     SelectTrigger,
     SelectValue,
+    Switch,
     Textarea,
 } from '@gravitee/graphene-core';
 import { PlusIcon, Trash2Icon } from '@gravitee/graphene-core/icons';
@@ -190,14 +191,21 @@ export function HealthCheckStep({
                 </Alert>
             )}
 
-            <SwitchRow
-                id="hc-enabled"
-                label="Enabled"
-                desc="This service requires an API deployment. Deploy the API to start the health-check service."
-                checked={healthCheck.enabled}
-                disabled={readOnly || inherit}
-                onChange={v => onChange({ enabled: v })}
-            />
+            <div className="w-fit space-y-1 rounded-lg border px-4 py-3">
+                <div className="flex items-center justify-start gap-4">
+                    <Label htmlFor="hc-enabled" className="text-sm font-medium">
+                        Enable health-check
+                    </Label>
+                    <Switch
+                        id="hc-enabled"
+                        checked={healthCheck.enabled}
+                        disabled={readOnly || inherit}
+                        onCheckedChange={v => onChange({ enabled: v })}
+                        aria-label="Enable health-check"
+                    />
+                </div>
+                <p className="text-xs text-muted-foreground">Activate the health check to monitor this endpoint availability.</p>
+            </div>
 
             <Card>
                 <CardContent className="pt-4 pb-3 px-4">
@@ -254,6 +262,24 @@ export function HealthCheckStep({
                 />
 
                 <HeadersEditor headers={config.headers} disabled={configDisabled} onChange={headers => onConfigChange({ headers })} />
+
+                {(config.method === 'POST' || config.method === 'PUT') && (
+                    <div className="space-y-2">
+                        <Label htmlFor="hc-body" className="text-sm">
+                            Body
+                        </Label>
+                        <Textarea
+                            id="hc-body"
+                            value={config.body}
+                            disabled={configDisabled}
+                            onChange={e => onConfigChange({ body: e.target.value })}
+                            rows={4}
+                            className="font-mono text-sm"
+                            style={{ fieldSizing: 'fixed' } as React.CSSProperties}
+                        />
+                        <p className="text-xs text-muted-foreground">Make sure to add a Content-Type header for POST/PUT HTTP method.</p>
+                    </div>
+                )}
 
                 <div className="space-y-2">
                     <Label htmlFor="hc-assertion" className="text-sm">

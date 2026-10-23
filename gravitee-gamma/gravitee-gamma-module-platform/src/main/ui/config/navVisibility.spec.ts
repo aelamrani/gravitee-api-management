@@ -78,6 +78,7 @@ const ENVIRONMENT_ADMIN = [
     'environment-audit-r',
     'environment-am_configuration-r',
     'environment-message-c',
+    'environment-client_registration_provider-r',
 ] as const;
 
 const ORGANIZATION_ADMIN = [
@@ -95,9 +96,12 @@ const ORGANIZATION_ADMIN = [
     'organization-user-u',
     'organization-user-d',
     'organization-notification_templates-r',
+    'organization-custom_user_fields-r',
 ] as const;
 
 const ENTITLED_LICENSE: License = { tier: 'enterprise', packs: [], features: [], isExpired: false };
+const OSS_LICENSE: License = { tier: 'oss', packs: [], features: [], isExpired: false };
+const EXPIRED_LICENSE: License = { tier: 'enterprise', packs: [], features: [], isExpired: true };
 
 function hasOf(granted: readonly string[]): (permission: string) => boolean {
     const set = new Set(granted);
@@ -199,9 +203,12 @@ describe('platform nav visibility', () => {
                 'environment-smtp',
                 'environment-cors',
                 'security-plan-types',
+                'primary-owner-mode',
+                'api-review',
                 'api-health-check',
                 'environment-audit',
                 'access-management',
+                'client-registration',
                 'groups',
             ]),
         );
@@ -218,6 +225,29 @@ describe('platform nav visibility', () => {
         expect(isNavItemVisible('access-management', visibility(['environment-am_configuration-r']))).toBe(true);
         expect(isNavItemVisible('access-management', visibility([...ORGANIZATION_USER, ...ENVIRONMENT_USER]))).toBe(false);
         expect(isNavItemVisible('access-management', visibility([...ORGANIZATION_USER, ...FEDERATION_AGENT]))).toBe(false);
+    });
+
+    it('shows API Score for environment-integration-r when scoring is enabled', () => {
+        const entitled = visibility(['environment-integration-r'], { apiScoreEnabled: true });
+
+        expect(isNavItemVisible('api-score', entitled)).toBe(true);
+        expect(visibleNavItemKeys(entitled)).toEqual(['api-score']);
+        expect(pageGuardForNavItem('api-score')).toEqual({ anyOf: ['environment-integration-r'] });
+        expect(requiresOrganizationSettingsGate('api-score')).toBe(false);
+    });
+
+    it('hides API Score without environment-integration-r even when scoring is enabled', () => {
+        const unpermitted = visibility([], { apiScoreEnabled: true });
+
+        expect(isNavItemVisible('api-score', unpermitted)).toBe(false);
+        expect(visibleNavItemKeys(unpermitted)).not.toContain('api-score');
+    });
+
+    it('hides API Score when scoring is disabled, even with environment-integration-r', () => {
+        const permitted = visibility(['environment-integration-r']);
+
+        expect(isNavItemVisible('api-score', permitted)).toBe(false);
+        expect(visibleNavItemKeys(permitted)).not.toContain('api-score');
     });
 
     it('shows Integrations for environment-integration-r when the federation availability gate passes', () => {
@@ -239,9 +269,17 @@ describe('platform nav visibility', () => {
         expect(pageGuardForNavItem('integrations')).toEqual({ anyOf: ['environment-integration-r'] });
     });
 
-    it('withholds Federation availability until a license is reported', () => {
-        expect(isFederationAvailable({ federationEnabled: true, license: null })).toBe(false);
+    it('makes Federation available for an entitled license', () => {
         expect(isFederationAvailable({ federationEnabled: true, license: ENTITLED_LICENSE })).toBe(true);
+    });
+
+    it.each([
+        ['no license has been reported yet', true, null],
+        ['the license tier is oss', true, OSS_LICENSE],
+        ['the license has expired', true, EXPIRED_LICENSE],
+        ['Federation is not enabled for the organization', false, ENTITLED_LICENSE],
+    ])('withholds Federation availability when %s', (_case, federationEnabled, license) => {
+        expect(isFederationAvailable({ federationEnabled, license })).toBe(false);
     });
 
     it('hides Management, CORS, SMTP, and API Logging when the user has organization-settings-u without -r', () => {
@@ -348,12 +386,35 @@ describe('platform nav visibility', () => {
         });
     });
 
+    it('gates User Fields on organization-custom_user_fields-r without the org settings gate', () => {
+        expect(requiresOrganizationSettingsGate('user-fields')).toBe(false);
+        expect(pageGuardForNavItem('user-fields')).toEqual({ anyOf: ['organization-custom_user_fields-r'] });
+        expect(isNavItemVisible('user-fields', visibility(['organization-custom_user_fields-r']))).toBe(true);
+        expect(isNavItemVisible('user-fields', visibility([...ORGANIZATION_USER, ...ENVIRONMENT_USER]))).toBe(false);
+        expect(isNavItemVisible('user-fields', visibility([...ORGANIZATION_ADMIN, ...ENVIRONMENT_ADMIN]))).toBe(true);
+    });
+
+    it('gates API Review on environment-settings-r without the org settings gate', () => {
+        expect(requiresOrganizationSettingsGate('api-review')).toBe(false);
+        expect(pageGuardForNavItem('api-review')).toEqual({ anyOf: ['environment-settings-r'] });
+        expect(isNavItemVisible('api-review', visibility(['environment-settings-r']))).toBe(true);
+        expect(isNavItemVisible('api-review', visibility(['environment-quality_rule-r']))).toBe(false);
+        expect(isNavItemVisible('api-review', visibility([...ORGANIZATION_USER, ...ENVIRONMENT_USER]))).toBe(false);
+    });
+
     it('gates Broadcasts on environment-message-c without the org settings gate', () => {
         expect(requiresOrganizationSettingsGate('broadcasts')).toBe(false);
         expect(pageGuardForNavItem('broadcasts')).toEqual({ anyOf: ['environment-message-c'] });
         expect(isNavItemVisible('broadcasts', visibility(['environment-message-c']))).toBe(true);
         expect(isNavItemVisible('broadcasts', visibility([...ORGANIZATION_USER, ...ENVIRONMENT_USER]))).toBe(false);
         expect(landingNavItemKey(visibility(['environment-application-r', 'environment-message-c']))).toBe('applications');
+    });
+
+    it('gates Client Registration on environment-client_registration_provider-r without the org settings gate', () => {
+        expect(requiresOrganizationSettingsGate('client-registration')).toBe(false);
+        expect(pageGuardForNavItem('client-registration')).toEqual({ anyOf: ['environment-client_registration_provider-r'] });
+        expect(isNavItemVisible('client-registration', visibility(['environment-client_registration_provider-r']))).toBe(true);
+        expect(isNavItemVisible('client-registration', visibility([...ORGANIZATION_USER, ...ENVIRONMENT_USER]))).toBe(false);
     });
 
     it('gates Notifications on environment-notification-r without the org settings gate', () => {

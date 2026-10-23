@@ -43,6 +43,7 @@ import jakarta.inject.Inject;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -76,8 +77,16 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
         when(environmentService.findById(ENVIRONMENT)).thenReturn(environmentEntity);
         when(environmentService.findByOrgAndIdOrHrid(ORGANIZATION, ENVIRONMENT)).thenReturn(environmentEntity);
 
-        when(analyticsQueryContextLoader.load(any(), any())).thenReturn(
-            new AnalyticsQueryContext(null, new ExecutionContext(ORGANIZATION, ENVIRONMENT), Set.of(), Map.of(), Map.of(), Map.of())
+        when(analyticsQueryContextLoader.load(any(), any(), any())).thenReturn(
+            new AnalyticsQueryContext(
+                null,
+                new ExecutionContext(ORGANIZATION, ENVIRONMENT),
+                Set.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Optional.empty()
+            )
         );
 
         GraviteeContext.setCurrentEnvironment(ENVIRONMENT);
@@ -155,14 +164,15 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
 
     @Test
     void should_pass_authorized_api_ids_from_analytics_context_to_keyword_filter_query() {
-        when(analyticsQueryContextLoader.load(any(), any())).thenReturn(
+        when(analyticsQueryContextLoader.load(any(), any(), any())).thenReturn(
             new AnalyticsQueryContext(
                 null,
                 new ExecutionContext(ORGANIZATION, ENVIRONMENT),
                 Set.of("auth-api-1", "auth-api-2"),
                 Map.of(),
                 Map.of(),
-                Map.of()
+                Map.of(),
+                Optional.empty()
             )
         );
         when(
@@ -246,14 +256,15 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
 
     @Test
     void should_search_by_name_for_id_based_filter_with_query() {
-        when(analyticsQueryContextLoader.load(any(), any())).thenReturn(
+        when(analyticsQueryContextLoader.load(any(), any(), any())).thenReturn(
             new AnalyticsQueryContext(
                 null,
                 new ExecutionContext(ORGANIZATION, ENVIRONMENT),
                 Set.of(),
                 Map.of("api-id-1", "My API 1", "api-id-2", "Other API"),
                 Map.of(),
-                Map.of()
+                Map.of(),
+                Optional.empty()
             )
         );
 
@@ -286,14 +297,15 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
 
     @Test
     void should_resolve_id_based_filter_names_without_query() {
-        when(analyticsQueryContextLoader.load(any(), any())).thenReturn(
+        when(analyticsQueryContextLoader.load(any(), any(), any())).thenReturn(
             new AnalyticsQueryContext(
                 null,
                 new ExecutionContext(ORGANIZATION, ENVIRONMENT),
                 Set.of(),
                 Map.of("api-id-1", "My API 1", "api-id-2", "My API 2"),
                 Map.of(),
-                Map.of()
+                Map.of(),
+                Optional.empty()
             )
         );
         when(
@@ -414,8 +426,16 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
     @Test
     void should_search_plan_by_name_with_query() {
         planQueryServiceInMemory.reset();
-        when(analyticsQueryContextLoader.load(any(), any())).thenReturn(
-            new AnalyticsQueryContext(null, new ExecutionContext(ORGANIZATION, ENVIRONMENT), Set.of("api-1"), Map.of(), Map.of(), Map.of())
+        when(analyticsQueryContextLoader.load(any(), any(), any())).thenReturn(
+            new AnalyticsQueryContext(
+                null,
+                new ExecutionContext(ORGANIZATION, ENVIRONMENT),
+                Set.of("api-1"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Optional.empty()
+            )
         );
         // initWith uses Plan#copy(); definitionVersion must be set or copy() fails on switch (null).
         planQueryServiceInMemory.initWith(
@@ -430,6 +450,17 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
                     .build()
             )
         );
+        when(
+            filterValuesQueryService.findValuesInCalls(
+                eq(ORGANIZATION),
+                eq(ENVIRONMENT),
+                eq(FilterSpec.Name.PLAN),
+                any(),
+                any(),
+                eq(Set.of("plan-id-1")),
+                eq(Set.of("api-1"))
+            )
+        ).thenReturn(Set.of("plan-id-1"));
 
         try {
             var response = rootTarget("PLAN/values").queryParam("query", "Gold").request().get();
@@ -542,14 +573,15 @@ class ObservabilityFilterValuesResourceTest extends AbstractResourceTest {
 
     @Test
     void should_return_id_based_filter_values_on_page_2() {
-        when(analyticsQueryContextLoader.load(any(), any())).thenReturn(
+        when(analyticsQueryContextLoader.load(any(), any(), any())).thenReturn(
             new AnalyticsQueryContext(
                 null,
                 new ExecutionContext(ORGANIZATION, ENVIRONMENT),
                 Set.of(),
                 Map.of("api-id-6", "My API 6"),
                 Map.of(),
-                Map.of()
+                Map.of(),
+                Optional.empty()
             )
         );
         when(

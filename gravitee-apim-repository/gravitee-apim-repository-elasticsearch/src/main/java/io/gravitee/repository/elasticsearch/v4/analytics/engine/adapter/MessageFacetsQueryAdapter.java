@@ -25,11 +25,16 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Breaks message measures down by a dimension — operation, connector, API, application.
+ * Breaks message measures down by a dimension — operation, connector, API.
  *
- * <p>Runs on the second phase of the message join: the caller resolves the connection documents
- * first and passes their request ids in, because the message index carries none of the connection
- * dimensions (no plan-id, no app-id, no entrypoint-id) and could not be filtered by them directly.
+ * <p>Two entry points, for the two ways a message query can be answered. {@link #adapt(FacetsQuery,
+ * Set)} runs on the second phase of the join: the caller resolved the connection documents first and
+ * passes their request ids in, which is what a query filtering on a connection dimension needs when
+ * the documents in its window predate those fields. {@link #adapt(FacetsQuery)} reads the message
+ * documents alone, for windows whose documents carry the dimensions themselves.
+ *
+ * <p>Which one applies is not this class's decision: the repository owns it, because only it knows
+ * how old the data in the window is and whether the index maps the fields usably.
  */
 public class MessageFacetsQueryAdapter {
 
@@ -38,13 +43,21 @@ public class MessageFacetsQueryAdapter {
     private final BoolQueryAdapter boolAdapter = new BoolQueryAdapter(filterAdapter);
 
     public String adapt(FacetsQuery query, Set<String> requestIDs) {
-        return json(query, requestIDs).toString();
-    }
-
-    private JsonObject json(FacetsQuery query, Set<String> requestIDs) {
         var boolQuery = boolAdapter.messageFilter(query);
         MessageRequestIdFilter.restrictTo(boolQuery, requestIDs);
+        return json(query, boolQuery).toString();
+    }
 
+    /**
+     * Without the connection join: every filter of the query reads a field the message documents
+     * carry, so there is no request-id set to narrow by. Distinct from passing an empty set, which
+     * says the join ran and matched nothing.
+     */
+    public String adapt(FacetsQuery query) {
+        return json(query, boolAdapter.enrichedMessageFilter(query)).toString();
+    }
+
+    private JsonObject json(FacetsQuery query, JsonObject boolQuery) {
         return new JsonObject()
             .put("size", 0)
             .put("query", JsonObject.of("bool", boolQuery))

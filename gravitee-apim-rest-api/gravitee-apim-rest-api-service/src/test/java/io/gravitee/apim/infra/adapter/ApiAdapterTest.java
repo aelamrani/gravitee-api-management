@@ -19,8 +19,10 @@ import static assertions.CoreAssertions.assertThat;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import fixtures.core.model.ApiFixtures;
+import io.gravitee.apim.core.membership.model.PrimaryOwnerEntity;
 import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.definition.model.ResponseTemplate;
+import io.gravitee.definition.model.federation.FederatedAgent;
 import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.definition.model.v4.analytics.Analytics;
 import io.gravitee.definition.model.v4.edge.EdgeApi;
@@ -36,6 +38,7 @@ import io.gravitee.repository.management.model.ApiLifecycleState;
 import io.gravitee.repository.management.model.LifecycleState;
 import io.gravitee.repository.management.model.Visibility;
 import io.gravitee.rest.api.model.context.OriginContext;
+import io.gravitee.rest.api.model.federation.FederatedApiAgentEntity;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Date;
@@ -268,6 +271,62 @@ class ApiAdapterTest {
     }
 
     @Nested
+    class RepositoryToFederatedAgentEntity {
+
+        @Test
+        void should_map_only_enabled_capabilities_when_converting_to_federated_agent_entity() {
+            var agent = anAgent().capabilities(Map.of(FederatedAgent.STREAMING, true, FederatedAgent.PUSH_NOTIFICATIONS, false)).build();
+
+            var entity = toFederatedAgentEntity(agent);
+
+            assertThat(entity.getCapabilities()).containsExactly(FederatedAgent.STREAMING);
+        }
+
+        @Test
+        void should_map_null_capabilities_when_the_agent_has_no_capabilities_map() {
+            var agent = anAgent().capabilities(null).build();
+
+            var entity = toFederatedAgentEntity(agent);
+
+            assertThat(entity.getCapabilities()).isNull();
+        }
+
+        @Test
+        void should_map_null_capabilities_when_there_is_no_agent() {
+            var entity = toFederatedAgentEntity(null);
+
+            assertThat(entity.getCapabilities()).isNull();
+        }
+
+        @Test
+        void should_map_empty_capabilities_when_the_agent_capabilities_map_is_empty() {
+            var agent = anAgent().capabilities(Map.of()).build();
+
+            var entity = toFederatedAgentEntity(agent);
+
+            assertThat(entity.getCapabilities()).isNotNull().isEmpty();
+        }
+
+        private FederatedAgent.FederatedAgentBuilder anAgent() {
+            return FederatedAgent.builder()
+                .name("api-name")
+                .description("api-description")
+                .url("https://example.net/agent")
+                .version("1.0.0");
+        }
+
+        private FederatedApiAgentEntity toFederatedAgentEntity(FederatedAgent agent) {
+            var repository = apiV4().origin("integration").definitionVersion(DefinitionVersion.FEDERATED_AGENT).build();
+            return ApiAdapter.INSTANCE.toFederatedAgentEntity(
+                repository,
+                agent,
+                PrimaryOwnerEntity.builder().id("primary-owner-id").build(),
+                new OriginContext.Integration("int-a")
+            );
+        }
+    }
+
+    @Nested
     class ModelToRepository {
 
         @Test
@@ -392,6 +451,30 @@ class ApiAdapterTest {
 
             assertThat(api.getType()).isEqualTo(ApiType.EDGE);
             assertThat(api.getDefinition()).isEqualTo(GraviteeJacksonMapper.getInstance().writeValueAsString(edgeDefinition));
+        }
+
+        @Test
+        void should_convert_federated_agent_to_repository() throws JsonProcessingException {
+            var fixture = ApiFixtures.aFederatedAgent();
+            var skill = new FederatedAgent.Skill("skill-id", "skill-name", "skill-description", List.of("tag"), null, null, null);
+            var agent = ((FederatedAgent) fixture.getApiDefinitionValue()).toBuilder()
+                .provider(new FederatedAgent.Provider("Acme Robotics", "https://example.net"))
+                .skills(List.of(skill))
+                .build();
+            var model = fixture.toBuilder().apiDefinitionValue(agent).build();
+
+            var api = ApiAdapter.INSTANCE.toRepository(model);
+
+            assertThat(api.getDefinition()).isNotNull();
+            var persistedAgent = GraviteeJacksonMapper.getInstance().readValue(api.getDefinition(), FederatedAgent.class);
+            SoftAssertions.assertSoftly(soft -> {
+                soft.assertThat(persistedAgent.getName()).isEqualTo("My agent");
+                soft.assertThat(persistedAgent.getUrl()).isEqualTo("https://example.net");
+                soft.assertThat(persistedAgent.getVersion()).isEqualTo("1.0.0");
+                soft.assertThat(persistedAgent.getProvider().organization()).isEqualTo("Acme Robotics");
+                soft.assertThat(persistedAgent.getSkills()).containsExactly(skill);
+                soft.assertThat(persistedAgent.getDefinitionVersion()).isEqualTo(DefinitionVersion.FEDERATED_AGENT);
+            });
         }
     }
 

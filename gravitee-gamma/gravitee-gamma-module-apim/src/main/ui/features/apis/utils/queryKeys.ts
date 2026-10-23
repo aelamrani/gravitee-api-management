@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import type { Timeframe } from './healthTimeframe';
+import type { HealthTimeRange } from './healthTimeframe';
 import type { HealthField } from '../types/healthCheck';
 import type { PlanContext, PlanStatus } from '../types/plan';
 import type { SubscriptionContext } from '../types/subscription';
@@ -25,14 +25,20 @@ export const apiProxyKeys = {
 
 export const apiListKeys = {
     all: ['api-list'] as const,
-    search: (envId: string, query: string, page: number, perPage: number) =>
-        [...apiListKeys.all, 'search', envId, query, page, perPage] as const,
-    count: (envId: string, filter: object) => [...apiListKeys.all, 'count', envId, JSON.stringify(filter)] as const,
+    search: (envId: string, query: string, page: number, perPage: number, includeFederated = false) =>
+        [...apiListKeys.all, 'search', envId, query, page, perPage, includeFederated] as const,
+    count: (envId: string, filter: object, includeFederated = false) =>
+        [...apiListKeys.all, 'count', envId, JSON.stringify(filter), includeFederated] as const,
 } as const;
 
 export const apiDetailKeys = {
     all: ['api-detail'] as const,
     detail: (envId: string, apiId: string) => [...apiDetailKeys.all, envId, apiId] as const,
+};
+
+export const apiDeployVerifyKeys = {
+    all: ['api-deploy-verify'] as const,
+    detail: (envId: string, apiId: string) => [...apiDeployVerifyKeys.all, envId, apiId] as const,
 };
 
 export const apiEventsKeys = {
@@ -68,6 +74,11 @@ export const orgTagKeys = {
     list: () => [...orgTagKeys.all, 'list'] as const,
 };
 
+export const orgConsoleKeys = {
+    all: ['org-console'] as const,
+    settings: () => [...orgConsoleKeys.all, 'settings'] as const,
+};
+
 export const userTagKeys = {
     all: ['user-tags'] as const,
     list: () => [...userTagKeys.all, 'list'] as const,
@@ -83,6 +94,12 @@ export const apiPermissionKeys = {
     detail: (envId: string, apiId: string) => [...apiPermissionKeys.all, envId, apiId] as const,
 };
 
+export const apiPromotionKeys = {
+    all: ['api-promotion'] as const,
+    targets: (envId: string) => [...apiPromotionKeys.all, 'targets', envId] as const,
+    pending: (apiId: string) => [...apiPromotionKeys.all, 'pending', apiId] as const,
+};
+
 export const apiEntrypointKeys = {
     all: ['api-entrypoints'] as const,
     exposed: (envId: string, apiId: string) => [...apiEntrypointKeys.all, 'exposed', envId, apiId] as const,
@@ -94,6 +111,12 @@ export const portalSettingsKeys = {
     portalConfig: (envId: string) => [...portalSettingsKeys.all, 'portal-config', envId] as const,
 };
 
+export const apiReviewKeys = {
+    all: ['api-review'] as const,
+    qualityRules: (envId: string) => [...apiReviewKeys.all, 'quality-rules', envId] as const,
+    apiQualityRules: (envId: string, apiId: string) => [...apiReviewKeys.all, 'api-quality-rules', envId, apiId] as const,
+};
+
 export const apiScoringKeys = {
     all: ['api-scoring'] as const,
     report: (envId: string, apiId: string) => [...apiScoringKeys.all, 'report', envId, apiId] as const,
@@ -103,7 +126,14 @@ export const apiScoringKeys = {
 export const apiAlertKeys = {
     all: ['api-alerts'] as const,
     list: (envId: string, apiId: string) => [...apiAlertKeys.all, envId, apiId] as const,
-    history: (envId: string, apiId: string, alertId: string) => [...apiAlertKeys.all, 'history', envId, apiId, alertId] as const,
+    history: (envId: string, apiId: string, alertId: string, page = 1, size = 10) =>
+        [...apiAlertKeys.all, 'history', envId, apiId, alertId, page, size] as const,
+    notifiers: (envId: string) => [...apiAlertKeys.all, 'notifiers', envId] as const,
+    notifierSchema: (envId: string, notifierId: string) => [...apiAlertKeys.all, 'notifier-schema', envId, notifierId] as const,
+    status: (envId: string, apiId: string) => [...apiAlertKeys.all, 'status', envId, apiId] as const,
+    tenants: (envId: string) => [...apiAlertKeys.all, 'tenants', envId] as const,
+    lookupApplications: (envId: string, apiId: string) => [...apiAlertKeys.all, 'lookup-applications', envId, apiId] as const,
+    lookupPlans: (envId: string, apiId: string) => [...apiAlertKeys.all, 'lookup-plans', envId, apiId] as const,
 };
 
 export const apiAnalyticsKeys = {
@@ -125,9 +155,34 @@ export const apiNotificationKeys = {
     hooks: (envId: string) => [...apiNotificationKeys.all, 'hooks', envId] as const,
 };
 
+export const currentUserKeys = {
+    all: ['current-user'] as const,
+    me: () => [...currentUserKeys.all, 'me'] as const,
+};
+
+export const integrationKeys = {
+    all: ['integrations'] as const,
+    detail: (envId: string, integrationId: string) => [...integrationKeys.all, 'detail', envId, integrationId] as const,
+};
+
 export const apiMetadataKeys = {
     all: ['api-metadata'] as const,
     list: (envId: string, apiId: string, params: object) => [...apiMetadataKeys.all, 'list', envId, apiId, params] as const,
+};
+
+export const apiDocumentationKeys = {
+    all: ['api-documentation'] as const,
+    api: (envId: string, apiId: string) => [...apiDocumentationKeys.all, envId, apiId] as const,
+    list: (envId: string, apiId: string) => [...apiDocumentationKeys.api(envId, apiId), 'list'] as const,
+    publishLocations: (envId: string, apiId: string) => [...apiDocumentationKeys.api(envId, apiId), 'publish-locations'] as const,
+    contents: (envId: string, apiId: string) => [...apiDocumentationKeys.api(envId, apiId), 'content'] as const,
+    fetch: (envId: string, apiId: string) => [...apiDocumentationKeys.api(envId, apiId), 'fetch'] as const,
+    content: (envId: string, apiId: string, navId: string) => [...apiDocumentationKeys.contents(envId, apiId), navId] as const,
+};
+
+export const fetcherKeys = {
+    all: ['fetchers'] as const,
+    list: (envId: string, forImport: boolean) => [...fetcherKeys.all, envId, forImport ? 'import' : 'all'] as const,
 };
 
 export const apiPlanKeys = {
@@ -146,15 +201,22 @@ export const resourcePluginKeys = {
     schema: (resourceId: string) => [...resourcePluginKeys.all, 'schema', resourceId] as const,
 };
 
+export const endpointPluginKeys = {
+    all: ['endpoint-plugins'] as const,
+    configurationSchema: (endpointType: string) => [...endpointPluginKeys.all, 'configuration-schema', endpointType] as const,
+    sharedConfigurationSchema: (endpointType: string) => [...endpointPluginKeys.all, 'shared-configuration-schema', endpointType] as const,
+};
+
 export const apiHealthCheckKeys = {
     all: ['api-health-check'] as const,
-    availability: (envId: string, apiId: string, field: HealthField, timeframe: Timeframe) =>
-        [...apiHealthCheckKeys.all, 'availability', envId, apiId, field, timeframe] as const,
-    avgResponseTime: (envId: string, apiId: string, field: HealthField, timeframe: Timeframe) =>
-        [...apiHealthCheckKeys.all, 'avg-response-time', envId, apiId, field, timeframe] as const,
-    trend: (envId: string, apiId: string, timeframe: Timeframe) => [...apiHealthCheckKeys.all, 'trend', envId, apiId, timeframe] as const,
-    logs: (envId: string, apiId: string, timeframe: Timeframe, page: number, perPage: number) =>
-        [...apiHealthCheckKeys.all, 'logs', envId, apiId, timeframe, page, perPage] as const,
+    availability: (envId: string, apiId: string, field: HealthField, range: HealthTimeRange) =>
+        [...apiHealthCheckKeys.all, 'availability', envId, apiId, field, range.from, range.to] as const,
+    avgResponseTime: (envId: string, apiId: string, field: HealthField, range: HealthTimeRange) =>
+        [...apiHealthCheckKeys.all, 'avg-response-time', envId, apiId, field, range.from, range.to] as const,
+    trend: (envId: string, apiId: string, range: HealthTimeRange) =>
+        [...apiHealthCheckKeys.all, 'trend', envId, apiId, range.from, range.to] as const,
+    logs: (envId: string, apiId: string, range: HealthTimeRange, page: number, perPage: number) =>
+        [...apiHealthCheckKeys.all, 'logs', envId, apiId, range.from, range.to, page, perPage] as const,
 };
 
 export const tenantKeys = {
@@ -173,4 +235,8 @@ export const apiSubscriptionKeys = {
         [...apiSubscriptionKeys.all, ctx.type, ctx.entityId, 'api-keys', envId, subscriptionId, page] as const,
     plans: (envId: string, ctx: SubscriptionContext) => [...apiSubscriptionKeys.all, ctx.type, ctx.entityId, 'plans', envId] as const,
     applications: (envId: string, query: string) => [...apiSubscriptionKeys.all, 'applications', envId, query] as const,
+    applicationApiKeySubscriptions: (envId: string, applicationId: string) =>
+        [...apiSubscriptionKeys.all, 'application-api-key-subscriptions', envId, applicationId] as const,
+    subscribers: (envId: string, ctx: SubscriptionContext, term: string) =>
+        [...apiSubscriptionKeys.all, ctx.type, ctx.entityId, 'subscribers', envId, term] as const,
 };

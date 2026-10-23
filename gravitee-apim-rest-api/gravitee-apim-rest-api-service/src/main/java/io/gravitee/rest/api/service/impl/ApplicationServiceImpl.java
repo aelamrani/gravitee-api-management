@@ -156,7 +156,6 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import lombok.CustomLog;
 import org.apache.commons.lang3.StringUtils;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
@@ -325,37 +324,53 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
         RolePermissionAction... acl
     ) {
         log.debug("Find applicationIds for user and permission {}, {}, {}", username, rolePermission, acl);
-        ApplicationQuery applicationQuery = buildApplicationQueryForUserAndPermission(executionContext, rolePermission, acl, username);
+        Set<String> grantedApplicationIds = findApplicationIdsGrantingPermission(executionContext, username, rolePermission, acl);
+
+        ApplicationQuery applicationQuery = new ApplicationQuery();
+        applicationQuery.setIds(grantedApplicationIds);
+        applicationQuery.setStatus(ApplicationStatus.ACTIVE.name());
         applicationQuery.setExcludeFilters(Arrays.asList(ApplicationExcludeFilter.OWNER));
         return searchIds(executionContext, applicationQuery, sortable);
     }
 
-    @NotNull
-    private ApplicationQuery buildApplicationQueryForUserAndPermission(
+    private Set<String> findApplicationIdsGrantingPermission(
         ExecutionContext executionContext,
+        String username,
         RolePermission rolePermission,
-        RolePermissionAction[] acl,
-        String username
+        RolePermissionAction[] acl
     ) {
+        // Permission names are shared across scopes (API LOG vs APPLICATION LOG), and group memberships carry roles of every scope.
         List<String> roleIdsWithPermission = roleService
             .findAllByOrganization(executionContext.getOrganizationId())
             .stream()
+            .filter(roleEntity -> roleEntity.getScope() == rolePermission.getScope())
             .filter(roleEntity -> roleService.hasPermission(roleEntity.getPermissions(), rolePermission.getPermission(), acl))
             .map(RoleEntity::getId)
             .toList();
 
-        Set<String> appIds = membershipService.getReferenceIdsByMemberAndReferenceAndRoleIn(
-            MembershipMemberType.USER,
-            username,
-            MembershipReferenceType.APPLICATION,
-            roleIdsWithPermission
+        Set<String> applicationIds = new HashSet<>(
+            membershipService.getReferenceIdsByMemberAndReferenceAndRoleIn(
+                MembershipMemberType.USER,
+                username,
+                MembershipReferenceType.APPLICATION,
+                roleIdsWithPermission
+            )
         );
 
-        ApplicationQuery applicationQuery = new ApplicationQuery();
-        applicationQuery.setIds(appIds);
-        applicationQuery.setUser(username);
-        applicationQuery.setStatus(ApplicationStatus.ACTIVE.name());
-        return applicationQuery;
+        Set<String> groupIds = membershipService.getReferenceIdsByMemberAndReferenceAndRoleIn(
+            MembershipMemberType.USER,
+            username,
+            MembershipReferenceType.GROUP,
+            roleIdsWithPermission
+        );
+        if (!groupIds.isEmpty()) {
+            ApplicationQuery groupApplicationsQuery = new ApplicationQuery();
+            groupApplicationsQuery.setGroups(groupIds);
+            groupApplicationsQuery.setStatus(ApplicationStatus.ACTIVE.name());
+            applicationIds.addAll(searchIds(executionContext, groupApplicationsQuery, null));
+        }
+
+        return applicationIds;
     }
 
     @Override
@@ -465,8 +480,16 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
         );
 
         if (newApplicationEntity.getGroups() != null && !newApplicationEntity.getGroups().isEmpty()) {
-            //throw a NotFoundException if the group doesn't exist
-            groupService.findByIds(newApplicationEntity.getGroups());
+            Set<String> groups = groupService.retainGroupsTheCallerMayAssign(
+                executionContext,
+                userId,
+                newApplicationEntity.getGroups(),
+                Set.of()
+            );
+            newApplicationEntity.setGroups(groups);
+            if (!groups.isEmpty()) {
+                groupService.findByIds(groups);
+            }
         }
 
         Application application = applicationConverter.toApplication(newApplicationEntity);
@@ -530,7 +553,6 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
         }
     }
 
-    @NotNull
     private ApplicationEntity createApplicationForEnvironment(
         final ExecutionContext executionContext,
         String userId,
@@ -548,7 +570,7 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
                     cert.startsAt(),
                     cert.endsAt()
                 );
-                clientCertificateCrudService.create(application.getId(), validateAndEnrich(certToCreate, executionContext));
+                clientCertificateCrudService.create(application.getId(), validateAndEnrich(certToCreate, executionContext, null));
             }
 
             Application createdApplication = applicationRepository.create(application);
@@ -640,12 +662,18 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
             log.debug("Update application {}", applicationId);
 
             validateApplicationClientId(executionContext, applicationId, updateApplicationEntity);
-            Set<String> groups = updateApplicationEntity.getGroups();
-            validateUserGroups(executionContext, groups);
-
             Application applicationToUpdate = applicationRepository
                 .findById(applicationId)
                 .orElseThrow(() -> new ApplicationNotFoundException(applicationId));
+
+            Set<String> groups = groupService.retainGroupsTheCallerMayAssign(
+                executionContext,
+                getAuthenticatedUsername(),
+                updateApplicationEntity.getGroups(),
+                applicationToUpdate.getGroups()
+            );
+            updateApplicationEntity.setGroups(groups);
+            validateUserGroups(executionContext, groups);
 
             updatePreFlightChecks(updateApplicationEntity, applicationToUpdate, groups);
 
@@ -677,6 +705,8 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
                 final String registrationPayload = applicationToUpdate.getMetadata().get(METADATA_REGISTRATION_PAYLOAD);
                 if (registrationPayload != null) {
                     updateClientRegistration(executionContext, updateApplicationEntity, registrationPayload, metadata, applicationToUpdate);
+                } else {
+                    keepPreviousOAuthMetadata(applicationToUpdate, metadata);
                 }
             }
 
@@ -730,46 +760,55 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
             .sorted(Comparator.comparing(ClientCertificate::createdAt))
             .toList();
 
-        // Build a map of existing certificates by their certificate content for matching
-        Map<String, ClientCertificate> existingByCertificate = existing
+        Map<String, ClientCertificate> existingByFingerprint = existing
             .stream()
-            .collect(Collectors.toMap(ClientCertificate::certificate, c -> c, (a, b) -> a));
+            .collect(Collectors.toMap(this::fingerprintOf, c -> c, (a, b) -> a));
 
-        Set<String> incomingCertificates = incoming.stream().map(CreateClientCertificate::certificate).collect(toSet());
-
-        // Create new certificates (incoming certificates not in existing) or update existing ones
+        Map<CreateClientCertificate, String> incomingFingerprints = incoming
+            .stream()
+            .collect(Collectors.toMap(cert -> cert, cert -> fingerprint(cert.certificate())));
+        Set<String> matchedIds = new HashSet<>();
         for (CreateClientCertificate incomingCert : incoming) {
-            ClientCertificate existingCert = existingByCertificate.get(incomingCert.certificate());
+            String incomingFingerprint = incomingFingerprints.get(incomingCert);
+            ClientCertificate existingCert = existingByFingerprint.get(incomingFingerprint);
             if (existingCert == null) {
-                // Create new certificate
                 var certToCreate = new ClientCertificate(
                     incomingCert.name(),
                     incomingCert.certificate(),
                     incomingCert.startsAt(),
                     incomingCert.endsAt()
                 );
-                clientCertificateCrudService.create(applicationId, validateAndEnrich(certToCreate, executionContext));
-            } else if (hasChanges(incomingCert, existingCert)) {
-                // Update existing certificate only if there are changes (name, startsAt, endsAt)
-                clientCertificateCrudService.update(
-                    existingCert.id(),
-                    new ClientCertificate(incomingCert.name(), incomingCert.startsAt(), incomingCert.endsAt())
-                );
+                clientCertificateCrudService.create(applicationId, validateAndEnrich(certToCreate, executionContext, applicationId));
+            } else {
+                matchedIds.add(existingCert.id());
+                if (hasChanges(incomingCert, existingCert)) {
+                    clientCertificateCrudService.update(
+                        existingCert.id(),
+                        new ClientCertificate(incomingCert.name(), incomingCert.startsAt(), incomingCert.endsAt())
+                    );
+                }
             }
         }
 
-        // Delete certificates that are no longer in the incoming list
-        for (ClientCertificate existingCert : existing) {
-            if (!incomingCertificates.contains(existingCert.certificate())) {
-                clientCertificateCrudService.delete(existingCert.id());
+        for (ClientCertificate cert : existing) {
+            if (!matchedIds.contains(cert.id())) {
+                clientCertificateCrudService.delete(cert.id());
             }
         }
 
         applicationCertificatesUpdateDomainService.updateActiveMTLSSubscriptions(applicationId);
     }
 
-    private ClientCertificate validateAndEnrich(ClientCertificate certToCreate, ExecutionContext executionContext) {
-        var certInfo = clientCertificateValidationDomainService.validateForCreation(certToCreate, executionContext.getEnvironmentId());
+    private ClientCertificate validateAndEnrich(
+        ClientCertificate certToCreate,
+        ExecutionContext executionContext,
+        String excludeApplicationId
+    ) {
+        var certInfo = clientCertificateValidationDomainService.validateForCreation(
+            certToCreate,
+            executionContext.getEnvironmentId(),
+            excludeApplicationId
+        );
         return new ClientCertificate(
             null,
             null,
@@ -795,6 +834,17 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
             !Objects.equals(incoming.startsAt(), existing.startsAt()) ||
             !Objects.equals(incoming.endsAt(), existing.endsAt())
         );
+    }
+
+    private String fingerprint(String certificatePem) {
+        return clientCertificateValidationDomainService.validate(certificatePem).fingerprint();
+    }
+
+    private String fingerprintOf(ClientCertificate certificate) {
+        if (StringUtils.isNotBlank(certificate.fingerprint())) {
+            return certificate.fingerprint();
+        }
+        return fingerprint(certificate.certificate());
     }
 
     private void createAuditLog(
@@ -900,6 +950,25 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
         }
     }
 
+    /**
+     * Carries the OAuth metadata of an application over to the update being built. The metadata map of an updated
+     * application is rebuilt from scratch — {@code applicationConverter.toApplication} returns an empty one for an
+     * OAuth application — so a key that is not re-applied is <b>dropped</b> from the persisted application rather than
+     * left untouched. Whenever the update has no fresh registration response to store, the previous values have to be
+     * put back explicitly.
+     */
+    private static void keepPreviousOAuthMetadata(Application applicationToUpdate, Map<String, String> metadata) {
+        if (applicationToUpdate.getMetadata() == null) {
+            return;
+        }
+        for (String key : List.of(METADATA_CLIENT_ID, METADATA_REGISTRATION_PAYLOAD, METADATA_ADDITIONAL_CLIENT_METADATA)) {
+            String previousValue = applicationToUpdate.getMetadata().get(key);
+            if (previousValue != null) {
+                metadata.put(key, previousValue);
+            }
+        }
+    }
+
     private void updateClientRegistration(
         ExecutionContext executionContext,
         UpdateApplicationEntity updateApplicationEntity,
@@ -925,8 +994,7 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
             );
         } catch (Exception e) {
             log.error("Failed to update OAuth client data from client registration. Keeping old OAuth client data.", e);
-            metadata.put(METADATA_CLIENT_ID, applicationToUpdate.getMetadata().get(METADATA_CLIENT_ID));
-            metadata.put(METADATA_REGISTRATION_PAYLOAD, applicationToUpdate.getMetadata().get(METADATA_REGISTRATION_PAYLOAD));
+            keepPreviousOAuthMetadata(applicationToUpdate, metadata);
         }
     }
 
@@ -1675,6 +1743,9 @@ public class ApplicationServiceImpl extends AbstractService implements Applicati
                 criteriaBuilder.status(applicationStatus);
             }
 
+            if (applicationQuery.getIds() != null && applicationQuery.getIds().isEmpty()) {
+                return null;
+            }
             criteriaBuilder.restrictedToIds(applicationQuery.getIds());
 
             if (StringUtils.isNotBlank(applicationQuery.getUser())) {

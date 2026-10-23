@@ -15,24 +15,35 @@
  */
 package io.gravitee.apim.rest.api.automation.resource;
 
+import static io.gravitee.rest.api.model.permissions.RolePermission.API_DEFINITION;
+import static io.gravitee.rest.api.model.permissions.RolePermission.ENVIRONMENT_API;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.CREATE;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 import io.gravitee.apim.core.api.domain_service.ValidateApiCRDDomainService;
+import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.crd.ApiCRDStatus;
+import io.gravitee.apim.core.api.query_service.ApiQueryService;
 import io.gravitee.apim.core.api.use_case.ImportApiCRDUseCase;
+import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.validation.Validator;
 import io.gravitee.apim.rest.api.automation.helpers.SharedPolicyGroupIdHelper;
 import io.gravitee.apim.rest.api.automation.model.ApiV4State;
 import io.gravitee.apim.rest.api.automation.resource.base.AbstractResourceTest;
+import io.gravitee.definition.model.v4.analytics.tracing.MaskingType;
 import io.gravitee.definition.model.v4.flow.Flow;
 import io.gravitee.definition.model.v4.flow.step.Step;
+import io.gravitee.definition.model.v4.listener.http.HttpListener;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.HRIDToUUID;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.client.Entity;
 import jakarta.ws.rs.core.MediaType;
+import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 import javax.annotation.Nonnull;
@@ -43,6 +54,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 
 class ApisResourceTest extends AbstractResourceTest {
 
@@ -52,10 +64,96 @@ class ApisResourceTest extends AbstractResourceTest {
     @Inject
     private ValidateApiCRDDomainService validateApiCRDDomainService;
 
+    @Inject
+    private ApiQueryService apiQueryService;
+
     @AfterEach
     void tearDown() {
         reset(importApiCRDUseCase);
         reset(validateApiCRDDomainService);
+        reset(apiQueryService);
+        reset(permissionService);
+    }
+
+    @Nested
+    class Authorization {
+
+        private static final String EXISTING_API_ID = "existing-api-id";
+
+        @BeforeEach
+        void setUp() {
+            when(importApiCRDUseCase.execute(any(ImportApiCRDUseCase.Input.class))).thenReturn(
+                new ImportApiCRDUseCase.Output(
+                    ApiCRDStatus.builder().id(EXISTING_API_ID).organizationId(ORGANIZATION).environmentId(ENVIRONMENT).build()
+                )
+            );
+            when(validateApiCRDDomainService.validateAndSanitize(any(ValidateApiCRDDomainService.Input.class))).thenAnswer(call ->
+                Validator.Result.ofValue(call.getArgument(0))
+            );
+        }
+
+        @Test
+        void should_return_403_when_the_caller_cannot_update_the_existing_api() {
+            givenExistingApi();
+            when(permissionService.hasPermission(any(), eq(API_DEFINITION), eq(EXISTING_API_ID), eq(UPDATE))).thenReturn(false);
+
+            assertThat(status(false)).isEqualTo(403);
+            verify(importApiCRDUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_return_403_on_dry_run_when_the_caller_cannot_update_the_existing_api() {
+            givenExistingApi();
+            when(permissionService.hasPermission(any(), eq(API_DEFINITION), eq(EXISTING_API_ID), eq(UPDATE))).thenReturn(false);
+
+            assertThat(status(true)).isEqualTo(403);
+            verify(validateApiCRDDomainService, never()).validateAndSanitize(any());
+        }
+
+        @Test
+        void should_update_the_existing_api_with_update_on_it_and_no_create_on_the_environment() {
+            givenExistingApi();
+            when(permissionService.hasPermission(any(), eq(ENVIRONMENT_API), eq(ENVIRONMENT), eq(CREATE))).thenReturn(false);
+
+            assertThat(status(false)).isEqualTo(200);
+            verify(importApiCRDUseCase).execute(any());
+        }
+
+        @Test
+        void should_return_403_when_creating_without_create_on_the_environment() {
+            when(permissionService.hasPermission(any(), eq(ENVIRONMENT_API), eq(ENVIRONMENT), eq(CREATE))).thenReturn(false);
+
+            assertThat(status(false)).isEqualTo(403);
+            verify(importApiCRDUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_create_the_api_with_create_on_the_environment() {
+            assertThat(status(false)).isEqualTo(200);
+            verify(importApiCRDUseCase).execute(any());
+        }
+
+        private void givenExistingApi() {
+            var crossId = HRIDToUUID.api()
+                .context(AuditInfo.builder().organizationId(ORGANIZATION).environmentId(ENVIRONMENT).build())
+                .hrid("api-hrid")
+                .crossId();
+            when(apiQueryService.findByEnvironmentIdAndCrossId(ENVIRONMENT, crossId)).thenReturn(
+                Optional.of(Api.builder().id(EXISTING_API_ID).environmentId(ENVIRONMENT).crossId(crossId).build())
+            );
+        }
+
+        private int status(boolean dryRun) {
+            try (
+                var response = rootTarget()
+                    .queryParam("dryRun", dryRun)
+                    .request()
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(readJSON("api-with-hrid.json")))
+            ) {
+                return response.getStatus();
+            }
+        }
     }
 
     @Nested
@@ -110,6 +208,25 @@ class ApisResourceTest extends AbstractResourceTest {
 
             SoftAssertions.assertSoftly(soft -> {
                 soft.assertThat(state.getHrid()).isEqualTo("api-hrid");
+            });
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { false, true })
+        void should_accept_values_longer_than_64_characters(boolean dryRun) {
+            when(validateApiCRDDomainService.validateAndSanitize(any(ValidateApiCRDDomainService.Input.class))).thenAnswer(call ->
+                Validator.Result.ofValue(call.getArgument(0))
+            );
+
+            var state = expectEntity("api-with-long-fields.json", dryRun, false);
+
+            SoftAssertions.assertSoftly(soft -> {
+                soft
+                    .assertThat(state.getLabels())
+                    .containsExactly("repro-18469-this-label-is-deliberately-longer-than-sixty-four-characters-0123456789");
+                soft.assertThat(state.getVersion()).hasSize(65);
+                soft.assertThat(state.getPlans().getFirst().getName()).hasSize(65);
+                soft.assertThat(state.getPages().getFirst().getName()).hasSize(65);
             });
         }
 
@@ -184,6 +301,53 @@ class ApisResourceTest extends AbstractResourceTest {
                     .put(Entity.json(readJSON("api-with-authz-type.json")))
             ) {
                 assertThat(response.getStatus()).isEqualTo(400);
+            }
+        }
+
+        @Test
+        void should_import_listener_tracing_and_failover_settings() {
+            expectEntity("api-with-listener-tracing-and-failover-settings.json");
+
+            var input = ArgumentCaptor.forClass(ImportApiCRDUseCase.Input.class);
+            verify(importApiCRDUseCase).execute(input.capture());
+            var spec = input.getValue().spec();
+            var listener = (HttpListener) spec.getListeners().getFirst();
+            var redaction = spec.getAnalytics().getTracing().getRedaction();
+            var rule = redaction.getRules().getFirst();
+            SoftAssertions.assertSoftly(soft -> {
+                soft.assertThat(listener.getPathMappings()).containsExactly("/products/:productId");
+                soft.assertThat(listener.getCors().isAllowPrivateNetwork()).isTrue();
+                soft.assertThat(listener.getRequestValidation().isRejectNullByte()).isTrue();
+                soft.assertThat(redaction.getDefaultReplacement()).isEqualTo("[MASKED]");
+                soft.assertThat(rule.getAttributeNamePattern()).isEqualTo("http.request.header.authorization");
+                soft.assertThat(rule.getValuePattern()).isEqualTo("^Bearer ");
+                soft.assertThat(rule.getMaskingStrategy().getType()).isEqualTo(MaskingType.PARTIAL);
+                soft.assertThat(rule.getMaskingStrategy().getReplacement()).isEqualTo("#");
+                soft.assertThat(rule.getMaskingStrategy().getPrefixLength()).isEqualTo(7);
+                soft.assertThat(rule.getMaskingStrategy().getSuffixLength()).isEqualTo(2);
+                soft.assertThat(spec.getFailover().getFailureCondition()).isEqualTo("{#response.status >= 500}");
+                soft.assertThat(spec.getFailover().isForceNextEndpointOnFailure()).isTrue();
+            });
+        }
+
+        @Test
+        void should_return_400_and_no_fqcn_when_use_case_throws_validation_domain_exception() {
+            when(importApiCRDUseCase.execute(any(ImportApiCRDUseCase.Input.class))).thenThrow(
+                new io.gravitee.apim.core.exception.ValidationDomainException("bad payload")
+            );
+            try (
+                var response = rootTarget()
+                    .queryParam("dryRun", false)
+                    .request()
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(readJSON("api-with-hrid.json")))
+            ) {
+                var body = response.readEntity(io.gravitee.rest.api.management.v2.rest.model.Error.class);
+                SoftAssertions.assertSoftly(soft -> {
+                    soft.assertThat(response.getStatus()).isEqualTo(400);
+                    soft.assertThat(body.getMessage()).doesNotContain("io.gravitee.apim.core");
+                    soft.assertThat(body.getMessage()).contains("bad payload");
+                });
             }
         }
 
@@ -346,6 +510,59 @@ class ApisResourceTest extends AbstractResourceTest {
                     .put(Entity.json(readJSON("api-with-authz-type.json")))
             ) {
                 assertThat(response.getStatus()).isEqualTo(400);
+            }
+        }
+    }
+
+    @Nested
+    class IgnoreGroups {
+
+        @BeforeEach
+        void setUp() {
+            when(importApiCRDUseCase.execute(any(ImportApiCRDUseCase.Input.class))).thenReturn(
+                new ImportApiCRDUseCase.Output(
+                    ApiCRDStatus.builder().id("api-id").organizationId(ORGANIZATION).environmentId(ENVIRONMENT).build()
+                )
+            );
+            when(validateApiCRDDomainService.validateAndSanitize(any(ValidateApiCRDDomainService.Input.class))).thenAnswer(call ->
+                Validator.Result.ofValue(call.getArgument(0))
+            );
+        }
+
+        @Test
+        void should_pass_ignore_groups_to_the_use_case() {
+            put("api-with-hrid.json", false, true);
+
+            var input = ArgumentCaptor.forClass(ImportApiCRDUseCase.Input.class);
+            verify(importApiCRDUseCase).execute(input.capture());
+            assertThat(input.getValue().spec().isIgnoreGroups()).isTrue();
+        }
+
+        @Test
+        void should_not_ignore_groups_by_default() {
+            put("api-with-hrid.json", false, null);
+
+            var input = ArgumentCaptor.forClass(ImportApiCRDUseCase.Input.class);
+            verify(importApiCRDUseCase).execute(input.capture());
+            assertThat(input.getValue().spec().isIgnoreGroups()).isFalse();
+        }
+
+        @Test
+        void should_pass_ignore_groups_to_the_dry_run_validation() {
+            put("api-with-hrid.json", true, true);
+
+            var input = ArgumentCaptor.forClass(ValidateApiCRDDomainService.Input.class);
+            verify(validateApiCRDDomainService).validateAndSanitize(input.capture());
+            assertThat(input.getValue().spec().isIgnoreGroups()).isTrue();
+        }
+
+        private void put(String spec, boolean dryRun, Boolean ignoreGroups) {
+            var target = rootTarget().queryParam("dryRun", dryRun);
+            if (ignoreGroups != null) {
+                target = target.queryParam("ignoreGroups", ignoreGroups);
+            }
+            try (var response = target.request().accept(MediaType.APPLICATION_JSON_TYPE).put(Entity.json(readJSON(spec)))) {
+                assertThat(response.getStatus()).isEqualTo(200);
             }
         }
     }

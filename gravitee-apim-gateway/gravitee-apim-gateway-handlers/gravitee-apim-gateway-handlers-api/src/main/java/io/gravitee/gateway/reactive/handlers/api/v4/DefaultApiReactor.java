@@ -99,6 +99,7 @@ import io.gravitee.reporter.api.v4.metric.Metrics;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.CompletableSource;
+import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -315,6 +316,11 @@ public class DefaultApiReactor extends AbstractApiReactor {
     }
 
     @Override
+    public <R> Optional<R> resource(String name, Class<R> type) {
+        return Optional.ofNullable(resourceLifecycleManager.getResource(name, type));
+    }
+
+    @Override
     public Completable handle(final MutableExecutionContext ctx) {
         ctx.componentProvider(componentProvider);
         if (ctxTemplateVariableProviders != null) {
@@ -402,6 +408,12 @@ public class DefaultApiReactor extends AbstractApiReactor {
             .chainWithOnError(t -> handleUnexpectedError(ctx, t))
             // Finally, end the response.
             .chainWith(ctx.response().end(ctx))
+            // The response has been written, so the request has ended whichever way it ended. A policy that took
+            // something it must give back registered for this, because the response phase it would otherwise use
+            // is skipped on an interruption. It has to run after the response rather than before it: a response
+            // still being written has reported no usage yet, and a policy reconciling against that would settle
+            // for nothing and leave the real figure unclaimed.
+            .chainWith(new CompletableReactorChain(executeActionsOnTerminate(ctx)).chainWith(upstream -> timeout(upstream, ctx)))
             .doOnSubscribe(disposable -> pendingRequests.incrementAndGet())
             .doOnEvent(throwable -> endPhaseTracing(ctx, RESPONSE, throwable))
             .doOnDispose(() -> {
@@ -552,7 +564,7 @@ public class DefaultApiReactor extends AbstractApiReactor {
         }
     }
 
-    private Completable processOrganizationFlowError(final MutableExecutionContext ctx, final Throwable throwable) {
+    protected Completable processOrganizationFlowError(final MutableExecutionContext ctx, final Throwable throwable) {
         if (InterruptionHelper.isInterruptionWithFailure(throwable)) {
             return executeProcessorChain(ctx, onErrorProcessors, RESPONSE);
         } else if (InterruptionHelper.isInterruption(throwable)) {
@@ -784,6 +796,29 @@ public class DefaultApiReactor extends AbstractApiReactor {
         } else {
             this.apiProductPlanFlowChain = null;
         }
+    }
+
+    /**
+     * Runs what policies registered for the end of the request. Each is given its turn whatever happened before
+     * it, and one that fails is logged rather than replacing the failure the client is being told about — a
+     * reconciliation going wrong must not become the answer.
+     */
+    protected Completable executeActionsOnTerminate(final MutableExecutionContext ctx) {
+        return Completable.defer(() -> {
+            var actions = ctx.drainOnTerminateActions();
+            if (actions.isEmpty()) {
+                return Completable.complete();
+            }
+            return Flowable.fromIterable(actions.entrySet()).concatMapCompletable(entry ->
+                entry
+                    .getValue()
+                    .apply(ctx)
+                    .doOnError(throwable ->
+                        ctx.withLogger(log).warn("Action on terminate of policy {} failed", entry.getKey().id(), throwable)
+                    )
+                    .onErrorComplete()
+            );
+        });
     }
 
     private Completable executeProductPlanFlowChain(final MutableExecutionContext ctx, final ExecutionPhase phase) {

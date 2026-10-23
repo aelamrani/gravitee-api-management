@@ -128,6 +128,7 @@ interface PlanGeneralStepProps {
      * set are shown disabled. `undefined` while the parent is still loading.
      */
     referenceTags?: string[];
+    shardingTagsReadOnly?: boolean;
 }
 
 export function PlanGeneralStep({
@@ -138,6 +139,7 @@ export function PlanGeneralStep({
     errors,
     readOnly = false,
     referenceTags,
+    shardingTagsReadOnly = false,
 }: Readonly<PlanGeneralStepProps>) {
     const [groupsOpen, setGroupsOpen] = useState(false);
     const [tagsOpen, setTagsOpen] = useState(false);
@@ -149,7 +151,8 @@ export function PlanGeneralStep({
     // A tag can be selected only when it belongs to the parent entity's tags (subset rule) and the
     // current user is allowed to use it — matching the classic console plan general step.
     const allowedTags = referenceTags ?? [];
-    const isTagDisabled = (id: string) => isShardingTagDisabled(id, { allowedTags, userTags, readOnly });
+    const tagsReadOnly = readOnly || shardingTagsReadOnly;
+    const isTagDisabled = (id: string) => isShardingTagDisabled(id, { allowedTags, userTags, readOnly: tagsReadOnly });
 
     function toggleGroup(id: string) {
         const next = value.excludedGroups.includes(id) ? value.excludedGroups.filter(g => g !== id) : [...value.excludedGroups, id];
@@ -252,68 +255,68 @@ export function PlanGeneralStep({
                 </Card>
             )}
 
-            {/* Subscriptions */}
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-base">Subscriptions</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                    <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                        <div className="space-y-0.5">
-                            <Label htmlFor="auto-validate" className="text-sm font-medium">
-                                Auto validate subscription
-                            </Label>
-                            <p className="text-xs text-muted-foreground">Automatically approve new subscriptions without manual review.</p>
+            {/* Subscriptions — keyless plans have no subscriptions, so nothing here applies */}
+            {!isKeyless && (
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="text-base">Subscriptions</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        <div className="flex items-center justify-between rounded-lg border px-4 py-3">
+                            <div className="space-y-0.5">
+                                <Label htmlFor="auto-validate" className="text-sm font-medium">
+                                    Auto validate subscription
+                                </Label>
+                                <p className="text-xs text-muted-foreground">
+                                    Automatically approve new subscriptions without manual review.
+                                </p>
+                            </div>
+                            <Switch
+                                id="auto-validate"
+                                checked={value.autoValidation}
+                                onCheckedChange={checked => onChange({ ...value, autoValidation: checked })}
+                                disabled={readOnly}
+                            />
                         </div>
-                        <Switch
-                            id="auto-validate"
-                            checked={isKeyless ? true : value.autoValidation}
-                            onCheckedChange={checked => onChange({ ...value, autoValidation: checked })}
-                            disabled={readOnly || isKeyless}
-                        />
-                    </div>
 
-                    {!isKeyless && (
-                        <>
-                            <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-                                <div className="space-y-0.5">
-                                    <Label htmlFor="comment-required" className="text-sm font-medium">
-                                        Require comment on subscription
-                                    </Label>
-                                    <p className="text-xs text-muted-foreground">Consumer must provide a comment when subscribing.</p>
-                                </div>
-                                <Switch
-                                    id="comment-required"
-                                    checked={value.commentRequired}
-                                    onCheckedChange={checked =>
-                                        onChange({
-                                            ...value,
-                                            commentRequired: checked,
-                                            commentMessage: checked ? value.commentMessage : '',
-                                        })
-                                    }
+                        <div className="flex items-center justify-between rounded-lg border px-4 py-3">
+                            <div className="space-y-0.5">
+                                <Label htmlFor="comment-required" className="text-sm font-medium">
+                                    Require comment on subscription
+                                </Label>
+                                <p className="text-xs text-muted-foreground">Consumer must provide a comment when subscribing.</p>
+                            </div>
+                            <Switch
+                                id="comment-required"
+                                checked={value.commentRequired}
+                                onCheckedChange={checked =>
+                                    onChange({
+                                        ...value,
+                                        commentRequired: checked,
+                                        commentMessage: checked ? value.commentMessage : '',
+                                    })
+                                }
+                                disabled={readOnly}
+                            />
+                        </div>
+
+                        {value.commentRequired && (
+                            <div className="space-y-2 pl-2">
+                                <Label htmlFor="comment-message">Custom message to display to consumer</Label>
+                                <Input
+                                    id="comment-message"
+                                    value={value.commentMessage}
+                                    onChange={e => onChange({ ...value, commentMessage: e.target.value })}
+                                    placeholder="Please describe your use case…"
+                                    maxLength={64}
                                     disabled={readOnly}
                                 />
+                                <p className="text-xs text-muted-foreground text-right">{value.commentMessage.length}/64</p>
                             </div>
-
-                            {value.commentRequired && (
-                                <div className="space-y-2 pl-2">
-                                    <Label htmlFor="comment-message">Custom message to display to consumer</Label>
-                                    <Input
-                                        id="comment-message"
-                                        value={value.commentMessage}
-                                        onChange={e => onChange({ ...value, commentMessage: e.target.value })}
-                                        placeholder="Please describe your use case…"
-                                        maxLength={64}
-                                        disabled={readOnly}
-                                    />
-                                    <p className="text-xs text-muted-foreground text-right">{value.commentMessage.length}/64</p>
-                                </div>
-                            )}
-                        </>
-                    )}
-                </CardContent>
-            </Card>
+                        )}
+                    </CardContent>
+                </Card>
+            )}
 
             {/* Deployment — sharding tags */}
             {orgTags.length > 0 && (
@@ -330,7 +333,7 @@ export function PlanGeneralStep({
                                     role="combobox"
                                     aria-expanded={tagsOpen}
                                     className="w-full justify-between font-normal"
-                                    disabled={readOnly}
+                                    disabled={tagsReadOnly}
                                 >
                                     <span className="truncate text-left">
                                         {selectedTagLabels || <span className="text-muted-foreground">None</span>}

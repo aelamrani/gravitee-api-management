@@ -15,18 +15,13 @@
  */
 package io.gravitee.apim.infra.crud_service.subscription_form;
 
-import io.gravitee.apim.core.environment.crud_service.EnvironmentCrudService;
 import io.gravitee.apim.core.exception.TechnicalDomainException;
-import io.gravitee.apim.core.gravitee_markdown.GraviteeMarkdown;
-import io.gravitee.apim.core.portal_page.crud_service.PortalPageContentCrudService;
-import io.gravitee.apim.core.portal_page.model.GraviteeMarkdownPageContent;
-import io.gravitee.apim.core.portal_page.model.PortalPageContentId;
-import io.gravitee.apim.core.portal_page.model.UpdatePortalPageContent;
-import io.gravitee.apim.core.portal_page.query_service.PortalPageContentQueryService;
 import io.gravitee.apim.core.subscription_form.crud_service.SubscriptionFormCrudService;
+import io.gravitee.apim.core.subscription_form.exception.SubscriptionFormConflictException;
 import io.gravitee.apim.core.subscription_form.model.SubscriptionForm;
 import io.gravitee.apim.core.subscription_form.model.SubscriptionFormId;
 import io.gravitee.apim.infra.adapter.SubscriptionFormAdapter;
+import io.gravitee.repository.exceptions.DuplicateKeyException;
 import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.SubscriptionFormRepository;
 import org.springframework.context.annotation.Lazy;
@@ -35,123 +30,79 @@ import org.springframework.stereotype.Component;
 /**
  * Infrastructure implementation of SubscriptionFormCrudService.
  *
- * <p>A subscription form is persisted as two records: the {@code subscription_forms} row (identity,
- * environment, enabled flag, validation constraints) and a {@link GraviteeMarkdownPageContent} holding
- * the form definition, so the GMD shares the same content machinery as every other portal page. The two
- * writes are not transactional: a page content created for a row that could not be written is deleted
- * again, but a row update failing after its content was updated leaves the definition ahead of the
- * constraints derived from it until the next successful write.</p>
- *
  * @author Gravitee.io Team
  */
 @Component
 public class SubscriptionFormCrudServiceImpl implements SubscriptionFormCrudService {
 
+    private final SubscriptionFormRepository subscriptionFormRepository;
     private static final SubscriptionFormAdapter subscriptionFormAdapter = SubscriptionFormAdapter.INSTANCE;
 
-    private final SubscriptionFormRepository subscriptionFormRepository;
-    private final EnvironmentCrudService environmentCrudService;
-    private final PortalPageContentCrudService pageContentCrudService;
-    private final PortalPageContentQueryService pageContentQueryService;
-
-    public SubscriptionFormCrudServiceImpl(
-        @Lazy SubscriptionFormRepository subscriptionFormRepository,
-        EnvironmentCrudService environmentCrudService,
-        PortalPageContentCrudService pageContentCrudService,
-        PortalPageContentQueryService pageContentQueryService
-    ) {
+    public SubscriptionFormCrudServiceImpl(@Lazy SubscriptionFormRepository subscriptionFormRepository) {
         this.subscriptionFormRepository = subscriptionFormRepository;
-        this.environmentCrudService = environmentCrudService;
-        this.pageContentCrudService = pageContentCrudService;
-        this.pageContentQueryService = pageContentQueryService;
     }
 
-    /**
-     * Always creates a new page content for the definition: any {@code portalPageContentId} carried by
-     * the given form is ignored.
-     */
     @Override
     public SubscriptionForm create(SubscriptionForm subscriptionForm) {
-        var gmdContent = subscriptionForm.getGmdContent();
-        var contentId = createPageContent(subscriptionForm.getEnvironmentId(), gmdContent);
-
-        var toCreate = subscriptionFormAdapter.toRepository(subscriptionForm);
-        if (toCreate.getId() == null) {
-            toCreate.setId(SubscriptionFormId.random().toString());
-        }
-        toCreate.setPortalPageContentId(contentId.toString());
-
+        SubscriptionForm toCreate = subscriptionForm.getId() == null
+            ? SubscriptionForm.builder()
+                .id(SubscriptionFormId.random())
+                .environmentId(subscriptionForm.getEnvironmentId())
+                .name(subscriptionForm.getName())
+                .gmdContent(subscriptionForm.getGmdContent())
+                .enabled(subscriptionForm.isEnabled())
+                .validationConstraints(subscriptionForm.getValidationConstraints())
+                .apiIds(subscriptionForm.getApiIds())
+                .build()
+            : subscriptionForm;
         try {
-            var result = subscriptionFormRepository.create(toCreate);
-            return subscriptionFormAdapter.toEntity(result, gmdContent);
+            var result = subscriptionFormRepository.create(subscriptionFormAdapter.toRepository(toCreate));
+            return subscriptionFormAdapter.toEntity(result);
         } catch (TechnicalException e) {
-            deleteQuietly(contentId, e);
-            throw new TechnicalDomainException(
-                String.format("An error occurred while trying to create a SubscriptionForm for env: %s", toCreate.getEnvironmentId()),
-                e
+            throw toDomainException(
+                e,
+                String.format("An error occurred while trying to create a SubscriptionForm for env: %s", toCreate.getEnvironmentId())
             );
         }
     }
 
     @Override
     public SubscriptionForm update(SubscriptionForm subscriptionForm) {
-        var gmdContent = subscriptionForm.getGmdContent();
-        var contentId = subscriptionForm.getPortalPageContentId();
-        // A legacy form still stores its definition inline (the boot-time migration did not reach it):
-        // move the content out on this first write, exactly as the upgrader would have.
-        var migratingLegacyContent = contentId == null;
-        if (migratingLegacyContent) {
-            contentId = createPageContent(subscriptionForm.getEnvironmentId(), gmdContent);
-        } else {
-            updatePageContent(subscriptionForm.getId(), contentId, gmdContent);
-        }
-
-        var toUpdate = subscriptionFormAdapter.toRepository(subscriptionForm);
-        toUpdate.setPortalPageContentId(contentId.toString());
-
         try {
-            var result = subscriptionFormRepository.update(toUpdate);
-            return subscriptionFormAdapter.toEntity(result, gmdContent);
+            var result = subscriptionFormRepository.update(subscriptionFormAdapter.toRepository(subscriptionForm));
+            return subscriptionFormAdapter.toEntity(result);
         } catch (TechnicalException e) {
-            if (migratingLegacyContent) {
-                deleteQuietly(contentId, e);
-            }
-            throw new TechnicalDomainException(
+            throw toDomainException(
+                e,
                 String.format(
                     "An error occurred while trying to update a SubscriptionForm with id: %s",
                     subscriptionForm.getId().toString()
-                ),
+                )
+            );
+        }
+    }
+
+    @Override
+    public void delete(SubscriptionForm subscriptionForm) {
+        var id = subscriptionForm.getId().toString();
+        try {
+            subscriptionFormRepository.delete(id);
+        } catch (TechnicalException e) {
+            throw new TechnicalDomainException(
+                String.format("An error occurred while trying to delete a SubscriptionForm with id: %s", id),
                 e
             );
         }
     }
 
-    private PortalPageContentId createPageContent(String environmentId, GraviteeMarkdown gmdContent) {
-        var environment = environmentCrudService.get(environmentId);
-        var created = pageContentCrudService.create(
-            new GraviteeMarkdownPageContent(PortalPageContentId.random(), environment.getOrganizationId(), environmentId, gmdContent)
-        );
-        return created.getId();
-    }
-
-    /** Compensates a failed row write without masking its cause when the cleanup itself fails. */
-    private void deleteQuietly(PortalPageContentId contentId, Exception cause) {
-        try {
-            pageContentCrudService.delete(contentId);
-        } catch (RuntimeException cleanupFailure) {
-            cause.addSuppressed(cleanupFailure);
+    /**
+     * A duplicate key is not a technical failure: the row collides with another form of its environment (a name
+     * already taken, an API already mapped to another form), which the caller reports as a conflict.
+     */
+    private static RuntimeException toDomainException(TechnicalException e, String message) {
+        if (e instanceof DuplicateKeyException) {
+            return new SubscriptionFormConflictException(e);
         }
-    }
-
-    private void updatePageContent(SubscriptionFormId subscriptionFormId, PortalPageContentId contentId, GraviteeMarkdown gmdContent) {
-        var content = pageContentQueryService
-            .findById(contentId)
-            .orElseThrow(() ->
-                new TechnicalDomainException(
-                    String.format("SubscriptionForm %s references a missing page content: %s", subscriptionFormId, contentId)
-                )
-            );
-        content.update(UpdatePortalPageContent.builder().content(gmdContent.value()).build());
-        pageContentCrudService.update(content);
+        return new TechnicalDomainException(message, e);
     }
 }

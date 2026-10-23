@@ -17,24 +17,33 @@ package io.gravitee.repository.redis.vertx;
 
 import io.gravitee.node.vertx.client.redis.VertxRedisClientFactory;
 import io.gravitee.plugin.configurations.redis.RedisClientOptions;
+import io.gravitee.repository.exception.RedisOperationTimeoutException;
 import io.gravitee.repository.redis.ratelimit.RedisRateLimitRepository;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.internal.CloseFuture;
 import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.internal.VertxInternal;
 import io.vertx.redis.client.Redis;
 import io.vertx.redis.client.RedisAPI;
+import io.vertx.redis.client.RedisConnection;
+import io.vertx.redis.client.Response;
+import io.vertx.redis.client.impl.PooledRedisConnection;
 import java.io.InputStream;
 import java.net.SocketException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import lombok.CustomLog;
 
@@ -58,6 +67,8 @@ public class RedisClient {
     private final Map<String, String> scripts;
     private final Map<String, String> scriptsSource = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, LoopRedis> loops = new ConcurrentHashMap<>();
+    private final AtomicBoolean roleCheckSkippedLogged = new AtomicBoolean();
+    private volatile boolean closed;
 
     public RedisClient(
         final Vertx vertx,
@@ -85,9 +96,17 @@ public class RedisClient {
     }
 
     public Future<RedisAPI> redisApi() {
+        if (closed) {
+            return Future.failedFuture("Redis client is closed");
+        }
         LoopRedis loop = resolveLoop();
         synchronized (loop.monitor) {
             if (loop.redisAPIFuture == null) {
+                // A failed ROLE/connect already scheduled backoff. Starting again at retry 0
+                // would reconnect as fast as callers arrive (rate-limit + dist-sync).
+                if (loop.reconnectPending.get()) {
+                    return Future.failedFuture("Redis reconnection is in progress");
+                }
                 startConnectLoop(loop, 0);
             }
             if (loop.redisAPIFuture == null) {
@@ -103,6 +122,11 @@ public class RedisClient {
      * fired yet, which was leaving {@code connected=true} and blocking automatic reconnection.
      */
     public void notifyConnectionFailure(final Throwable failure) {
+        // A command timeout is not a dead socket. Rate-limit uses RedisOperationTimeoutException;
+        // distributed sync uses Completable.timeout()'s TimeoutException.
+        if (isOperationTimeout(failure)) {
+            return;
+        }
         if (!isRecoverableConnectionFailure(failure)) {
             return;
         }
@@ -113,6 +137,25 @@ public class RedisClient {
         }
         final LoopRedis loop = resolveLoop();
         context.runOnContext(v -> invalidateConnection(loop));
+    }
+
+    /**
+     * Closes the Vert.x Redis clients. Spring calls it when the repository context stops.
+     */
+    public void close() {
+        closed = true;
+        loops
+            .values()
+            .forEach(loop -> {
+                synchronized (loop.monitor) {
+                    loop.generation.incrementAndGet();
+                    loop.redisAPIFuture = null;
+                    loop.connected.set(false);
+                    loop.connecting.set(false);
+                    loop.connection = null;
+                    closeClient(loop);
+                }
+            });
     }
 
     public String scriptSha1(final String key) {
@@ -155,25 +198,36 @@ public class RedisClient {
 
     private void startConnectLoop(final LoopRedis loop, final int retry) {
         final long connectionGeneration;
+        final Redis redisClient;
         synchronized (loop.monitor) {
-            if (!loop.connecting.compareAndSet(false, true)) {
+            if (closed || !loop.connecting.compareAndSet(false, true)) {
                 return;
             }
-            closeClient(loop);
+            discardConnection(loop);
             loop.connected.set(false);
             loop.redisAPIFuture = null;
             connectionGeneration = loop.generation.incrementAndGet();
+            if (loop.redis == null) {
+                loop.redis = createClient();
+            }
+            redisClient = loop.redis;
         }
 
-        final Redis redisClient = factory.createClient(clientOptions);
         final Future<RedisAPI> connectFuture = redisClient
             .connect()
-            .onSuccess(conn -> {
+            .compose(conn -> {
+                if (!keepConnection(loop, connectionGeneration, conn)) {
+                    return Future.failedFuture("Redis connection attempt is outdated");
+                }
                 log.debug("Connected to Redis on event loop {}", currentLoopKey());
                 conn.exceptionHandler(e -> handleConnectionLost(loop, connectionGeneration));
                 conn.endHandler(v -> handleConnectionLost(loop, connectionGeneration));
+                return Future.succeededFuture(conn);
             })
-            .flatMap(redisConnection -> loadScripts(RedisAPI.api(redisConnection), loop))
+            .flatMap(redisConnection -> {
+                RedisAPI api = RedisAPI.api(redisConnection);
+                return requireWritableMaster(api).compose(writable -> loadScripts(writable, loop));
+            })
             .onSuccess(redisAPI -> {
                 if (connectionGeneration != loop.generation.get()) {
                     return;
@@ -187,18 +241,76 @@ public class RedisClient {
                 if (connectionGeneration != loop.generation.get()) {
                     return;
                 }
-                log.error("Unable to connect to Redis on event loop {}", currentLoopKey(), t);
+                if (isExpectedConnectFailure(t)) {
+                    log.warn("Unable to connect to Redis on event loop {}: {}", currentLoopKey(), t.getMessage());
+                } else {
+                    log.error("Unable to connect to Redis on event loop {}", currentLoopKey(), t);
+                }
                 scheduleReconnectAfterFailure(loop, retry);
             });
 
         synchronized (loop.monitor) {
             if (connectionGeneration == loop.generation.get()) {
-                loop.redis = redisClient;
                 loop.redisAPIFuture = connectFuture;
             } else {
                 loop.connecting.set(false);
-                redisClient.close();
             }
+        }
+    }
+
+    private boolean keepConnection(final LoopRedis loop, final long connectionGeneration, final RedisConnection connection) {
+        synchronized (loop.monitor) {
+            if (!closed && connectionGeneration == loop.generation.get()) {
+                loop.connection = connection;
+                return true;
+            }
+        }
+        connection.close();
+        return false;
+    }
+
+    /**
+     * Drops the current connection when it may still be open (failed handshake, half-open socket, READONLY node).
+     */
+    private void discardConnection(final LoopRedis loop) {
+        final RedisConnection connection = loop.connection;
+        if (connection == null) {
+            return;
+        }
+        loop.connection = null;
+        if (connection instanceof PooledRedisConnection pooled) {
+            // close() would hand the socket back to the pool and the next connect() would get it again.
+            pooled.actual().forceClose();
+        } else {
+            // A cluster connection does not expose its sockets: drop it with its client.
+            closeClient(loop);
+        }
+    }
+
+    /**
+     * Creates a Vert.x Redis client that this class alone owns.
+     *
+     * <p>[{@code vertx-5.0-close-future-leak}] Vert.x 5.0.x registers the {@code NetClient} of every Redis client on the
+     * close future of the creating context and never removes it: {@code close()} only tears the connections down. A cluster
+     * client is dropped with each discarded connection, so it would pile up until Vert.x stops. The client is therefore
+     * created under a context of its own whose close future is only reachable from that client, and goes away with it.
+     * {@link #close()} must be called when the repository stops, which Spring does. The leak is fixed upstream in 5.2:
+     * create the client directly when upgrading, {@code RedisClientCloseFutureRetentionTest} fails once this is no longer
+     * needed.
+     */
+    private Redis createClient() {
+        final VertxInternal vertxInternal = (VertxInternal) vertx;
+        final ContextInternal current = vertxInternal.getContext();
+        final ContextInternal owner = vertxInternal
+            .contextBuilder()
+            .withEventLoop(current != null ? current.nettyEventLoop() : vertxInternal.nettyEventLoopGroup().next())
+            .withCloseFuture(new CloseFuture())
+            .build();
+        final ContextInternal previous = owner.beginDispatch();
+        try {
+            return factory.createClient(clientOptions);
+        } finally {
+            owner.endDispatch(previous);
         }
     }
 
@@ -221,6 +333,12 @@ public class RedisClient {
                 return;
             }
             loop.redisAPIFuture = null;
+            // The pool already evicted the dead socket; closing returns the healthy ones of a cluster connection.
+            final RedisConnection lost = loop.connection;
+            loop.connection = null;
+            if (lost != null) {
+                lost.close();
+            }
         }
         scheduleReconnectAfterFailure(loop, 0);
     }
@@ -231,7 +349,7 @@ public class RedisClient {
             loop.redisAPIFuture = null;
             loop.connected.set(false);
             loop.connecting.set(false);
-            closeClient(loop);
+            discardConnection(loop);
             if (!scheduleReconnectIfAbsent(loop)) {
                 return;
             }
@@ -276,8 +394,12 @@ public class RedisClient {
             }
             final String message = current.getMessage();
             if (message != null) {
-                final String normalized = message.toLowerCase();
+                final String normalized = message.toLowerCase(Locale.ROOT).stripLeading();
+                // READONLY: TCP is healthy but the node is no longer writable (Sentinel demotion).
+                // Redis 7+ uses the READONLY code; Redis 6 wraps script writes as ERR ... -READONLY ...
                 if (
+                    normalized.startsWith("readonly") ||
+                    normalized.contains("-readonly ") ||
                     normalized.contains("connection is closed") ||
                     normalized.contains("connection lost") ||
                     normalized.contains("connection reset") ||
@@ -310,6 +432,104 @@ public class RedisClient {
                 throw new IllegalStateException("Unexpected error while reading lua script '" + scriptPath + "'", ex);
             }
         });
+    }
+
+    /**
+     * Sentinel can keep advertising a demoted node for tens of seconds. ROLE is only sent in
+     * Sentinel mode: the command is {@code @dangerous}, so a restricted ACL user would get
+     * {@code NOPERM} and never connect. Cluster has several writable masters; skip it there too.
+     * A successful non-{@code master} reply fails the connect so backoff can grow. If ROLE itself
+     * is unsupported (NOPERM, unknown command), skip the check rather than blocking connect forever.
+     * Other ROLE failures (closed connection mid-failover) fail the connect.
+     */
+    private Future<RedisAPI> requireWritableMaster(final RedisAPI redisAPI) {
+        return applySentinelRoleCheck(redisAPI, clientOptions.getSentinel() != null, this::logRoleCheckSkipped);
+    }
+
+    static Future<RedisAPI> applySentinelRoleCheck(
+        final RedisAPI redisAPI,
+        final boolean sentinelEnabled,
+        final Consumer<Throwable> onRoleCommandFailure
+    ) {
+        if (!sentinelEnabled) {
+            return Future.succeededFuture(redisAPI);
+        }
+        return redisAPI
+            .role()
+            .recover(t -> {
+                if (isRoleCommandUnsupported(t)) {
+                    onRoleCommandFailure.accept(t);
+                    return Future.succeededFuture((Response) null);
+                }
+                return Future.failedFuture(t);
+            })
+            .compose(response -> {
+                if (response == null) {
+                    return Future.succeededFuture(redisAPI);
+                }
+                final String role = roleName(response);
+                if (!"master".equalsIgnoreCase(role)) {
+                    return Future.failedFuture(
+                        new IllegalStateException("Redis node is not writable (ROLE=" + role + "); will retry with backoff")
+                    );
+                }
+                return Future.succeededFuture(redisAPI);
+            });
+    }
+
+    static boolean isExpectedConnectFailure(final Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof IllegalStateException) {
+                final String message = current.getMessage();
+                if (message != null && message.contains("ROLE=")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    static boolean isRoleCommandUnsupported(final Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            final String message = current.getMessage();
+            if (message != null) {
+                final String normalized = message.toLowerCase(Locale.ROOT);
+                if (normalized.contains("noperm") || normalized.contains("unknown command")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static boolean isOperationTimeout(final Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof RedisOperationTimeoutException || current instanceof TimeoutException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private void logRoleCheckSkipped(final Throwable failure) {
+        if (roleCheckSkippedLogged.compareAndSet(false, true)) {
+            log.warn("Skipping Redis ROLE check: {}", failure.getMessage());
+        } else {
+            log.debug("Skipping Redis ROLE check: {}", failure.getMessage());
+        }
+    }
+
+    private static String roleName(Response response) {
+        if (response == null || response.size() < 1 || response.get(0) == null) {
+            return "unknown";
+        }
+        return response.get(0).toString();
     }
 
     private Future<RedisAPI> loadScripts(final RedisAPI redisAPI, final LoopRedis loop) {
@@ -347,6 +567,7 @@ public class RedisClient {
         private final AtomicLong generation = new AtomicLong(0);
         private final Map<String, String> scriptsSha = new ConcurrentHashMap<>();
         private volatile Redis redis;
+        private volatile RedisConnection connection;
         private volatile Future<RedisAPI> redisAPIFuture;
     }
 }

@@ -40,6 +40,7 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
 import java.util.List;
+import java.util.Set;
 import lombok.CustomLog;
 import org.springframework.security.core.context.SecurityContextHolder;
 
@@ -50,7 +51,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
  *
  * <h2>Endpoints</h2>
  * <ul>
- *   <li>{@code GET /?page=&perPage=} — dashboards saved in the context environment, paginated
+ *   <li>{@code GET /?module=&page=&perPage=} — dashboards saved in the context environment, those
+ *       of the given modules only when {@code module} is given (repeat it for several), paginated
  *       (1-based, {@code perPage} capped server-side at 100). See {@link ListObservabilityDashboardUseCase}
  *       for why pagination is applied by slicing rather than a native repository query.</li>
  *   <li>{@code POST /} — creates a dashboard from a client-supplied id (AGENTS.md §9), returns
@@ -60,9 +62,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
  * </ul>
  *
  * <h2>Authorization</h2>
- * Declarative {@code ENVIRONMENT_DASHBOARD} with per-verb ACLs — a CRUD resource, unlike the
- * deliberately lax {@code ENVIRONMENT_DASHBOARD:READ || ENVIRONMENT_API:READ} check used by
- * {@code LogsResource} / {@code ObservabilityFiltersResource} for metadata discovery. POST and PUT
+ * Declarative {@code ENVIRONMENT_DASHBOARD} with per-verb ACLs, for the dashboard definitions only: the
+ * widgets read their data from the endpoints that answer from the caller's rows. POST and PUT
  * stay separate verbs (no PUT upsert): {@code @Permissions} is per method and CREATE / UPDATE are
  * distinct ACLs, so collapsing them would silently grant creation to anyone holding update rights.
  *
@@ -85,9 +86,15 @@ public class ObservabilityDashboardsResource {
 
     @GET
     @Permissions({ @Permission(value = RolePermission.ENVIRONMENT_DASHBOARD, acls = { RolePermissionAction.READ }) })
-    public PaginatedResponseDto<DashboardDto> list(@QueryParam("page") Integer page, @QueryParam("perPage") Integer perPage) {
+    public PaginatedResponseDto<DashboardDto> list(
+        @QueryParam("module") List<String> modules,
+        @QueryParam("page") Integer page,
+        @QueryParam("perPage") Integer perPage
+    ) {
         var ctx = GraviteeContext.getExecutionContext();
-        var output = listDashboardUseCase.execute(new ListObservabilityDashboardUseCase.Input(ctx.getEnvironmentId(), page, perPage));
+        var output = listDashboardUseCase.execute(
+            new ListObservabilityDashboardUseCase.Input(ctx.getEnvironmentId(), Set.copyOf(modules), page, perPage)
+        );
         List<DashboardDto> data = output.dashboards().stream().map(DashboardDto::from).toList();
         return PaginatedResponseDto.of(data, output.totalCount(), output.page(), output.perPage());
     }
@@ -101,7 +108,13 @@ public class ObservabilityDashboardsResource {
         }
         var ctx = GraviteeContext.getExecutionContext();
         var output = createDashboardUseCase.execute(
-            new CreateObservabilityDashboardUseCase.Input(ctx.getEnvironmentId(), currentUserId(), request.id(), request.toContent())
+            new CreateObservabilityDashboardUseCase.Input(
+                ctx.getEnvironmentId(),
+                currentUserId(),
+                request.id(),
+                request.module(),
+                request.toContent()
+            )
         );
         var created = output.dashboard();
         return DashboardEntityTag.withETag(Response.created(uriInfo.getAbsolutePathBuilder().path(created.id()).build()), created).build();

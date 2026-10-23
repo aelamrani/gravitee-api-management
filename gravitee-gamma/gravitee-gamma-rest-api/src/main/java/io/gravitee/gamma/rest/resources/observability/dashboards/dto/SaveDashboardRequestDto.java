@@ -19,14 +19,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import io.gravitee.gamma.rest.core.observability.dashboard.exception.InvalidDashboardException;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardContent;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardFilter;
+import io.gravitee.gamma.rest.resources.RejectUnknownProperties;
 import java.util.List;
 
 /**
- * Request shape shared by POST and PUT (OBS-16). {@code id} is read on POST only (client-supplied,
- * AGENTS.md §9) — PUT takes the id from the path. Server-owned fields ({@code version},
+ * Request shape shared by POST and PUT (OBS-16). {@code id} and {@code module} are read on POST only:
+ * the id is client-supplied (AGENTS.md §9) and PUT takes it from the path, and the module is set
+ * once at creation — the update use case has no way to receive it. Server-owned fields ({@code version},
  * {@code createdAt}, {@code updatedAt}, {@code createdBy}, {@code environmentId}) are not declared
  * here and are silently dropped by Jackson ({@code GraviteeMapper} disables
- * {@code FAIL_ON_UNKNOWN_PROPERTIES}), so a client sending them cannot influence the write.
+ * {@code FAIL_ON_UNKNOWN_PROPERTIES}), so a client sending them cannot influence the write. That is why
+ * this root is not {@link RejectUnknownProperties}, unlike its filter objects: GET → edit → PUT clients echo
+ * those fields back.
  *
  * <p>{@code version} stays out of this shape on purpose (OBS-17): the revision a PUT is based on
  * travels in the {@code If-Match} header, not the body, so the body remains a pure description of
@@ -34,6 +38,7 @@ import java.util.List;
  */
 public record SaveDashboardRequestDto(
     String id,
+    String module,
     String title,
     String description,
     List<SaveDashboardFilterDto> filters,

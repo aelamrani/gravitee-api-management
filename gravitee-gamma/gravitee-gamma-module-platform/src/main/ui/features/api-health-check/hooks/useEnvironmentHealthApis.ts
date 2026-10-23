@@ -13,8 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { useEnvironment } from '@gravitee/gamma-modules-sdk';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+
+import { useEnvironment } from '@gravitee/gamma-modules-sdk';
 
 import { searchEnvironmentHealthApis, toEnvironmentHealthApi } from '../services/environmentHealthApis';
 import type { EnvironmentHealthApi } from '../types';
@@ -25,13 +26,18 @@ export function useEnvironmentHealthApis({
     page,
     perPage,
     sortBy,
-    reloadToken,
+    reloadToken = 0,
 }: {
     query: string;
     page: number;
     perPage: number;
     sortBy?: string;
-    reloadToken: number;
+    /**
+     * Only pass this to force a re-search. Refresh deliberately does not: Classic's `onRefreshClicked`
+     * re-runs the report and the per-row availability, never the table search, which on a large
+     * environment is a multi-megabyte response.
+     */
+    reloadToken?: number;
 }) {
     const env = useEnvironment();
     const result = useQuery({

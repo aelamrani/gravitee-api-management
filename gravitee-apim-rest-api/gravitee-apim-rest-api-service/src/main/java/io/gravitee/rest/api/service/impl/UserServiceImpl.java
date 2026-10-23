@@ -30,6 +30,7 @@ import static io.gravitee.rest.api.service.common.JWTHelper.ACTION.USER_CREATION
 import static io.gravitee.rest.api.service.common.JWTHelper.ACTION.USER_REGISTRATION;
 import static io.gravitee.rest.api.service.common.JWTHelper.DefaultValues.DEFAULT_JWT_EMAIL_REGISTRATION_EXPIRE_AFTER;
 import static io.gravitee.rest.api.service.common.JWTHelper.DefaultValues.DEFAULT_JWT_ISSUER;
+import static io.gravitee.rest.api.service.impl.PermissionServiceImpl.isOrganizationAdmin;
 import static io.gravitee.rest.api.service.notification.NotificationParamsBuilder.GAMMA_REGISTRATION_PATH;
 import static io.gravitee.rest.api.service.notification.NotificationParamsBuilder.GAMMA_RESET_PASSWORD_PATH;
 import static io.gravitee.rest.api.service.notification.NotificationParamsBuilder.REGISTRATION_PATH;
@@ -60,6 +61,7 @@ import io.gravitee.repository.management.api.MembershipRepository;
 import io.gravitee.repository.management.api.UserRepository;
 import io.gravitee.repository.management.api.search.UserCriteria;
 import io.gravitee.repository.management.model.Membership;
+import io.gravitee.repository.management.model.RegistrationOrigin;
 import io.gravitee.repository.management.model.User;
 import io.gravitee.repository.management.model.UserStatus;
 import io.gravitee.rest.api.model.EnvironmentEntity;
@@ -132,10 +134,12 @@ import io.gravitee.rest.api.service.converter.UserConverter;
 import io.gravitee.rest.api.service.exceptions.AbstractManagementException;
 import io.gravitee.rest.api.service.exceptions.EmailFormatInvalidException;
 import io.gravitee.rest.api.service.exceptions.EmailRequiredException;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.gravitee.rest.api.service.exceptions.GroupNotFoundException;
 import io.gravitee.rest.api.service.exceptions.InvalidUserException;
 import io.gravitee.rest.api.service.exceptions.PasswordAlreadyResetException;
 import io.gravitee.rest.api.service.exceptions.PasswordFormatInvalidException;
+import io.gravitee.rest.api.service.exceptions.RoleNotFoundException;
 import io.gravitee.rest.api.service.exceptions.ServiceAccountNotManageableException;
 import io.gravitee.rest.api.service.exceptions.StillPrimaryOwnerException;
 import io.gravitee.rest.api.service.exceptions.TechnicalManagementException;
@@ -176,9 +180,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import lombok.CustomLog;
 import org.apache.commons.lang3.StringUtils;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -803,14 +807,20 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
      */
     @Override
     public UserEntity create(ExecutionContext executionContext, NewExternalUserEntity newExternalUserEntity, boolean addDefaultRole) {
-        return create(executionContext, newExternalUserEntity, addDefaultRole, true);
+        return create(executionContext, newExternalUserEntity, addDefaultRole, true, null);
     }
 
+    /**
+     * @param registrationOrigin the product the user signed themselves up on, or {@code null} when they did not --
+     *     an administrator created them. Recorded because the activation email of a registration awaiting approval
+     *     is built by a later request, which has no other way of knowing which front door to send them back to.
+     */
     private UserEntity create(
         ExecutionContext executionContext,
         NewExternalUserEntity newExternalUserEntity,
         boolean addDefaultRole,
-        boolean autoRegistrationEnabled
+        boolean autoRegistrationEnabled,
+        RegistrationOrigin registrationOrigin
     ) {
         try {
             String organizationId = executionContext.getOrganizationId();
@@ -837,6 +847,7 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
             user.setId(UuidString.generateRandom());
             user.setOrganizationId(organizationId);
             user.setStatus(autoRegistrationEnabled ? UserStatus.ACTIVE : UserStatus.PENDING);
+            user.setRegistrationOrigin(registrationOrigin);
             user.setIsServiceAccount(false);
             if (newExternalUserEntity instanceof NewPreRegisterUserEntity preRegisterUser) {
                 user.setIsServiceAccount(preRegisterUser.isService());
@@ -892,7 +903,12 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         final NewExternalUserEntity newExternalUserEntity,
         final String confirmationPageUrl
     ) {
-        return doRegister(executionContext, newExternalUserEntity, () -> sanitizePortalRedirectUrl(executionContext, confirmationPageUrl));
+        return doRegister(
+            executionContext,
+            newExternalUserEntity,
+            () -> sanitizePortalRedirectUrl(executionContext, confirmationPageUrl),
+            RegistrationOrigin.PORTAL
+        );
     }
 
     @Override
@@ -902,15 +918,18 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         final String registrationTarget
     ) {
         if (registrationTarget == null || registrationTarget.isBlank()) {
-            return register(executionContext, newExternalUserEntity, null);
+            return doRegister(executionContext, newExternalUserEntity, () -> null, RegistrationOrigin.CONSOLE);
         }
 
         if (GAMMA_TARGET.equalsIgnoreCase(registrationTarget.trim())) {
             // Built from installation configuration rather than from the caller, so it deliberately does
             // not pass through sanitizePortalRedirectUrl: that whitelist exists for caller-supplied portal
             // URLs and would drop a trusted one built here.
-            return doRegister(executionContext, newExternalUserEntity, () ->
-                buildGammaRegistrationPageUrl(executionContext.getOrganizationId())
+            return doRegister(
+                executionContext,
+                newExternalUserEntity,
+                () -> buildGammaRegistrationPageUrl(executionContext.getOrganizationId()),
+                RegistrationOrigin.GAMMA
             );
         }
 
@@ -926,7 +945,8 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
     private UserEntity doRegister(
         ExecutionContext executionContext,
         final NewExternalUserEntity newExternalUserEntity,
-        final Supplier<String> confirmationPageUrl
+        final Supplier<String> confirmationPageUrl,
+        final RegistrationOrigin registrationOrigin
     ) {
         final ReferenceContext currentContext = executionContext.getReferenceContext();
 
@@ -939,7 +959,8 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
             USER_REGISTRATION,
             confirmationPageUrl.get(),
             autoRegistrationEnabled,
-            false
+            false,
+            registrationOrigin
         );
     }
 
@@ -968,7 +989,8 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
             USER_CREATION,
             null,
             true,
-            newPreRegisterUserEntity.isService()
+            newPreRegisterUserEntity.isService(),
+            null
         );
     }
 
@@ -988,7 +1010,8 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         final ACTION action,
         final String confirmationPageUrl,
         final boolean autoRegistrationEnabled,
-        final boolean isServiceUser
+        final boolean isServiceUser,
+        final RegistrationOrigin registrationOrigin
     ) {
         if (
             (!isServiceUser || StringUtils.isNotEmpty(newExternalUserEntity.getEmail())) &&
@@ -1048,7 +1071,7 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
             throw new TechnicalManagementException(e.getMessage(), e);
         }
 
-        final UserEntity userEntity = create(executionContext, newExternalUserEntity, true, autoRegistrationEnabled);
+        final UserEntity userEntity = create(executionContext, newExternalUserEntity, true, autoRegistrationEnabled, registrationOrigin);
 
         if (userEntity == null) {
             throw new TechnicalManagementException("An error occurs while trying to create user");
@@ -1132,14 +1155,47 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         return portalUrl + PORTAL_REGISTRATION_CONFIRMATION_PATH;
     }
 
+    /**
+     * The page the activation link opens once a registration is approved, chosen by the front door the user signed
+     * up on. Only the origin can answer this: the approval is a separate request from the sign-up, and configuration
+     * describes the organization where the question is about the person.
+     *
+     * @return {@code null} for the classic console, whose link {@link #getTokenRegistrationParams} builds itself.
+     */
+    private String registrationConfirmationUrl(ExecutionContext executionContext, User user) {
+        final RegistrationOrigin origin = user.getRegistrationOrigin();
+        if (RegistrationOrigin.GAMMA == origin) {
+            return buildGammaRegistrationPageUrl(executionContext.getOrganizationId());
+        }
+        if (RegistrationOrigin.CONSOLE == origin) {
+            return null;
+        }
+        // PORTAL, and null for accounts that registered before the origin was recorded: both resolve the portal of
+        // the environment, which is what every approval did before there was an origin to read.
+        return portalRegistrationConfirmationUrl(executionContext, user.getId());
+    }
+
+    private User findUserToProcess(String userId) {
+        try {
+            return userRepository.findById(userId).orElseThrow(() -> new UserNotFoundException(userId));
+        } catch (TechnicalException ex) {
+            throw new TechnicalManagementException("An error occurs while trying to find user using its ID " + userId, ex);
+        }
+    }
+
     @Override
     public UserEntity processRegistration(ExecutionContext executionContext, String userId, boolean accepted) {
         UserEntity userToProcess = findById(executionContext, userId);
-        UserEntity processedUser = this.changeUserStatus(executionContext, userId, accepted ? UserStatus.ACTIVE : UserStatus.REJECTED);
-        final Map<String, Object> params = new NotificationParamsBuilder().user(processedUser).build();
+        final User user = findUserToProcess(userId);
         // An accepted user still having to choose a password gets the registration email instead: telling them they can
         // sign in would be misleading, and the registration email is the one carrying the activation link.
-        final boolean registrationEmailToSend = accepted && !processedUser.isHasPassword();
+        final boolean registrationEmailToSend = accepted && !userToProcess.isHasPassword();
+        // Resolved before the status changes, so an unresolvable destination leaves the user PENDING and re-approvable.
+        // Resolving afterwards would leave them ACTIVE with no activation link and no way to reissue one.
+        final String confirmationPageUrl = registrationEmailToSend ? registrationConfirmationUrl(executionContext, user) : null;
+
+        UserEntity processedUser = this.changeUserStatus(user, accepted ? UserStatus.ACTIVE : UserStatus.REJECTED);
+        final Map<String, Object> params = new NotificationParamsBuilder().user(processedUser).build();
         if (!registrationEmailToSend) {
             emailService.sendAsyncEmailNotification(
                 executionContext,
@@ -1167,40 +1223,28 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
                 executionContext,
                 processedUser,
                 USER_REGISTRATION,
-                getTokenRegistrationParams(
-                    executionContext,
-                    processedUser,
-                    REGISTRATION_PATH,
-                    USER_REGISTRATION,
-                    portalRegistrationConfirmationUrl(executionContext, userId)
-                )
+                getTokenRegistrationParams(executionContext, processedUser, REGISTRATION_PATH, USER_REGISTRATION, confirmationPageUrl)
             );
         }
 
         return processedUser;
     }
 
-    @NotNull
-    private UserEntity changeUserStatus(ExecutionContext executionContext, String userId, UserStatus newStatus) {
+    private UserEntity changeUserStatus(User user, UserStatus newStatus) {
         try {
-            Optional<User> optionalUser = this.userRepository.findById(userId);
-            if (optionalUser.isPresent()) {
-                final User user = optionalUser.get();
-                user.setStatus(newStatus);
-                user.setUpdatedAt(new Date());
-                if (newStatus == UserStatus.REJECTED) {
-                    //so a new registration can be requested with the same email
-                    user.setSourceId(newStatus.name().toLowerCase() + "-" + user.getSourceId());
-                }
-                final User updatedUser = this.userRepository.update(user);
-                if (updatedUser == null) {
-                    throw new TechnicalManagementException("An error occurs while trying to update user");
-                }
-                return convert(updatedUser, true);
+            user.setStatus(newStatus);
+            user.setUpdatedAt(new Date());
+            if (newStatus == UserStatus.REJECTED) {
+                //so a new registration can be requested with the same email
+                user.setSourceId(newStatus.name().toLowerCase() + "-" + user.getSourceId());
             }
-            throw new UserNotFoundException(userId);
+            final User updatedUser = this.userRepository.update(user);
+            if (updatedUser == null) {
+                throw new TechnicalManagementException("An error occurs while trying to update user");
+            }
+            return convert(updatedUser, true);
         } catch (TechnicalException ex) {
-            throw new TechnicalManagementException("An error occurs while trying to create an external user" + userId, ex);
+            throw new TechnicalManagementException("An error occurs while trying to create an external user" + user.getId(), ex);
         }
     }
 
@@ -1595,11 +1639,23 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         return buildGammaPageUrl(organizationId, GAMMA_REGISTRATION_PATH);
     }
 
+    /**
+     * Asks what the organization actually configured rather than {@code getGammaUrl}, which substitutes
+     * {@code DEFAULT_GAMMA_URL} so a caller always has somewhere to send a browser. This link carries a signed
+     * token, so an unconfigured organization has to be refused instead of defaulted -- and an organization that
+     * genuinely serves Gamma on the default URL must still be served.
+     */
     private String buildGammaPageUrl(final String organizationId, final String path) {
-        String gammaUrl = installationAccessQueryService.getGammaUrl(organizationId);
-        if (gammaUrl == null || gammaUrl.isBlank()) {
-            throw new ValidationDomainException("Gamma URL is not configured for organization: " + organizationId);
-        }
+        String gammaUrl = installationAccessQueryService
+            .findGammaUrl(organizationId)
+            .filter(url -> !url.isBlank())
+            .orElseThrow(() ->
+                new ValidationDomainException(
+                    "No Gamma URL is configured for organization " +
+                        organizationId +
+                        ". Set 'installation.standalone.gamma-console.url', or the organization's Gamma console access point on a multi-tenant installation."
+                )
+            );
         if (gammaUrl.endsWith("/")) {
             gammaUrl = gammaUrl.substring(0, gammaUrl.length() - 1);
         }
@@ -2137,7 +2193,7 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
 
     protected Set<RoleEntity> computeOrganizationRoles(
         ExecutionContext executionContext,
-        @NotNull List<RoleMappingEntity> rolesMapping,
+        List<RoleMappingEntity> rolesMapping,
         String username,
         String userInfo,
         String accessToken,
@@ -2185,7 +2241,7 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
 
     protected Map<String, Set<RoleEntity>> computeEnvironmentRoles(
         ExecutionContext executionContext,
-        @NotNull List<RoleMappingEntity> rolesMapping,
+        List<RoleMappingEntity> rolesMapping,
         String username,
         String userInfo,
         String accessToken,
@@ -2334,14 +2390,15 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         List<RoleEntity> roleEntities = roleService.findDefaultRoleByScopes(
             executionContext.getOrganizationId(),
             RoleScope.API,
-            RoleScope.APPLICATION
+            RoleScope.APPLICATION,
+            RoleScope.API_PRODUCT
         );
 
         for (GroupEntity group : userGroups) {
             if (group == null) {
                 continue;
             }
-            for (RoleScope scope : List.of(RoleScope.API, RoleScope.APPLICATION)) {
+            for (RoleScope scope : List.of(RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT)) {
                 String roleName = Optional.ofNullable(group.getRoles())
                     .map(roles -> roles.get(scope))
                     .orElseGet(() ->
@@ -2453,10 +2510,11 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         }
 
         List<Membership> overrideUserMemberships = new ArrayList<>();
-        // Delete existing memberships
+        // Reference ids are unique across membership types (GROUP, ORGANIZATION, ENVIRONMENT).
+        Map<String, Set<RoleScope>> manuallyAssignedRolesByReference = new HashMap<>();
+        Map<String, Optional<RoleScope>> roleScopeByRoleId = new HashMap<>();
         userMemberships.forEach(membership -> {
             if (hasMapping) {
-                // Consider only membership "created by" the identity provider
                 if (identityProviderId.equals(membership.getSource())) {
                     membershipService.deleteReferenceMemberBySource(
                         executionContext,
@@ -2467,12 +2525,11 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
                         membership.getSource()
                     );
                 } else {
-                    membershipService.deleteReferenceMember(
-                        executionContext,
-                        MembershipReferenceType.valueOf(membership.getReferenceType().name()),
-                        membership.getReferenceId(),
-                        MembershipMemberType.USER,
-                        userId
+                    // Admin-assigned roles (non-IdP source) must survive IdP re-sync.
+                    resolveRoleScope(membership.getRoleId(), roleScopeByRoleId).ifPresent(roleScope ->
+                        manuallyAssignedRolesByReference
+                            .computeIfAbsent(membership.getReferenceId(), ignore -> new HashSet<>())
+                            .add(roleScope)
                     );
                 }
             } else {
@@ -2488,6 +2545,13 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         memberships
             .stream()
             .filter(membership -> !containsMembership(overrideUserMemberships, membership))
+            .filter(membership -> {
+                if (!hasMapping) {
+                    return true;
+                }
+                Set<RoleScope> manualScopes = manuallyAssignedRolesByReference.get(membership.getReference().getId());
+                return manualScopes == null || !manualScopes.contains(membership.getRole().getScope());
+            })
             .forEach(membership ->
                 groupedRoles
                     .computeIfAbsent(membership.getReference(), ignore -> new HashMap<>())
@@ -2510,11 +2574,25 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
             .stream()
             .anyMatch(membership1 -> {
                 if (membership1.getReferenceId().equals(membership.getReference().getId())) {
-                    RoleEntity byId = roleService.findById(membership1.getRoleId());
-                    return membership.getRole().getScope().equals(byId.getScope());
+                    try {
+                        return membership.getRole().getScope().equals(roleService.findById(membership1.getRoleId()).getScope());
+                    } catch (RoleNotFoundException e) {
+                        return false;
+                    }
                 }
                 return false;
             });
+    }
+
+    private Optional<RoleScope> resolveRoleScope(String roleId, Map<String, Optional<RoleScope>> roleScopeByRoleId) {
+        return roleScopeByRoleId.computeIfAbsent(roleId, id -> {
+            try {
+                return Optional.of(roleService.findById(id).getScope());
+            } catch (RoleNotFoundException e) {
+                log.warn("Skip manual membership role {} during IdP sync: role no longer exists", id);
+                return Optional.empty();
+            }
+        });
     }
 
     @Override
@@ -2528,29 +2606,63 @@ public class UserServiceImpl extends AbstractService implements UserService, Ini
         // check if user exist
         this.findById(executionContext, userId);
         MemberEntity userMember = membershipService.getUserMember(executionContext, referenceType, referenceId, userId);
-        if (userMember != null) {
-            userMember
-                .getRoles()
-                .forEach(role -> {
-                    if (!roleIds.contains(role.getId())) {
-                        membershipService.removeRole(referenceType, referenceId, MembershipMemberType.USER, userId, role.getId());
-                    } else {
-                        roleIds.remove(role.getId());
-                    }
-                });
+        List<RoleEntity> currentRoles = userMember == null ? List.of() : userMember.getRoles();
+        Set<String> currentRoleIds = currentRoles.stream().map(RoleEntity::getId).collect(toSet());
+        List<RoleEntity> rolesToRemove = currentRoles
+            .stream()
+            .filter(role -> !roleIds.contains(role.getId()))
+            .toList();
+        Set<RoleEntity> rolesToAdd = roleIds
+            .stream()
+            .filter(roleId -> !currentRoleIds.contains(roleId))
+            .map(roleService::findById)
+            .filter(role -> role.getScope().equals(RoleScope.valueOf(referenceType.name())))
+            .collect(toSet());
+        assertCallerHoldsRolesPermissions(
+            executionContext,
+            referenceType,
+            referenceId,
+            Stream.concat(rolesToRemove.stream(), rolesToAdd.stream()).toList()
+        );
+
+        rolesToRemove.forEach(role ->
+            membershipService.removeRole(referenceType, referenceId, MembershipMemberType.USER, userId, role.getId())
+        );
+        if (!rolesToAdd.isEmpty()) {
+            this.addRolesToUser(executionContext, userId, rolesToAdd, referenceType, referenceId);
         }
-        if (!roleIds.isEmpty()) {
-            this.addRolesToUser(
-                executionContext,
-                userId,
-                roleIds
-                    .stream()
-                    .map(roleService::findById)
-                    .filter(role -> role.getScope().equals(RoleScope.valueOf(referenceType.name())))
-                    .collect(toSet()),
-                referenceType,
-                referenceId
-            );
+    }
+
+    private void assertCallerHoldsRolesPermissions(
+        ExecutionContext executionContext,
+        MembershipReferenceType referenceType,
+        String referenceId,
+        Collection<RoleEntity> roles
+    ) {
+        if (roles.isEmpty() || isOrganizationAdmin()) {
+            return;
         }
+        Map<String, char[]> callerPermissions = membershipService.getUserMemberPermissions(
+            executionContext,
+            referenceType,
+            referenceId,
+            getAuthenticatedUsername()
+        );
+        if (roles.stream().anyMatch(role -> !holdsAllPermissions(callerPermissions, role.getPermissions()))) {
+            throw new ForbiddenAccessException();
+        }
+    }
+
+    private static boolean holdsAllPermissions(Map<String, char[]> heldPermissions, Map<String, char[]> requiredPermissions) {
+        if (requiredPermissions == null) {
+            return true;
+        }
+        return requiredPermissions
+            .entrySet()
+            .stream()
+            .allMatch(required -> {
+                String held = new String(heldPermissions.getOrDefault(required.getKey(), new char[0]));
+                return new String(required.getValue()).chars().allMatch(action -> held.indexOf(action) >= 0);
+            });
     }
 }

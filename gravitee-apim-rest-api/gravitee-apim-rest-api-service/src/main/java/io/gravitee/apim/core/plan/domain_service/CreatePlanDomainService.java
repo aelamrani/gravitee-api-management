@@ -26,6 +26,7 @@ import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.audit.model.AuditProperties;
 import io.gravitee.apim.core.audit.model.event.PlanAuditEvent;
 import io.gravitee.apim.core.flow.crud_service.FlowCrudService;
+import io.gravitee.apim.core.flow.domain_service.ApiResourceNames;
 import io.gravitee.apim.core.flow.domain_service.FlowValidationDomainService;
 import io.gravitee.apim.core.plan.crud_service.KafkaPortRangeCrudService;
 import io.gravitee.apim.core.plan.crud_service.PlanCrudService;
@@ -38,6 +39,7 @@ import io.gravitee.definition.model.v4.flow.Flow;
 import io.gravitee.definition.model.v4.listener.AbstractListener;
 import io.gravitee.definition.model.v4.nativeapi.NativeFlow;
 import io.gravitee.rest.api.model.v4.plan.GenericPlanEntity;
+import io.gravitee.rest.api.model.v4.plan.PlanSecurityType;
 import io.gravitee.rest.api.service.common.UuidString;
 import java.sql.Date;
 import java.util.Collections;
@@ -119,6 +121,7 @@ public class CreatePlanDomainService {
                 .referenceType(GenericPlanEntity.ReferenceType.API)
                 .referenceId(api.getId())
                 .environmentId(auditInfo.environmentId())
+                .validation(validationOrDefault(plan))
                 .definitionVersion(api.getDefinitionVersion())
                 .apiType(api.getType())
                 .createdAt(TimeProvider.now())
@@ -138,7 +141,7 @@ public class CreatePlanDomainService {
     }
 
     private PlanWithFlows createHttpV4ApiPlan(Plan plan, List<Flow> flows, Api api, AuditInfo auditInfo) {
-        var sanitizedFlows = flowValidationDomainService.validateAndSanitizeHttpV4(api.getType(), flows);
+        var sanitizedFlows = flowValidationDomainService.validateAndSanitizeHttpV4(api.getType(), flows, ApiResourceNames.fromHttpV4(api));
         flowValidationDomainService.validatePathParameters(
             api.getType(),
             api.getApiDefinitionHttpV4().getFlows() != null ? api.getApiDefinitionHttpV4().getFlows().stream() : Stream.empty(),
@@ -153,6 +156,7 @@ public class CreatePlanDomainService {
                 .referenceType(GenericPlanEntity.ReferenceType.API)
                 .referenceId(api.getId())
                 .environmentId(auditInfo.environmentId())
+                .validation(validationOrDefault(plan))
                 .createdAt(TimeProvider.now())
                 .updatedAt(TimeProvider.now())
                 .needRedeployAt(Date.from(TimeProvider.instantNow()))
@@ -192,6 +196,7 @@ public class CreatePlanDomainService {
                 .referenceType(GenericPlanEntity.ReferenceType.API)
                 .referenceId(api.getId())
                 .environmentId(auditInfo.environmentId())
+                .validation(validationOrDefault(plan))
                 .definitionVersion(api.getDefinitionVersion())
                 .createdAt(TimeProvider.now())
                 .updatedAt(TimeProvider.now())
@@ -231,6 +236,20 @@ public class CreatePlanDomainService {
         flowCrudService.savePlanFlows(createdPlan.getId(), sanitizedFlows);
         createApiProductAuditLog(createdPlan, auditInfo);
         return createdPlan;
+    }
+
+    /**
+     * Imports and other programmatic callers may omit the validation; persisting null breaks every later read of the plan.
+     * KEY_LESS plans need no human validation, so they default to AUTO.
+     */
+    private static Plan.PlanValidationType validationOrDefault(Plan plan) {
+        if (plan.getValidation() != null) {
+            return plan.getValidation();
+        }
+        var security = plan.getPlanSecurity();
+        return security != null && PlanSecurityType.valueOfLabel(security.getType()) == PlanSecurityType.KEY_LESS
+            ? Plan.PlanValidationType.AUTO
+            : Plan.PlanValidationType.MANUAL;
     }
 
     /**

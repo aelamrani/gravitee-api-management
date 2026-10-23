@@ -13,16 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { useEnvironment } from '@gravitee/gamma-modules-sdk';
 import { useQuery } from '@tanstack/react-query';
 
+import { useEnvironment } from '@gravitee/gamma-modules-sdk';
+
 import { getEnvironmentPortalConfiguration } from '../services/environmentPortal';
+
+export const ENVIRONMENT_PORTAL_CONFIGURATION_QUERY_KEY = ['environment-portal-configuration'] as const;
 
 export function useEnvironmentPortalConfiguration() {
     const env = useEnvironment();
 
     return useQuery({
-        queryKey: ['environment-portal-configuration', env?.id ?? ''],
+        queryKey: [...ENVIRONMENT_PORTAL_CONFIGURATION_QUERY_KEY, env?.id ?? ''],
         queryFn: () => getEnvironmentPortalConfiguration(env!.id),
         enabled: Boolean(env?.id),
         staleTime: 60_000,

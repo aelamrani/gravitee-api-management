@@ -22,12 +22,18 @@ import io.gravitee.apim.core.theme.model.ThemeType;
 import io.gravitee.apim.core.theme.query_service.ThemeQueryService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.time.ZonedDateTime;
+import java.util.Comparator;
 import java.util.Objects;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 
 @DomainService
 @RequiredArgsConstructor
 public class CurrentThemeDomainService {
+
+    private static final Comparator<Theme> FALLBACK_PREFERENCE = Comparator.comparing((Theme theme) ->
+        theme.isAutomationManaged() ? 1 : 0
+    ).thenComparing(Theme::getUpdatedAt, Comparator.reverseOrder());
 
     private final ThemeQueryService themeQueryService;
     private final ThemeCrudService themeCrudService;
@@ -61,5 +67,21 @@ public class CurrentThemeDomainService {
         if (theme.isEnabled()) {
             this.themeCrudService.update(theme.toBuilder().enabled(false).updatedAt(ZonedDateTime.now()).build());
         }
+    }
+
+    public void deactivateAndFallback(Theme theme) {
+        if (!theme.isEnabled()) {
+            return;
+        }
+        deactivate(theme);
+        findFallback(theme).ifPresent(this::activate);
+    }
+
+    private Optional<Theme> findFallback(Theme deactivated) {
+        return this.themeQueryService.findByThemeTypeAndEnvironmentId(deactivated.getType(), deactivated.getReferenceId())
+            .stream()
+            .filter(theme -> !Objects.equals(theme.getId(), deactivated.getId()))
+            .sorted(FALLBACK_PREFERENCE)
+            .findFirst();
     }
 }

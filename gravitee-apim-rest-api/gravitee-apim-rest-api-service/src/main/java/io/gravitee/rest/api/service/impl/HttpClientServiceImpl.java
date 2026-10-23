@@ -38,7 +38,9 @@ import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.ProxyType;
 import java.net.URI;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import lombok.CustomLog;
 import org.springframework.stereotype.Component;
 
@@ -51,9 +53,20 @@ import org.springframework.stereotype.Component;
 public class HttpClientServiceImpl extends AbstractService implements HttpClientService {
 
     private static final String HTTPS_SCHEME = "https";
+    private static final int MAX_CONNECTIONS = 20;
 
     private final Configuration configuration;
     private final Vertx vertx;
+
+    /**
+     * Vert.x holds on to every client it creates until the Vert.x instance itself is closed, so a client per call
+     * would accumulate for as long as the node runs. A client is built once per distinct configuration and shared.
+     * <p>
+     * The organization is part of the key so that an unresponsive endpoint configured in one organization can only
+     * exhaust the connections of that organization. The clients of a deleted organization are kept until the next
+     * restart, which is acceptable since organizations are rarely deleted.
+     */
+    private final Map<ClientKey, HttpClient> clients = new ConcurrentHashMap<>();
 
     public HttpClientServiceImpl(Configuration configuration, Vertx vertx) {
         this.configuration = configuration;
@@ -61,23 +74,29 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
     }
 
     @Override
-    public HttpClient createHttpClient(String uriScheme, Boolean useSystemProxy) {
+    public HttpClient createHttpClient(String organizationId, String uriScheme, Boolean useSystemProxy) {
         boolean ssl = HTTPS_SCHEME.equalsIgnoreCase(uriScheme);
+        boolean proxy = (useSystemProxy == Boolean.TRUE) || (useSystemProxy == null && this.isProxyConfigured());
+        return clients.computeIfAbsent(new ClientKey(organizationId, ssl, proxy), key -> buildHttpClient(key.ssl(), key.proxy()));
+    }
 
+    private HttpClient buildHttpClient(boolean ssl, boolean proxy) {
         final HttpClientOptions options = new HttpClientOptions()
             .setSsl(ssl)
             .setTrustAll(true)
             .setVerifyHost(false)
             .setKeepAlive(false)
             .setTcpKeepAlive(false)
-            .setConnectTimeout(httpClientTimeout());
+            .setConnectTimeout(httpClientTimeout())
+            .setIdleTimeout(httpClientTimeout())
+            .setIdleTimeoutUnit(TimeUnit.MILLISECONDS);
 
-        final PoolOptions poolOptions = new PoolOptions().setHttp1MaxSize(1);
+        final PoolOptions poolOptions = new PoolOptions().setHttp1MaxSize(MAX_CONNECTIONS);
 
-        if ((useSystemProxy == Boolean.TRUE) || (useSystemProxy == null && this.isProxyConfigured())) {
+        if (proxy) {
             ProxyOptions proxyOptions = new ProxyOptions();
             proxyOptions.setType(ProxyType.valueOf(httpClientProxyType()));
-            if (HTTPS_SCHEME.equals(uriScheme)) {
+            if (ssl) {
                 proxyOptions.setHost(httpClientProxyHttpsHost());
                 proxyOptions.setPort(httpClientProxyHttpsPort());
                 proxyOptions.setUsername(httpClientProxyHttpsUsername());
@@ -95,7 +114,14 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
     }
 
     @Override
-    public Buffer request(HttpMethod method, String uri, Map<String, String> headers, String body, Boolean useSystemProxy) {
+    public Buffer request(
+        String organizationId,
+        HttpMethod method,
+        String uri,
+        Map<String, String> headers,
+        String body,
+        Boolean useSystemProxy
+    ) {
         if (uri == null || uri.isEmpty()) {
             log.error("HttpClient configuration is empty");
             return null;
@@ -105,9 +131,11 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
 
         URI requestUri = URI.create(uri);
 
-        final HttpClient httpClient = this.createHttpClient(requestUri.getScheme(), useSystemProxy);
+        final HttpClient httpClient = this.createHttpClient(organizationId, requestUri.getScheme(), useSystemProxy);
 
-        final int port = requestUri.getPort() != -1 ? requestUri.getPort() : (HTTPS_SCHEME.equals(requestUri.getScheme()) ? 443 : 80);
+        final int port = requestUri.getPort() != -1
+            ? requestUri.getPort()
+            : (HTTPS_SCHEME.equalsIgnoreCase(requestUri.getScheme()) ? 443 : 80);
 
         RequestOptions options = new RequestOptions()
             .setMethod(io.vertx.core.http.HttpMethod.valueOf(method.name()))
@@ -138,9 +166,6 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
                     @Override
                     public void handle(Throwable throwable) {
                         promise.fail(throwable);
-
-                        // Close client
-                        httpClient.close();
                     }
                 }
             )
@@ -150,9 +175,6 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
                     .onComplete(asyncResponse -> {
                         if (asyncResponse.failed()) {
                             promise.fail(asyncResponse.cause());
-
-                            // Close client
-                            httpClient.close();
                         } else {
                             HttpClientResponse response = asyncResponse.result();
                             log.debug("Web response status code : {}", response.statusCode());
@@ -160,9 +182,6 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
                             if (response.statusCode() >= HttpStatusCode.OK_200 && response.statusCode() <= 299) {
                                 response.bodyHandler(buffer -> {
                                     promise.complete(buffer);
-
-                                    // Close client
-                                    httpClient.close();
                                 });
                             } else {
                                 response.bodyHandler(buffer ->
@@ -250,4 +269,11 @@ public class HttpClientServiceImpl extends AbstractService implements HttpClient
     private Boolean isProxyConfigured() {
         return Boolean.valueOf(System.getProperty("httpClient.proxy", "false"));
     }
+
+    /**
+     * A setting that can differ per organization (SSL or proxy settings, timeouts, trust) has to be part of this key,
+     * otherwise organizations would silently share a client configured for one of them.
+     * The organization is {@code null} for the endpoints the platform itself owns.
+     */
+    private record ClientKey(String organizationId, boolean ssl, boolean proxy) {}
 }

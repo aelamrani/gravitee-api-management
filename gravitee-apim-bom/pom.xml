@@ -333,6 +333,12 @@
             </dependency>
 
             <dependency>
+                <groupId>com.jcraft</groupId>
+                <artifactId>jzlib</artifactId>
+                <version>${jzlib.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.nimbusds</groupId>
                 <artifactId>nimbus-jose-jwt</artifactId>
                 <version>${nimbus-jose-jwt.version}</version>
@@ -376,12 +382,11 @@
                 <version>${classgraph.version}</version>
             </dependency>
 
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-tcnative-boringssl-static</artifactId>
-                <version>${netty-tcnative-boringssl-static.version}</version>
-                <classifier>${os.detected.classifier}</classifier>
-            </dependency>
+            <!--
+              Every classifier is managed here, without scope: netty-bom manages them with scope runtime,
+              which overrides the test scope of a transitive declaration (e.g. through the tests SDK) and
+              gets the native libraries packaged into plugin archives.
+            -->
 
             <dependency>
                 <groupId>io.projectreactor</groupId>
@@ -710,6 +715,14 @@
                 <groupId>wsdl4j</groupId>
                 <artifactId>wsdl4j</artifactId>
                 <version>${wsdl4j.version}</version>
+            </dependency>
+
+            <!-- Libraries the runtime ships in lib/ext and plugins declare provided: managed here so plugins compile
+                 against the runtime version -->
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java</artifactId>
+                <version>${protobuf-java.version}</version>
             </dependency>
 
             <!-- Mapstruct + Lombok -->

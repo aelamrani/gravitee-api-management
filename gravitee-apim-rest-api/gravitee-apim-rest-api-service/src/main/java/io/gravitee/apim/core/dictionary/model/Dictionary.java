@@ -15,7 +15,7 @@
  */
 package io.gravitee.apim.core.dictionary.model;
 
-import java.util.Map;
+import java.util.List;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -32,7 +32,8 @@ public class Dictionary {
     private String name;
     private String description;
     private DictionaryType type;
-    private Map<String, String> properties;
+    private List<DictionaryProperty> properties;
     private DictionaryProvider provider;
     private DictionaryTrigger trigger;
+    private DictionaryEncryptionPolicy encryption;
 }

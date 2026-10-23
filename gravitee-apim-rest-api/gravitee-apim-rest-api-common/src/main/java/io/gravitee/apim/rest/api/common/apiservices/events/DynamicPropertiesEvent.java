@@ -22,4 +22,4 @@ import java.util.List;
  * @author Yann TAVERNIER (yann.tavernier at graviteesource.com)
  * @author GraviteeSource Team
  */
-public record DynamicPropertiesEvent(String apiId, String pluginId, List<Property> dynamicProperties) {}
+public record DynamicPropertiesEvent(String apiId, String pluginId, List<Property> dynamicProperties, boolean encryptOnFetch) {}

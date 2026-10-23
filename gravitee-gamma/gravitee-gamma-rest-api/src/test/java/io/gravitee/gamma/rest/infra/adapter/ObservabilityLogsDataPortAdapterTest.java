@@ -24,9 +24,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.gravitee.apim.core.analytics.model.ApiDataKind;
 import io.gravitee.apim.core.analytics.query_service.AnalyticsQueryService;
 import io.gravitee.apim.core.api.crud_service.ApiCrudService;
 import io.gravitee.apim.core.api.model.Api;
+import io.gravitee.apim.core.api_product.model.ApiProduct;
 import io.gravitee.apim.core.api_product.query_service.ApiProductQueryService;
 import io.gravitee.apim.core.application.crud_service.ApplicationCrudService;
 import io.gravitee.apim.core.exception.ValidationDomainException;
@@ -41,6 +43,7 @@ import io.gravitee.apim.core.log.model.MessageOperation;
 import io.gravitee.apim.core.plan.crud_service.PlanCrudService;
 import io.gravitee.apim.core.user.domain_service.UserContextLoader;
 import io.gravitee.apim.core.user.model.UserContext;
+import io.gravitee.apim.infra.adapter.ConnectionLogAdapter;
 import io.gravitee.common.http.HttpMethod;
 import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.gamma.rest.core.observability.filter.exception.UnsupportedObservabilityFilterException;
@@ -48,11 +51,13 @@ import io.gravitee.gamma.rest.core.observability.filter.model.FilterCondition;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterOperator;
 import io.gravitee.gamma.rest.core.observability.filter.model.RecordType;
 import io.gravitee.gamma.rest.core.observability.logs.model.ApiReference;
+import io.gravitee.gamma.rest.core.observability.logs.model.AuthzDecision;
 import io.gravitee.gamma.rest.core.observability.logs.model.EntrypointScope;
 import io.gravitee.gamma.rest.core.observability.logs.model.FailureOrigin;
 import io.gravitee.gamma.rest.core.observability.logs.model.LogEntry;
 import io.gravitee.gamma.rest.core.observability.logs.model.LogsSearchQuery;
 import io.gravitee.gamma.rest.core.observability.logs.model.MessageLogsPage;
+import io.gravitee.gamma.rest.core.observability.logs.model.TrafficScope;
 import io.gravitee.repository.log.v4.model.connection.NativeApiMetricKeys;
 import io.gravitee.rest.api.model.analytics.SearchLogsFilters;
 import io.gravitee.rest.api.model.v4.log.SearchLogsResponse;
@@ -508,7 +513,7 @@ class ObservabilityLogsDataPortAdapterTest {
         @Test
         void should_translate_uri_filter() {
             stubEmptySearchResult();
-            var query = queryWith(new FilterCondition("URI", FilterOperator.EQ, List.of("/api/v1/users")));
+            var query = queryWith(new FilterCondition("URI", FilterOperator.STARTS_WITH, List.of("/api/v1/users")));
 
             adapter.searchLogs(ORG, ENV, query);
 
@@ -728,6 +733,40 @@ class ObservabilityLogsDataPortAdapterTest {
     }
 
     @Nested
+    class TrafficScopeMapping {
+
+        @Test
+        void should_hand_the_traffic_scope_to_the_platform() {
+            stubEmptySearchResult();
+            var query = LogsSearchQuery.builder()
+                .apiIds(Set.of("orders", "studio"))
+                .apisById(Map.of())
+                .conditions(List.of())
+                .page(1)
+                .perPage(20)
+                .trafficScope(new TrafficScope(Set.of("studio"), Set.of("mcp")))
+                .build();
+
+            adapter.searchLogs(ORG, ENV, query);
+
+            var captor = ArgumentCaptor.forClass(SearchLogsFilters.class);
+            verify(connectionLogsCrudService).searchApiConnectionLogs(any(), captor.capture(), any(), any());
+            assertThat(captor.getValue().trafficScope()).isEqualTo(new SearchLogsFilters.TrafficScope(Set.of("studio"), Set.of("mcp")));
+        }
+
+        @Test
+        void should_leave_the_traffic_scope_unset_when_the_api_type_alone_decides() {
+            stubEmptySearchResult();
+
+            adapter.searchLogs(ORG, ENV, queryWith());
+
+            var captor = ArgumentCaptor.forClass(SearchLogsFilters.class);
+            verify(connectionLogsCrudService).searchApiConnectionLogs(any(), captor.capture(), any(), any());
+            assertThat(captor.getValue().trafficScope()).isNull();
+        }
+    }
+
+    @Nested
     class EntrypointScopeMapping {
 
         @Test
@@ -852,6 +891,80 @@ class ObservabilityLogsDataPortAdapterTest {
         }
     }
 
+    /**
+     * The detail carries the same descriptive fields as the log search rows, read from the same sources,
+     * so a direct link to a detail shows what the row it came from shows.
+     */
+    @Nested
+    class DetailMatchesTheSearchRow {
+
+        private static final String PRODUCT_ID = "product-1";
+
+        @BeforeEach
+        void stubApiLookup() {
+            when(apiCrudService.findById("api-1")).thenReturn(
+                Optional.of(Api.builder().id("api-1").name("Payments MCP").environmentId(ENV).type(ApiType.MCP_PROXY).build())
+            );
+            when(connectionLogsCrudService.searchApiConnectionLog(any(), any(), any())).thenReturn(Optional.empty());
+        }
+
+        private void stubMetrics(io.gravitee.rest.api.model.v4.analytics.ApiMetricsDetail metrics) {
+            when(analyticsQueryService.findApiMetricsDetail(any(), eq("api-1"), eq("req-1"))).thenReturn(Optional.of(metrics));
+        }
+
+        private io.gravitee.rest.api.model.v4.analytics.ApiMetricsDetail.ApiMetricsDetailBuilder metrics() {
+            return io.gravitee.rest.api.model.v4.analytics.ApiMetricsDetail.builder().apiId("api-1").requestId("req-1");
+        }
+
+        @Test
+        void should_carry_the_api_name_the_entrypoint_and_the_mcp_method() {
+            stubMetrics(
+                metrics()
+                    .entrypointId("mcp-proxy")
+                    .additionalMetrics(Map.of(ConnectionLogAdapter.MCP_PROXY_METHOD_KEY, "tools/list"))
+                    .build()
+            );
+
+            var detail = adapter.getLogDetail(ORG, ENV, "api-1", "req-1").orElseThrow();
+
+            assertThat(detail.apiName()).isEqualTo("Payments MCP");
+            assertThat(detail.entrypointId()).isEqualTo("mcp-proxy");
+            assertThat(detail.mcpMethod()).isEqualTo("tools/list");
+        }
+
+        @Test
+        void should_resolve_the_api_product_name_within_the_environment() {
+            when(apiProductQueryService.findByEnvironmentIdAndIdIn(ENV, Set.of(PRODUCT_ID))).thenReturn(
+                Set.of(ApiProduct.builder().id(PRODUCT_ID).environmentId(ENV).name("Payments bundle").build())
+            );
+            stubMetrics(metrics().apiProductId(PRODUCT_ID).build());
+
+            var detail = adapter.getLogDetail(ORG, ENV, "api-1", "req-1").orElseThrow();
+
+            assertThat(detail.apiProductId()).isEqualTo(PRODUCT_ID);
+            assertThat(detail.apiProductName()).isEqualTo("Payments bundle");
+        }
+
+        @Test
+        void should_label_a_request_outside_any_api_product_as_standalone() {
+            stubMetrics(metrics().build());
+
+            var detail = adapter.getLogDetail(ORG, ENV, "api-1", "req-1").orElseThrow();
+
+            assertThat(detail.apiProductName()).isEqualTo("Standalone API");
+            verifyNoInteractions(apiProductQueryService);
+        }
+
+        @Test
+        void should_leave_the_mcp_method_null_outside_an_mcp_request() {
+            stubMetrics(metrics().additionalMetrics(Map.of("keyword_llm-proxy_model", "gpt-4o-mini")).build());
+
+            var detail = adapter.getLogDetail(ORG, ENV, "api-1", "req-1").orElseThrow();
+
+            assertThat(detail.mcpMethod()).isNull();
+        }
+    }
+
     @Nested
     class DetailCredential {
 
@@ -960,13 +1073,25 @@ class ObservabilityLogsDataPortAdapterTest {
                             .timestamp(1_000L)
                             .requestId("req-1")
                             .gatewayId("gateway-1")
-                            .operation("evaluate")
                             .status("success")
                             .caller("pep")
-                            .decision("PERMIT")
-                            .matchedPolicyNames(List.of("allow-readers"))
+                            .targetPdpId("pdp-a")
+                            .policyGeneration("42")
+                            .decision("FORBID")
+                            .outcome("DENY")
+                            .enforced("DENY")
+                            .matchedRules(List.of(new AuthzDecisionLog.MatchedRule("p1", "orders", "2026-09-23T10:00:00Z", "FORBID")))
+                            .reasons(List.of("blocked"))
+                            .subjectType("User")
                             .subjectId("alice")
+                            .action("read")
+                            .resourceType("Doc")
+                            .resourceId("d1")
+                            .batchId("batch-1")
+                            .batchIndex(1)
+                            .batchSize(2)
                             .durationNanos(4_200L)
+                            .errorType("TimeoutException")
                             .build()
                     )
                 )
@@ -980,16 +1105,30 @@ class ObservabilityLogsDataPortAdapterTest {
             assertThat(entry.timestamp()).isEqualTo(Instant.ofEpochMilli(1_000L));
             assertThat(entry.authz())
                 .isNotNull()
-                .satisfies(authz -> {
-                    assertThat(authz.decision()).isEqualTo("PERMIT");
-                    assertThat(authz.caller()).isEqualTo("pep");
-                    assertThat(authz.operation()).isEqualTo("evaluate");
-                    assertThat(authz.eventId()).isEqualTo("evt-1");
-                    assertThat(authz.status()).isEqualTo("success");
-                    assertThat(authz.subjectId()).isEqualTo("alice");
-                    assertThat(authz.durationNanos()).isEqualTo(4_200L);
-                    assertThat(authz.matchedPolicyNames()).containsExactly("allow-readers");
-                });
+                .isEqualTo(
+                    AuthzDecision.builder()
+                        .eventId("evt-1")
+                        .decision("FORBID")
+                        .outcome("DENY")
+                        .enforced("DENY")
+                        .status("success")
+                        .caller("pep")
+                        .targetPdpId("pdp-a")
+                        .policyGeneration("42")
+                        .matchedRules(List.of(new AuthzDecision.MatchedRule("p1", "orders", "2026-09-23T10:00:00Z", "FORBID")))
+                        .reasons(List.of("blocked"))
+                        .subjectType("User")
+                        .subjectId("alice")
+                        .action("read")
+                        .resourceType("Doc")
+                        .resourceId("d1")
+                        .batchId("batch-1")
+                        .batchIndex(1)
+                        .batchSize(2)
+                        .durationNanos(4_200L)
+                        .errorType("TimeoutException")
+                        .build()
+                );
             assertThat(entry.additionalMetrics()).isNull();
             verifyNoInteractions(connectionLogsCrudService);
         }
@@ -1034,7 +1173,8 @@ class ObservabilityLogsDataPortAdapterTest {
                 ENV,
                 decisionQueryWith(
                     new FilterCondition("AUTHZ_STATUS", FilterOperator.EQ, List.of("error")),
-                    new FilterCondition("AUTHZ_OPERATION", FilterOperator.EQ, List.of("search")),
+                    new FilterCondition("AUTHZ_INDETERMINATE_CAUSE", FilterOperator.EQ, List.of("NOT_READY")),
+                    new FilterCondition("AUTHZ_ERROR_TYPE", FilterOperator.IN, List.of("evaluation_timeout")),
                     new FilterCondition("AUTHZ_PDP", FilterOperator.EQ, List.of("pdp-a")),
                     new FilterCondition("AUTHZ_MATCHED_POLICY", FilterOperator.EQ, List.of("forbid-delete")),
                     new FilterCondition("AUTHZ_POLICY_VERSION", FilterOperator.EQ, List.of("9")),
@@ -1048,7 +1188,8 @@ class ObservabilityLogsDataPortAdapterTest {
             var filters = captor.getValue();
             // Distinct values per field: swapping two mappings would otherwise still satisfy the assertions.
             assertThat(filters.statuses()).containsExactly("error");
-            assertThat(filters.operations()).containsExactly("search");
+            assertThat(filters.indeterminateCauses()).containsExactly("NOT_READY");
+            assertThat(filters.errorTypes()).containsExactly("evaluation_timeout");
             assertThat(filters.targetPdpIds()).containsExactly("pdp-a");
             assertThat(filters.matchedPolicyNames()).containsExactly("forbid-delete");
             assertThat(filters.policyGenerations()).containsExactly("9");
@@ -1057,27 +1198,14 @@ class ObservabilityLogsDataPortAdapterTest {
         }
 
         @Test
-        void should_refuse_a_policy_version_that_is_not_a_number_instead_of_failing_the_shard() {
-            assertThatThrownBy(() ->
-                adapter.searchLogs(
-                    ORG,
-                    ENV,
-                    decisionQueryWith(new FilterCondition("AUTHZ_POLICY_VERSION", FilterOperator.EQ, List.of("v9")))
-                )
-            )
-                .isInstanceOf(ValidationDomainException.class)
-                .hasMessageContaining("v9");
-        }
-
-        @Test
-        void should_keep_a_decimal_policy_version_that_elasticsearch_already_coerces() {
+        void should_pass_the_engine_generation_through_as_the_keyword_it_is_stored_as() {
             when(authzDecisionLogsCrudService.searchDecisionLogs(any(), any(), any())).thenReturn(new SearchLogsResponse<>(0, List.of()));
 
-            adapter.searchLogs(ORG, ENV, decisionQueryWith(new FilterCondition("AUTHZ_POLICY_VERSION", FilterOperator.EQ, List.of("3.0"))));
+            adapter.searchLogs(ORG, ENV, decisionQueryWith(new FilterCondition("AUTHZ_POLICY_VERSION", FilterOperator.EQ, List.of("v9"))));
 
             var captor = ArgumentCaptor.forClass(AuthzDecisionLogFilters.class);
             verify(authzDecisionLogsCrudService).searchDecisionLogs(any(), captor.capture(), any());
-            assertThat(captor.getValue().policyGenerations()).containsExactly("3.0");
+            assertThat(captor.getValue().policyGenerations()).containsExactly("v9");
         }
 
         @Test
@@ -1110,7 +1238,9 @@ class ObservabilityLogsDataPortAdapterTest {
 
         @Test
         void should_not_read_a_decision_for_an_api_the_caller_cannot_access() {
-            when(userContextLoader.loadApi(any(), eq("api-1"))).thenAnswer(invocation -> invocation.getArgument(0));
+            when(userContextLoader.loadApi(any(), eq("api-1"), eq(ApiDataKind.PER_REQUEST))).thenAnswer(invocation ->
+                invocation.getArgument(0)
+            );
 
             var decision = adapter.getDecision(ORG, ENV, "api-1", "evt-1");
 
@@ -1129,8 +1259,8 @@ class ObservabilityLogsDataPortAdapterTest {
             adapter.getDecision(ORG, ENV, "api-1", "evt-1");
 
             // Opening one decision must not pay for every api in the environment.
-            verify(userContextLoader).loadApi(any(), eq("api-1"));
-            verify(userContextLoader, never()).loadApis(any());
+            verify(userContextLoader).loadApi(any(), eq("api-1"), eq(ApiDataKind.PER_REQUEST));
+            verify(userContextLoader, never()).loadApis(any(), any());
         }
 
         @Test
@@ -1157,7 +1287,7 @@ class ObservabilityLogsDataPortAdapterTest {
         }
 
         private void grantAccessToApi1() {
-            when(userContextLoader.loadApi(any(), eq("api-1"))).thenAnswer(invocation ->
+            when(userContextLoader.loadApi(any(), eq("api-1"), eq(ApiDataKind.PER_REQUEST))).thenAnswer(invocation ->
                 ((UserContext) invocation.getArgument(0)).withApis(
                     List.of(Api.builder().id("api-1").name("API 1").type(ApiType.AUTHZ).build())
                 )

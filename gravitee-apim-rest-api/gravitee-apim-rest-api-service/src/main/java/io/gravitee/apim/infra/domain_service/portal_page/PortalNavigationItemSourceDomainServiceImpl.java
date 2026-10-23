@@ -15,6 +15,7 @@
  */
 package io.gravitee.apim.infra.domain_service.portal_page;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.gravitee.apim.core.exception.TechnicalDomainException;
@@ -30,7 +31,12 @@ import io.gravitee.fetcher.api.FilesFetcher;
 import io.gravitee.fetcher.api.Sensitive;
 import io.gravitee.plugin.core.api.PluginManager;
 import io.gravitee.plugin.fetcher.FetcherPlugin;
+import io.gravitee.rest.api.fetcher.FetcherConfigurationAddress;
 import io.gravitee.rest.api.fetcher.FetcherConfigurationFactory;
+import io.gravitee.rest.api.service.exceptions.InvalidDataException;
+import io.gravitee.rest.api.service.exceptions.UrlForbiddenException;
+import io.gravitee.rest.api.service.sanitizer.UrlSanitizerUtils;
+import io.gravitee.rest.api.service.spring.ImportConfiguration;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -43,6 +49,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import lombok.CustomLog;
@@ -60,14 +67,26 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
+    /** The fields in which the fetcher plugins carry the address they fetch from. */
+    private static final Pattern ADDRESS_FIELD = Pattern.compile("repository|.*[uU]rl");
+
+    /**
+     * The GitHub and Bitbucket fetchers put a repository name where the git fetcher puts an address. A value
+     * with no separator cannot designate a host, whereas anything holding one, scp-style git addresses included,
+     * is treated as an address.
+     */
+    private static final Pattern PLAIN_NAME = Pattern.compile("[A-Za-z0-9._-]+");
+
     private final FetcherConfigurationFactory fetcherConfigurationFactory;
     private final PluginManager<FetcherPlugin<?>> pluginManager;
     private final ApplicationContext applicationContext;
+    private final ImportConfiguration importConfiguration;
 
     private final Map<String, Set<String>> sensitiveKeysBySourceType = new ConcurrentHashMap<>();
 
     @Override
     public String fetchContent(PortalNavigationItemSource source) {
+        rejectForbiddenAddress(source);
         var fetcher = loadFetcher(source).orElseThrow(() ->
             InvalidPortalNavigationItemSourceException.unknownSourceType(source.getSourceType())
         );
@@ -86,6 +105,7 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
 
     @Override
     public List<String> listFiles(PortalNavigationItemSource source) {
+        rejectForbiddenAddress(source);
         var fetcher = loadFetcher(source).orElseThrow(() ->
             InvalidPortalNavigationItemSourceException.unknownSourceType(source.getSourceType())
         );
@@ -102,6 +122,7 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
 
     @Override
     public String fetchFileContent(PortalNavigationItemSource source, String filepath) {
+        rejectForbiddenAddress(source);
         var fetcher = loadFetcher(source).orElseThrow(() ->
             InvalidPortalNavigationItemSourceException.unknownSourceType(source.getSourceType())
         );
@@ -144,9 +165,9 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
     }
 
     /**
-     * Restores stored secrets only within the same source type: a placeholder sent against another
-     * fetcher would otherwise hand that fetcher the previous one's credentials. Across a type change
-     * the placeholder is left unresolved, and validation rejects it.
+     * Restores stored secrets only within the same source type and address: a placeholder sent against
+     * another fetcher or address would otherwise hand the previous credentials to whoever answers there.
+     * In those cases the placeholder is left unresolved, and validation rejects it.
      */
     @Override
     public void mergeSensitiveData(PortalNavigationItemSource oldSource, PortalNavigationItemSource newSource) {
@@ -160,11 +181,18 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
             }
             var updated = (ObjectNode) JSON_MAPPER.readTree(newSource.getSourceConfiguration());
             var original = (ObjectNode) JSON_MAPPER.readTree(oldSource.getSourceConfiguration());
+            var sameAddress = FetcherConfigurationAddress.sameAddress(
+                oldSource.getSourceConfiguration(),
+                newSource.getSourceConfiguration()
+            );
             boolean merged = false;
             for (String key : sensitiveKeys) {
                 var value = updated.get(key);
                 if (value != null && value.isTextual() && SENSITIVE_DATA_REPLACEMENT.equals(value.textValue())) {
                     var originalValue = original.get(key);
+                    if (!sameAddress && originalValue != null && !originalValue.isNull()) {
+                        continue;
+                    }
                     if (originalValue != null) {
                         updated.set(key, originalValue);
                     } else {
@@ -202,6 +230,7 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
 
     @Override
     public void validateSourceConfiguration(PortalNavigationItemSource source) {
+        rejectForbiddenAddress(source);
         var plugin = loadPlugin(source).orElseThrow(() ->
             InvalidPortalNavigationItemSourceException.unknownSourceType(source.getSourceType())
         );
@@ -238,6 +267,38 @@ public class PortalNavigationItemSourceDomainServiceImpl implements PortalNaviga
             // Cron was validated on write; a stored one that no longer parses must not stop the whole run
             log.warn("Skipping auto-fetch of portal page source [type={}]: unparseable cron expression", source.getSourceType(), e);
             return false;
+        }
+    }
+
+    /**
+     * The server fetches whatever address a source names, so the address is held to the same import rules
+     * as classic documentation pages: private addresses are refused unless the administrator allows them,
+     * and a whitelist, when set, is the only thing accepted. Checked when a source is written and again
+     * each time it is fetched, since a stored source may predate the rules now in force.
+     */
+    private void rejectForbiddenAddress(PortalNavigationItemSource source) {
+        if (importConfiguration.isAllowImportFromPrivate() || source.getSourceConfiguration() == null) {
+            return;
+        }
+        JsonNode configuration;
+        try {
+            configuration = JSON_MAPPER.readTree(source.getSourceConfiguration());
+        } catch (IOException e) {
+            throw InvalidPortalNavigationItemSourceException.invalidSourceConfiguration(source.getSourceType(), e);
+        }
+        for (var field : configuration.properties()) {
+            if (!ADDRESS_FIELD.matcher(field.getKey()).matches() || !field.getValue().isTextual()) {
+                continue;
+            }
+            var address = field.getValue().textValue();
+            if (PLAIN_NAME.matcher(address).matches()) {
+                continue;
+            }
+            try {
+                UrlSanitizerUtils.checkAllowed(address, importConfiguration.getImportWhitelist(), false);
+            } catch (UrlForbiddenException | InvalidDataException e) {
+                throw InvalidPortalNavigationItemSourceException.sourceAddressNotAllowed(source.getSourceType());
+            }
         }
     }
 

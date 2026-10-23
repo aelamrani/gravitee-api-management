@@ -20,17 +20,19 @@ import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardFilter
 import io.gravitee.gamma.rest.core.observability.filter.exception.UnsupportedObservabilityFilterException;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterCondition;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterOperator;
+import io.gravitee.gamma.rest.resources.RejectUnknownProperties;
 import io.gravitee.gamma.rest.resources.observability.dto.FilterValues;
+import java.util.Locale;
 
 /**
  * Request shape for one dashboard filter (OBS-16). {@code value} is polymorphic — scalar or array,
  * normalized by {@link FilterValues}; an empty array is the legal "all values" placeholder.
  * {@code editable} is a boxed {@link Boolean} defaulting to {@code false} (locked) when absent — the
  * restrictive default, which can never widen a scope by accident — then narrowed to the primitive
- * the core model carries. The name is deliberately not checked against the filter catalogue: a
- * dashboard is declarative configuration, validated at query time, and catalogue coupling would make
- * dashboards non-importable across environments.
+ * the core model carries. Only the shape is checked here; the save use cases check the filter against
+ * the catalog ({@code ObservabilityFilterValidator#validateDashboardFilters}).
  */
+@RejectUnknownProperties
 public record SaveDashboardFilterDto(String name, String label, String operator, Object value, Boolean editable) {
     public DashboardFilter toCore() {
         if (name == null || name.isBlank()) {
@@ -41,10 +43,10 @@ public record SaveDashboardFilterDto(String name, String label, String operator,
         }
         FilterOperator op;
         try {
-            op = FilterOperator.valueOf(operator.toUpperCase());
+            op = FilterOperator.valueOf(operator.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
             throw UnsupportedObservabilityFilterException.unsupportedOperator(name, operator);
         }
-        return new DashboardFilter(new FilterCondition(name, op, FilterValues.normalize(value)), label, editable != null && editable);
+        return new DashboardFilter(new FilterCondition(name, op, FilterValues.normalize(name, value)), label, editable != null && editable);
     }
 }

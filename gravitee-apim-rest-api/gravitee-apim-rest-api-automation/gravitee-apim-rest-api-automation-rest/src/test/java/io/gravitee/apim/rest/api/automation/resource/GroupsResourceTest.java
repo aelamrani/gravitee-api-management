@@ -15,24 +15,41 @@
  */
 package io.gravitee.apim.rest.api.automation.resource;
 
+import static io.gravitee.rest.api.model.permissions.RolePermission.ENVIRONMENT_GROUP;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.CREATE;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.gravitee.apim.core.group.model.Group;
 import io.gravitee.apim.core.group.model.crd.GroupCRDStatus;
 import io.gravitee.apim.core.group.use_case.ImportGroupCRDUseCase;
 import io.gravitee.apim.core.group.use_case.ValidateGroupCRDUseCase;
+import io.gravitee.apim.core.member.model.RoleScope;
+import io.gravitee.apim.rest.api.automation.model.GroupDefaultMemberRoles;
 import io.gravitee.apim.rest.api.automation.model.GroupState;
 import io.gravitee.apim.rest.api.automation.resource.base.AbstractResourceTest;
+import io.gravitee.rest.api.model.permissions.RolePermissionAction;
+import io.gravitee.rest.api.service.common.ExecutionContext;
+import io.gravitee.rest.api.service.common.HRIDToUUID;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.client.Entity;
 import jakarta.ws.rs.core.MediaType;
+import java.util.List;
+import java.util.Map;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 
 class GroupsResourceTest extends AbstractResourceTest {
 
@@ -133,6 +150,211 @@ class GroupsResourceTest extends AbstractResourceTest {
                 soft.assertThat(state.getErrors()).isNotNull();
                 soft.assertThat(state.getErrors().getWarning()).contains("unknown role");
             });
+        }
+    }
+
+    @Nested
+    class DefaultMemberRolesAndIgnoreMembers {
+
+        @BeforeEach
+        void setUp() {
+            reset(groupService);
+            when(importGroupCRDUseCase.execute(any(ImportGroupCRDUseCase.Input.class))).thenReturn(
+                new ImportGroupCRDUseCase.Output(GroupCRDStatus.builder().id("group-id").members(0).build())
+            );
+            when(validateGroupCRDUseCase.execute(any(ImportGroupCRDUseCase.Input.class))).thenReturn(
+                new ImportGroupCRDUseCase.Output(GroupCRDStatus.builder().id("group-id").members(0).build())
+            );
+        }
+
+        private void givenStoredDefaultMemberRoles(Map<io.gravitee.rest.api.model.permissions.RoleScope, String> roles) {
+            var group = new io.gravitee.rest.api.model.GroupEntity();
+            group.setRoles(roles);
+            when(groupService.findById(any(), eq("group-id"))).thenReturn(group);
+        }
+
+        @Test
+        void should_pass_default_member_roles_to_the_use_case_and_answer_the_stored_ones() {
+            givenStoredDefaultMemberRoles(
+                Map.of(
+                    io.gravitee.rest.api.model.permissions.RoleScope.API,
+                    "USER",
+                    io.gravitee.rest.api.model.permissions.RoleScope.APPLICATION,
+                    "USER",
+                    io.gravitee.rest.api.model.permissions.RoleScope.API_PRODUCT,
+                    "USER"
+                )
+            );
+            var state = expectEntity("group-with-default-member-roles.json");
+
+            var input = ArgumentCaptor.forClass(ImportGroupCRDUseCase.Input.class);
+            verify(importGroupCRDUseCase).execute(input.capture());
+            SoftAssertions.assertSoftly(soft -> {
+                soft
+                    .assertThat(input.getValue().spec().getDefaultMemberRoles())
+                    .containsExactlyInAnyOrderEntriesOf(
+                        Map.of(RoleScope.API, "USER", RoleScope.APPLICATION, "USER", RoleScope.API_PRODUCT, "USER")
+                    );
+                soft.assertThat(input.getValue().spec().isIgnoreMembers()).isFalse();
+                soft.assertThat(state.getDefaultMemberRoles().getApiProduct()).isEqualTo("USER");
+            });
+        }
+
+        @Test
+        void should_leave_default_member_roles_undeclared_when_absent() {
+            expectEntity("group-with-name.json");
+
+            var input = ArgumentCaptor.forClass(ImportGroupCRDUseCase.Input.class);
+            verify(importGroupCRDUseCase).execute(input.capture());
+            assertThat(input.getValue().spec().getDefaultMemberRoles()).isNull();
+        }
+
+        @Test
+        void should_answer_the_stored_default_member_roles_when_the_spec_omits_them() {
+            givenStoredDefaultMemberRoles(Map.of(io.gravitee.rest.api.model.permissions.RoleScope.API, "OWNER"));
+
+            var state = expectEntity("group-with-name.json");
+
+            assertThat(state.getDefaultMemberRoles()).isEqualTo(new GroupDefaultMemberRoles().api("OWNER"));
+        }
+
+        @Test
+        void should_declare_no_default_member_roles_when_empty() {
+            var state = expectEntity("group-with-empty-default-member-roles.json");
+            assertThat(state.getDefaultMemberRoles()).isEqualTo(new GroupDefaultMemberRoles());
+
+            var input = ArgumentCaptor.forClass(ImportGroupCRDUseCase.Input.class);
+            verify(importGroupCRDUseCase).execute(input.capture());
+            assertThat(input.getValue().spec().getDefaultMemberRoles()).isEqualTo(Map.of());
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = { true, false })
+        void should_pass_ignore_members_to_the_use_case(boolean dryRun) {
+            try (
+                var response = rootTarget()
+                    .queryParam("dryRun", dryRun)
+                    .queryParam("ignoreMembers", true)
+                    .request()
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(readJSON("group-with-members.json")))
+            ) {
+                assertThat(response.getStatus()).isEqualTo(200);
+            }
+
+            var input = ArgumentCaptor.forClass(ImportGroupCRDUseCase.Input.class);
+            if (dryRun) {
+                verify(validateGroupCRDUseCase).execute(input.capture());
+            } else {
+                verify(importGroupCRDUseCase).execute(input.capture());
+            }
+            assertThat(input.getValue().spec().isIgnoreMembers()).isTrue();
+        }
+    }
+
+    @Nested
+    class Authorization {
+
+        private final String groupId = HRIDToUUID.group().context(new ExecutionContext(ORGANIZATION, ENVIRONMENT)).hrid("my-group").id();
+
+        @BeforeEach
+        void setUp() {
+            when(importGroupCRDUseCase.execute(any(ImportGroupCRDUseCase.Input.class))).thenReturn(
+                new ImportGroupCRDUseCase.Output(GroupCRDStatus.builder().id(groupId).members(0).build())
+            );
+            when(validateGroupCRDUseCase.execute(any(ImportGroupCRDUseCase.Input.class))).thenReturn(
+                new ImportGroupCRDUseCase.Output(GroupCRDStatus.builder().id(groupId).members(0).build())
+            );
+        }
+
+        @AfterEach
+        void tearDown() {
+            reset(permissionService);
+            groupQueryServiceInMemory.reset();
+        }
+
+        @Test
+        void should_return_403_when_the_caller_cannot_update_the_existing_group() {
+            givenGroup(groupId, ENVIRONMENT);
+            denyGroupPermission(UPDATE);
+
+            assertThat(put(readJSON("group-with-name.json"), false, false)).isEqualTo(403);
+            verify(importGroupCRDUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_return_403_on_dry_run_when_the_caller_cannot_update_the_existing_group() {
+            givenGroup(groupId, ENVIRONMENT);
+            denyGroupPermission(UPDATE);
+
+            assertThat(put(readJSON("group-with-name.json"), true, false)).isEqualTo(403);
+            verify(validateGroupCRDUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_update_the_existing_group_with_update_and_no_create() {
+            givenGroup(groupId, ENVIRONMENT);
+            denyGroupPermission(CREATE);
+
+            assertThat(put(readJSON("group-with-name.json"), false, false)).isEqualTo(200);
+            verify(importGroupCRDUseCase).execute(any());
+        }
+
+        @Test
+        void should_return_403_when_the_caller_cannot_create_a_new_group() {
+            denyGroupPermission(CREATE);
+
+            assertThat(put(readJSON("group-with-name.json"), false, false)).isEqualTo(403);
+            verify(importGroupCRDUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_create_a_new_group_with_create_and_no_update() {
+            denyGroupPermission(UPDATE);
+
+            assertThat(put(readJSON("group-with-name.json"), false, false)).isEqualTo(200);
+            verify(importGroupCRDUseCase).execute(any());
+        }
+
+        @Test
+        void should_authorize_a_group_of_another_environment_as_a_creation() {
+            givenGroup(groupId, "other-environment");
+            denyGroupPermission(UPDATE);
+
+            assertThat(put(readJSON("group-with-name.json"), false, false)).isEqualTo(200);
+            verify(importGroupCRDUseCase).execute(any());
+        }
+
+        @Test
+        void should_return_403_when_an_upper_case_id_names_an_existing_group_the_caller_cannot_update() {
+            var existingId = "abc0a85b-9924-4981-bd71-69295353f5ff";
+            givenGroup(existingId, ENVIRONMENT);
+            denyGroupPermission(UPDATE);
+
+            var spec = "{\"hrid\": \"" + existingId.toUpperCase() + "\", \"name\": \"my-group\"}";
+            assertThat(put(spec, false, true)).isEqualTo(403);
+            verify(importGroupCRDUseCase, never()).execute(any());
+        }
+
+        private void givenGroup(String id, String environmentId) {
+            groupQueryServiceInMemory.initWith(List.of(Group.builder().id(id).environmentId(environmentId).name("my-group").build()));
+        }
+
+        private void denyGroupPermission(RolePermissionAction action) {
+            when(permissionService.hasPermission(any(), eq(ENVIRONMENT_GROUP), eq(ENVIRONMENT), eq(action))).thenReturn(false);
+        }
+
+        private int put(String spec, boolean dryRun, boolean hridContainsUUID) {
+            try (
+                var response = rootTarget()
+                    .queryParam("dryRun", dryRun)
+                    .queryParam("hridContainsUUID", hridContainsUUID)
+                    .request()
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(spec))
+            ) {
+                return response.getStatus();
+            }
         }
     }
 

@@ -16,10 +16,12 @@
 import { Badge, Button, Card, CardContent, toast } from '@gravitee/graphene-core';
 import { ArrowRightIcon, CloudUploadIcon, EyeIcon, KeyIcon, MessageSquareWarningIcon, UserCheckIcon } from '@gravitee/graphene-core/icons';
 import type { LucideIcon } from '@gravitee/graphene-core/icons';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { PromotionReviewSheet } from './PromotionReviewSheet';
 import { getModuleLabel, useModulesStore } from '../../../features/modules';
-import { formatRelativeTime } from '../tasks.mapping';
+import { formatRelativeTime, promotionDataOf } from '../tasks.mapping';
 import type { TaskAreaKey, TaskIconKey, TaskView } from '../tasks.types';
 
 const ICONS: Record<TaskIconKey, LucideIcon> = {
@@ -40,16 +42,28 @@ const AREA_CLASS: Record<TaskAreaKey, string> = {
     users: 'border-success/30 text-success',
 };
 
-export function TaskRow({ task, onNavigate }: { task: TaskView; onNavigate?: () => void }) {
+export function TaskRow({
+    task,
+    onNavigate,
+    onProcessPromotion,
+}: {
+    task: TaskView;
+    onNavigate?: () => void;
+    onProcessPromotion?: (promotionId: string, accepted: boolean) => Promise<void>;
+}) {
     const navigate = useNavigate();
     const modules = useModulesStore(s => s.modules);
     const Icon = ICONS[task.iconKey];
+    const [reviewOpen, setReviewOpen] = useState(false);
 
     const hasTarget = Boolean(task.to && task.toModuleId);
     const targetModule = task.toModuleId ? modules.find(m => m.id === task.toModuleId) : undefined;
     const targetLabel = task.toModuleId ? getModuleLabel(task.toModuleId, targetModule?.name) : undefined;
 
-    const handleAction = () => {
+    const isPromotionTask = task.type === 'PROMOTION_APPROVAL';
+    const promotionData = isPromotionTask ? promotionDataOf(task.entity) : undefined;
+
+    const navigateToTarget = () => {
         if (!task.to || !task.toModuleId) {
             return;
         }
@@ -59,6 +73,18 @@ export function TaskRow({ task, onNavigate }: { task: TaskView; onNavigate?: () 
         }
         navigate(task.to);
         onNavigate?.();
+    };
+
+    const handleAction = () => {
+        if (!isPromotionTask) {
+            navigateToTarget();
+            return;
+        }
+        if (!promotionData) {
+            toast.error('This promotion task is missing required details.');
+            return;
+        }
+        setReviewOpen(true);
     };
 
     return (
@@ -92,11 +118,29 @@ export function TaskRow({ task, onNavigate }: { task: TaskView; onNavigate?: () 
                                 {task.actionLabel}
                                 <ArrowRightIcon className="size-3" aria-hidden />
                             </Button>
-                            {targetLabel && <span className="text-xs text-muted-foreground">Opens {targetLabel}</span>}
+                            {/* Only a row whose button navigates says where it goes. A promotion reviews in
+                                place — whether it opens the sheet or reports the details it is missing. */}
+                            {targetLabel && !isPromotionTask && <span className="text-xs text-muted-foreground">Opens {targetLabel}</span>}
                         </div>
                     )}
                 </div>
             </CardContent>
+            {promotionData && (
+                <PromotionReviewSheet
+                    open={reviewOpen}
+                    onOpenChange={setReviewOpen}
+                    data={promotionData}
+                    onProcess={onProcessPromotion}
+                    onOpenApi={
+                        targetModule
+                            ? () => {
+                                  setReviewOpen(false);
+                                  navigateToTarget();
+                              }
+                            : undefined
+                    }
+                />
+            )}
         </Card>
     );
 }

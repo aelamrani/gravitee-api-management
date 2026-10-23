@@ -25,7 +25,36 @@ import java.util.Map;
  * @author GraviteeSource Team
  */
 public interface HttpClientService {
-    HttpClient createHttpClient(String uriScheme, Boolean useSystemProxy);
+    /**
+     * Returns the client of an organization for the given scheme and proxy setting. It is shared by every caller of that
+     * organization and must not be closed: it lives as long as the Vert.x instance, which holds on to every client it
+     * creates.
+     * <p>
+     * Any endpoint configured by a user must be called through the client of the user's organization, so that a slow
+     * or unresponsive endpoint can only affect that organization.
+     *
+     * @param organizationId the organization owning the endpoint, or {@code null} for an endpoint the platform itself
+     *                       owns (newsletter, reCAPTCHA), which share a single client for the whole node.
+     */
+    HttpClient createHttpClient(String organizationId, String uriScheme, Boolean useSystemProxy);
 
-    Buffer request(HttpMethod method, final String uri, final Map<String, String> headers, String body, Boolean useSystemProxy);
+    /**
+     * Calls an endpoint configured by a user of the given organization, with the client of that organization.
+     */
+    Buffer request(
+        String organizationId,
+        HttpMethod method,
+        final String uri,
+        final Map<String, String> headers,
+        String body,
+        Boolean useSystemProxy
+    );
+
+    /**
+     * Calls an endpoint the platform itself owns (newsletter, reCAPTCHA). Never use it for an endpoint a user
+     * configures: use {@link #request(String, HttpMethod, String, Map, String, Boolean)} with the user's organization.
+     */
+    default Buffer request(HttpMethod method, final String uri, final Map<String, String> headers, String body, Boolean useSystemProxy) {
+        return request(null, method, uri, headers, body, useSystemProxy);
+    }
 }

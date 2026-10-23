@@ -29,6 +29,7 @@ import io.gravitee.rest.api.management.v2.rest.resource.api.log.param.SearchNati
 import io.gravitee.rest.api.management.v2.rest.resource.param.PaginationParam;
 import io.gravitee.rest.api.model.permissions.RolePermission;
 import io.gravitee.rest.api.model.permissions.RolePermissionAction;
+import io.gravitee.rest.api.model.v4.log.SearchLogsResponse;
 import io.gravitee.rest.api.rest.annotation.Permission;
 import io.gravitee.rest.api.rest.annotation.Permissions;
 import io.gravitee.rest.api.service.common.GraviteeContext;
@@ -75,10 +76,18 @@ public class NativeApiLogsResource extends AbstractResource {
             )
         );
         var data = NativeApiLogsMapper.INSTANCE.mapList(output.response().logs());
+        // The total stays honest — an operator wants to know a busy API had 50 000 connection events in the
+        // window. The links do not: Elasticsearch refuses a from/size page past its result window, so a `last`
+        // link computed from the real total would point at a page that answers 400. Bounding it here keeps
+        // every page the API advertises a page the API can serve.
+        long reachable = reachableTotal(output.response(), paginationParam);
         return new NativeApiLogsResponse()
             .data(data)
             .pagination(computePaginationInfo(output.response().total(), data.size(), paginationParam))
-            .links(computePaginationLinks(output.response().total(), paginationParam));
+            .links(computePaginationLinks(reachable, paginationParam))
+            // Only when it bites. Sending it on every response would have every client carry a branch for a
+            // case most APIs never reach.
+            .reachableCount(reachable < output.response().total() ? reachable : null);
     }
 
     @GET
@@ -111,5 +120,26 @@ public class NativeApiLogsResource extends AbstractResource {
             .nativeApiLog()
             .map(NativeApiLogsMapper.INSTANCE::map)
             .orElseThrow(() -> new NotFoundException("No native log found for api: " + apiId + " and requestId: " + requestId));
+    }
+
+    /**
+     * How many of the matching logs can actually be paged to, at this page size.
+     *
+     * <p>Absent means the store imposes no window — the no-op repository, or an implementation that pages
+     * without one — and then every matching log is reachable.
+     *
+     * <p>Rounded down to a whole page, because the last page has to fit entirely inside the window: the store
+     * refuses a page that starts inside it and ends past it. With a window of 10 000 and a page size of 30,
+     * the honest bound is 9 990 — take 10 000 and the last link points at page 334, whose 9 990 + 30 reaches
+     * past the window and answers 400. Page sizes that divide the window are unaffected, which is why the
+     * Console never saw it: it offers only 10, 25, 50 and 100.
+     */
+    private static long reachableTotal(SearchLogsResponse<?> response, PaginationParam paginationParam) {
+        Long window = response.maxReachableTotal();
+        if (window == null) {
+            return response.total();
+        }
+        long wholePages = (window / paginationParam.getPerPage()) * paginationParam.getPerPage();
+        return Math.min(response.total(), wholePages);
     }
 }

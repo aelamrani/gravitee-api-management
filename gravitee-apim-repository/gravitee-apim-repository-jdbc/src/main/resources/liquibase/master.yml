@@ -423,3 +423,21 @@ databaseChangeLog:
         - file: liquibase/changelogs/v4_13_0/17_add_automation_metadata_to_themes.yml
     - include:
         - file: liquibase/changelogs/v4_13_0/18_add_portal_page_content_id_to_subscription_forms.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/19_store_subscription_form_definition_inline_again.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/20_add_catalog_columns_to_subscription_forms.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/21_add_normalized_name_to_subscription_forms.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/22_add_subscription_form_apis_table.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/23_dedicate_the_global_default_subscription_form_to_its_apis.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/24_add_encrypted_to_dictionary_property.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/25_add_registration_origin_to_users.yml
+    - include:
+        - file: liquibase/changelogs/v4_13_0/26_add_module_to_gamma_dashboards.yml
+    - include:
+        - file: liquibase/changelogs/v4_14_0/01_add_encrypt_on_fetch_to_dictionaries.yml

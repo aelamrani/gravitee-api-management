@@ -13,7 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-function DialogDictionaryAddPropertyController($scope, $mdDialog) {
+function DialogDictionaryAddPropertyController($scope, $mdDialog, locals) {
+  const existingKeys = ((locals && locals.existingKeys) || []).map(key => key.trim());
+
+  this.isDuplicate = function (name) {
+    return !!name && existingKeys.includes(name.trim());
+  };
+
   this.hide = function () {
     $mdDialog.hide();
   };
@@ -22,11 +28,12 @@ function DialogDictionaryAddPropertyController($scope, $mdDialog) {
     const property = {
       key: $scope.property.name,
       value: $scope.property.value,
+      encryptable: $scope.property.encryptable === true,
     };
 
     $mdDialog.hide(property);
   };
 }
-DialogDictionaryAddPropertyController.$inject = ['$scope', '$mdDialog'];
+DialogDictionaryAddPropertyController.$inject = ['$scope', '$mdDialog', 'locals'];
 
 export default DialogDictionaryAddPropertyController;

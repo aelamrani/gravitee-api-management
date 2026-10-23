@@ -36,6 +36,7 @@ import inmemory.ScoringFunctionQueryServiceInMemory;
 import inmemory.ScoringProviderInMemory;
 import inmemory.ScoringRulesetQueryServiceInMemory;
 import io.gravitee.apim.core.api.domain_service.ApiExportDomainService;
+import io.gravitee.apim.core.api.exception.ApiNotFoundException;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.import_definition.ApiDescriptor;
 import io.gravitee.apim.core.api.model.import_definition.GraviteeDefinition;
@@ -141,6 +142,23 @@ class ScoreApiRequestUseCaseTest {
     }
 
     @Test
+    void should_reject_api_from_another_environment_without_loading_assets() {
+        var api = givenExistingApi(ApiFixtures.aFederatedApi().toBuilder().environmentId("other-env").build());
+        givenExistingPage(
+            PageFixtures.aPage().toBuilder().referenceType(Page.ReferenceType.API).referenceId(api.getId()).type(Page.Type.SWAGGER).build()
+        );
+
+        scoreApiRequestUseCase
+            .execute(new ScoreApiRequestUseCase.Input(api.getId(), AUDIT_INFO))
+            .test()
+            .awaitDone(5, TimeUnit.SECONDS)
+            .assertError(ApiNotFoundException.class);
+
+        assertThat(scoringProvider.pendingRequests()).isEmpty();
+        assertThat(asyncJobCrudService.storage()).isEmpty();
+    }
+
+    @Test
     public void should_trigger_scoring_for_gravitee_definition_v4() {
         // Given
         var api = givenExistingApi(ApiFixtures.aFederatedApi());
@@ -218,7 +236,7 @@ class ScoreApiRequestUseCaseTest {
                 .hasAssetsContaining(
                     new ScoreRequest.AssetToScore(
                         page.getId(),
-                        new ScoreRequest.AssetType(ScoringAssetType.SWAGGER),
+                        new ScoreRequest.AssetType(ScoringAssetType.SWAGGER, ScoreRequest.Format.OPENAPI),
                         page.getName(),
                         page.getContent()
                     )
@@ -265,7 +283,7 @@ class ScoreApiRequestUseCaseTest {
                 .hasAssetsContaining(
                     new ScoreRequest.AssetToScore(
                         page.getId(),
-                        new ScoreRequest.AssetType(ScoringAssetType.ASYNCAPI),
+                        new ScoreRequest.AssetType(ScoringAssetType.ASYNCAPI, ScoreRequest.Format.ASYNCAPI),
                         page.getName(),
                         page.getContent()
                     )
@@ -310,7 +328,60 @@ class ScoreApiRequestUseCaseTest {
                 .hasCustomRulesets(
                     new ScoreRequest.CustomRuleset(CUSTOM_RULESET_1.payload(), ScoreRequest.Format.GRAVITEE_FEDERATED),
                     new ScoreRequest.CustomRuleset(CUSTOM_RULESET_2.payload()),
-                    new ScoreRequest.CustomRuleset(CUSTOM_RULESET_3.payload())
+                    new ScoreRequest.CustomRuleset(CUSTOM_RULESET_3.payload(), ScoreRequest.Format.ASYNCAPI)
+                );
+        });
+    }
+
+    @Test
+    public void should_keep_openapi_and_asyncapi_formats_on_a_single_request() {
+        var api = givenExistingApi(ApiFixtures.aFederatedApi());
+        var swaggerPage = PageFixtures.aPage()
+            .toBuilder()
+            .referenceType(Page.ReferenceType.API)
+            .referenceId(api.getId())
+            .type(Page.Type.SWAGGER)
+            .build();
+        var asyncApiPage = PageFixtures.aPage()
+            .toBuilder()
+            .id("async-page")
+            .referenceType(Page.ReferenceType.API)
+            .referenceId(api.getId())
+            .type(Page.Type.ASYNCAPI)
+            .build();
+        pageQueryService.initWith(List.of(swaggerPage, asyncApiPage));
+        var openApiRuleset = ScoringRulesetFixture.aRuleset("ruleset-openapi", ScoringRuleset.Format.OPENAPI).withReferenceId(
+            ENVIRONMENT_ID
+        );
+        givenExistingRulesets(CUSTOM_RULESET_1, openApiRuleset, CUSTOM_RULESET_3);
+
+        scoreApiRequestUseCase
+            .execute(new ScoreApiRequestUseCase.Input(api.getId(), AUDIT_INFO))
+            .test()
+            .awaitDone(5, TimeUnit.SECONDS)
+            .assertComplete();
+
+        assertThat(scoringProvider.pendingRequests()).satisfiesOnlyOnce(request -> {
+            assertThat(request)
+                .hasJobId("generated-id")
+                .hasCustomRulesets(
+                    new ScoreRequest.CustomRuleset(CUSTOM_RULESET_1.payload(), ScoreRequest.Format.GRAVITEE_FEDERATED),
+                    new ScoreRequest.CustomRuleset(openApiRuleset.payload(), ScoreRequest.Format.OPENAPI),
+                    new ScoreRequest.CustomRuleset(CUSTOM_RULESET_3.payload(), ScoreRequest.Format.ASYNCAPI)
+                )
+                .hasAssetsContaining(
+                    new ScoreRequest.AssetToScore(
+                        swaggerPage.getId(),
+                        new ScoreRequest.AssetType(ScoringAssetType.SWAGGER, ScoreRequest.Format.OPENAPI),
+                        swaggerPage.getName(),
+                        swaggerPage.getContent()
+                    ),
+                    new ScoreRequest.AssetToScore(
+                        asyncApiPage.getId(),
+                        new ScoreRequest.AssetType(ScoringAssetType.ASYNCAPI, ScoreRequest.Format.ASYNCAPI),
+                        asyncApiPage.getName(),
+                        asyncApiPage.getContent()
+                    )
                 );
         });
     }

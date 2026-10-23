@@ -27,9 +27,12 @@ import static org.mockito.Mockito.when;
 
 import fakes.FakeApiImagesService;
 import fixtures.core.model.ApiFixtures;
+import fixtures.core.model.GroupFixtures;
 import fixtures.core.model.PlanFixtures;
 import inmemory.ApiCrudServiceInMemory;
 import inmemory.ApiQueryServiceInMemory;
+import io.gravitee.apim.core.api.exception.ApiPropertyEncryptedToPlainException;
+import io.gravitee.apim.core.api.exception.ApiPropertyNotCiphertextException;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.factory.ApiModelFactory;
 import io.gravitee.apim.core.api.model.import_definition.ApiExport;
@@ -50,10 +53,12 @@ import io.gravitee.definition.model.v4.plan.PlanSecurity;
 import io.gravitee.definition.model.v4.property.Property;
 import io.gravitee.definition.model.v4.resource.Resource;
 import io.gravitee.rest.api.model.Visibility;
+import io.gravitee.rest.api.model.v4.api.UpdateApiEntity;
 import io.gravitee.rest.api.model.v4.plan.GenericPlanEntity;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.v4.ApiImagesService;
 import io.gravitee.rest.api.service.v4.ApiService;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -223,6 +228,109 @@ class ImportDefinitionUpdateDomainServiceTest {
     }
 
     @Test
+    public void should_reject_import_that_makes_an_encrypted_property_plain() {
+        var baseProxyApi = ApiFixtures.aProxyApiV4();
+        ((io.gravitee.definition.model.v4.Api) baseProxyApi.getApiDefinitionValue()).setProperties(
+            List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build())
+        );
+        var existingApi = baseProxyApi
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var importDefinition = ImportDefinition.builder()
+            .apiExport(
+                ApiExport.builder()
+                    .id(PROMOTED_API_ID)
+                    .crossId(PROMOTED_API_CROSS_ID)
+                    .name("updated name")
+                    .properties(List.of(Property.builder().key("secret").value("plaintext-from-source-env").build()))
+                    .build()
+            )
+            .build();
+
+        var throwable = catchThrowable(() -> service.update(importDefinition, existingApi, AUDIT_INFO));
+
+        assertThat(throwable).isInstanceOf(ApiPropertyEncryptedToPlainException.class);
+        verify(apiService, never()).update(any(), any(), any(), anyBoolean(), any());
+    }
+
+    @Test
+    public void should_reject_import_of_a_changed_plaintext_flagged_encrypted() throws GeneralSecurityException {
+        var baseProxyApi = ApiFixtures.aProxyApiV4();
+        ((io.gravitee.definition.model.v4.Api) baseProxyApi.getApiDefinitionValue()).setProperties(
+            List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build())
+        );
+        var existingApi = baseProxyApi
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+        when(importDefinitionUpdateInitializer.dataEncryptor.decrypt("plaintext-from-source-env")).thenThrow(
+            new GeneralSecurityException("bad padding")
+        );
+
+        var importDefinition = ImportDefinition.builder()
+            .apiExport(
+                ApiExport.builder()
+                    .id(PROMOTED_API_ID)
+                    .crossId(PROMOTED_API_CROSS_ID)
+                    .name("updated name")
+                    .properties(List.of(Property.builder().key("secret").value("plaintext-from-source-env").encrypted(true).build()))
+                    .build()
+            )
+            .build();
+
+        var throwable = catchThrowable(() -> service.update(importDefinition, existingApi, AUDIT_INFO));
+
+        assertThat(throwable).isInstanceOf(ApiPropertyNotCiphertextException.class);
+        verify(apiService, never()).update(any(), any(), any(), anyBoolean(), any());
+    }
+
+    @Test
+    public void should_reject_native_import_of_a_changed_plaintext_flagged_encrypted_without_auditing() throws GeneralSecurityException {
+        var baseNativeApi = ApiFixtures.aNativeApi();
+        ((NativeApi) baseNativeApi.getApiDefinitionValue()).setProperties(
+            List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build())
+        );
+        var existingApi = baseNativeApi
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+        when(importDefinitionUpdateInitializer.dataEncryptor.decrypt("plaintext-from-source-env")).thenThrow(
+            new GeneralSecurityException("bad padding")
+        );
+
+        var importDefinition = ImportDefinition.builder()
+            .apiExport(
+                ApiExport.builder()
+                    .id(PROMOTED_API_ID)
+                    .crossId(PROMOTED_API_CROSS_ID)
+                    .name("updated name")
+                    .properties(List.of(Property.builder().key("secret").value("plaintext-from-source-env").encrypted(true).build()))
+                    .type(ApiType.NATIVE)
+                    .build()
+            )
+            .build();
+
+        var throwable = catchThrowable(() -> service.update(importDefinition, existingApi, AUDIT_INFO));
+
+        assertThat(throwable).isInstanceOf(ApiPropertyNotCiphertextException.class);
+        assertThat(importDefinitionUpdateInitializer.auditCrudServiceInMemory.storage()).isEmpty();
+    }
+
+    @Test
     public void should_preserve_existing_properties_when_proxy_api_updated_with_oas_import_having_no_properties() {
         List<Property> existingProperties = new ArrayList<>(
             List.of(Property.builder().key("existing-key").value("existing-value").build())
@@ -304,6 +412,269 @@ class ImportDefinitionUpdateDomainServiceTest {
     }
 
     @Test
+    void should_resolve_existing_group_by_name_and_create_missing_group_on_update() {
+        importDefinitionUpdateInitializer.groupQueryServiceInMemory.initWith(
+            List.of(GroupFixtures.aGroup("developers-id").toBuilder().name("Developers").environmentId(TARGET_ENVIRONMENT_ID).build())
+        );
+
+        var existingApi = ApiFixtures.aProxyApiV4()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("api name")
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var importDefinition = ImportDefinition.builder()
+            .apiExport(
+                ApiExport.builder()
+                    .id(PROMOTED_API_ID)
+                    .crossId(PROMOTED_API_CROSS_ID)
+                    .name("updated name")
+                    .groups(Set.of("Developers", "Helios"))
+                    .build()
+            )
+            .build();
+
+        service.update(importDefinition, existingApi, AUDIT_INFO);
+
+        var groupsCaptor = ArgumentCaptor.forClass(UpdateApiEntity.class);
+        verify(apiService).update(any(), eq(PROMOTED_API_ID), groupsCaptor.capture(), eq(false), eq(USER));
+        assertThat(groupsCaptor.getValue().getGroups()).hasSize(2).contains("developers-id");
+        assertThat(
+            importDefinitionUpdateInitializer.groupQueryServiceInMemory.findByNames(TARGET_ENVIRONMENT_ID, Set.of("Helios"))
+        ).hasSize(1);
+    }
+
+    @Test
+    void should_resolve_existing_group_by_name_and_create_missing_group_on_native_update() {
+        importDefinitionUpdateInitializer.groupQueryServiceInMemory.initWith(
+            List.of(GroupFixtures.aGroup("developers-id").toBuilder().name("Developers").environmentId(TARGET_ENVIRONMENT_ID).build())
+        );
+
+        var existingApi = ApiFixtures.aNativeApi()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var apiExport = ApiExport.builder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("updated name")
+            .type(ApiType.NATIVE)
+            .groups(Set.of("Developers", "Helios"))
+            .build();
+
+        when(
+            importDefinitionUpdateInitializer.validateApiDomainService.validateAndSanitizeForUpdate(
+                any(),
+                any(),
+                any(),
+                eq(TARGET_ENVIRONMENT_ID),
+                eq(ORGANIZATION_ID)
+            )
+        ).thenAnswer(invocation -> invocation.getArgument(1));
+
+        var updated = service.update(ImportDefinition.builder().apiExport(apiExport).build(), existingApi, AUDIT_INFO);
+
+        // Old API membership groups are not carried over; only resolved import groups land
+        assertThat(updated.getGroups()).hasSize(2).contains("developers-id").doesNotContain("group-1");
+        assertThat(
+            importDefinitionUpdateInitializer.groupQueryServiceInMemory.findByNames(TARGET_ENVIRONMENT_ID, Set.of("Helios"))
+        ).hasSize(1);
+        assertThat(updated.getGroups()).anySatisfy(groupId ->
+            assertThat(
+                importDefinitionUpdateInitializer.groupQueryServiceInMemory
+                    .findByIds(Set.of(groupId))
+                    .stream()
+                    .anyMatch(group -> "Helios".equals(group.getName()) && TARGET_ENVIRONMENT_ID.equals(group.getEnvironmentId()))
+            ).isTrue()
+        );
+    }
+
+    @Test
+    void should_merge_validation_added_groups_when_native_update_has_groups() {
+        importDefinitionUpdateInitializer.groupQueryServiceInMemory.initWith(
+            List.of(GroupFixtures.aGroup("developers-id").toBuilder().name("Developers").environmentId(TARGET_ENVIRONMENT_ID).build())
+        );
+
+        var existingApi = ApiFixtures.aNativeApi()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .groups(Set.of("old-group-id"))
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var apiExport = ApiExport.builder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("updated name")
+            .type(ApiType.NATIVE)
+            .groups(Set.of("Developers"))
+            .build();
+
+        var primaryOwnerGroupId = "primary-owner-group-id";
+        when(
+            importDefinitionUpdateInitializer.validateApiDomainService.validateAndSanitizeForUpdate(
+                any(),
+                any(),
+                any(),
+                eq(TARGET_ENVIRONMENT_ID),
+                eq(ORGANIZATION_ID)
+            )
+        ).thenAnswer(invocation -> {
+            var apiToUpdate = (Api) invocation.getArgument(1);
+            // Simulate GroupValidationService adding the primary-owner group after groups were cleared for replace
+            return apiToUpdate.toBuilder().groups(Set.of(primaryOwnerGroupId)).build();
+        });
+
+        var updated = service.update(ImportDefinition.builder().apiExport(apiExport).build(), existingApi, AUDIT_INFO);
+
+        assertThat(updated.getGroups()).containsExactlyInAnyOrder(primaryOwnerGroupId, "developers-id").doesNotContain("old-group-id");
+    }
+
+    @Test
+    void should_preserve_existing_groups_when_native_update_has_no_groups_field() {
+        // Given: existing API with groups
+        var existingApi = ApiFixtures.aNativeApi()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .groups(Set.of("existing-group-1", "existing-group-2"))
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        // Import definition with NO groups field (null) - should preserve existing
+        var apiExport = ApiExport.builder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("updated name")
+            .type(ApiType.NATIVE)
+            .groups(null) // No groups in import
+            .build();
+
+        when(
+            importDefinitionUpdateInitializer.validateApiDomainService.validateAndSanitizeForUpdate(
+                any(),
+                any(),
+                any(),
+                eq(TARGET_ENVIRONMENT_ID),
+                eq(ORGANIZATION_ID)
+            )
+        ).thenAnswer(invocation -> {
+            // Validation returns API with existing groups preserved
+            var apiToUpdate = (Api) invocation.getArgument(1);
+            return apiToUpdate.toBuilder().groups(Set.of("existing-group-1", "existing-group-2")).build();
+        });
+
+        // When
+        var updated = service.update(ImportDefinition.builder().apiExport(apiExport).build(), existingApi, AUDIT_INFO);
+
+        // Then: existing groups are preserved (not wiped)
+        assertThat(updated.getGroups()).hasSize(2).containsExactlyInAnyOrder("existing-group-1", "existing-group-2");
+    }
+
+    @Test
+    void should_preserve_existing_groups_when_native_update_has_empty_groups() {
+        // OpenAPI models default a missing groups array to [], which must not wipe membership on update.
+        var existingApi = ApiFixtures.aNativeApi()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .groups(Set.of("existing-group-1", "existing-group-2"))
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var apiExport = ApiExport.builder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("updated name")
+            .type(ApiType.NATIVE)
+            .groups(Set.of())
+            .build();
+
+        when(
+            importDefinitionUpdateInitializer.validateApiDomainService.validateAndSanitizeForUpdate(
+                any(),
+                any(),
+                any(),
+                eq(TARGET_ENVIRONMENT_ID),
+                eq(ORGANIZATION_ID)
+            )
+        ).thenAnswer(invocation -> {
+            var apiToUpdate = (Api) invocation.getArgument(1);
+            return apiToUpdate.toBuilder().groups(Set.of("existing-group-1", "existing-group-2")).build();
+        });
+
+        var updated = service.update(ImportDefinition.builder().apiExport(apiExport).build(), existingApi, AUDIT_INFO);
+
+        assertThat(updated.getGroups()).containsExactlyInAnyOrder("existing-group-1", "existing-group-2");
+    }
+
+    @Test
+    void should_preserve_existing_groups_when_proxy_update_has_no_groups_field() {
+        var existingApi = ApiFixtures.aProxyApiV4()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("api name")
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .groups(Set.of("existing-group-1", "existing-group-2"))
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var importDefinition = ImportDefinition.builder()
+            .apiExport(ApiExport.builder().id(PROMOTED_API_ID).crossId(PROMOTED_API_CROSS_ID).name("updated name").groups(null).build())
+            .build();
+
+        service.update(importDefinition, existingApi, AUDIT_INFO);
+
+        var groupsCaptor = ArgumentCaptor.forClass(UpdateApiEntity.class);
+        verify(apiService).update(any(), eq(PROMOTED_API_ID), groupsCaptor.capture(), eq(false), eq(USER));
+        // null groups tells legacy validation to keep existing membership
+        assertThat(groupsCaptor.getValue().getGroups()).isNull();
+    }
+
+    @Test
+    void should_preserve_existing_groups_when_proxy_update_has_empty_groups() {
+        // OpenAPI models default a missing groups array to [], which must not wipe membership on update.
+        var existingApi = ApiFixtures.aProxyApiV4()
+            .toBuilder()
+            .id(PROMOTED_API_ID)
+            .crossId(PROMOTED_API_CROSS_ID)
+            .name("api name")
+            .environmentId(TARGET_ENVIRONMENT_ID)
+            .groups(Set.of("existing-group-1"))
+            .build();
+        apiCrudServiceInMemory.initWith(List.of(existingApi));
+        apiQueryServiceInMemory.initWith(List.of(existingApi));
+
+        var importDefinition = ImportDefinition.builder()
+            .apiExport(ApiExport.builder().id(PROMOTED_API_ID).crossId(PROMOTED_API_CROSS_ID).name("updated name").groups(Set.of()).build())
+            .build();
+
+        service.update(importDefinition, existingApi, AUDIT_INFO);
+
+        var groupsCaptor = ArgumentCaptor.forClass(UpdateApiEntity.class);
+        verify(apiService).update(any(), eq(PROMOTED_API_ID), groupsCaptor.capture(), eq(false), eq(USER));
+        assertThat(groupsCaptor.getValue().getGroups()).isNull();
+    }
+
+    @Test
     public void should_update_v4_native_api() {
         var picture = "picture";
         var background = "background";
@@ -365,6 +736,10 @@ class ImportDefinitionUpdateDomainServiceTest {
         assertThat(apiImagesService.apiPictures.get(PROMOTED_API_ID)).isEqualTo(picture);
         assertThat(apiImagesService.apiBackgrounds.get(PROMOTED_API_ID)).isEqualTo(background);
         assertNativeApiMatchExport(updated, apiExport);
+        assertThat(importDefinitionUpdateInitializer.auditCrudServiceInMemory.storage())
+            .filteredOn(audit -> audit.getEvent().equals("API_UPDATED"))
+            .singleElement()
+            .satisfies(audit -> assertThat(audit.getProperties()).containsEntry("ENCRYPTED", "true"));
     }
 
     @Nested

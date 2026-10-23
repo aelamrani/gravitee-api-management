@@ -24,8 +24,9 @@ import inmemory.ThemeQueryServiceInMemory;
 import inmemory.ThemeServiceLegacyWrapperInMemory;
 import io.gravitee.apim.core.theme.model.NewTheme;
 import io.gravitee.apim.core.theme.model.Theme;
+import io.gravitee.apim.core.theme.model.ThemeAutomationMetadata;
 import io.gravitee.apim.core.theme.model.ThemeType;
-import io.gravitee.rest.api.model.theme.portal.ThemeDefinition;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
@@ -53,6 +54,17 @@ public class CurrentThemeDomainServiceTest {
         Stream.of(themeCrudService, themeQueryService).forEach(InMemoryAlternative::reset);
     }
 
+    private Theme aTheme(String id, ThemeType type, boolean enabled) {
+        return Theme.builder()
+            .id(id)
+            .name("name")
+            .type(type)
+            .referenceId(ENV_ID)
+            .referenceType(Theme.ReferenceType.ENVIRONMENT)
+            .enabled(enabled)
+            .build();
+    }
+
     @Nested
     class DisablePreviousEnabledTheme {
 
@@ -60,17 +72,7 @@ public class CurrentThemeDomainServiceTest {
         void should_do_nothing_if_no_themes() {
             assertThat(themeCrudService.storage()).hasSize(0);
 
-            var portalDefinition = new ThemeDefinition();
-            portalDefinition.setData(List.of());
-            var newTheme = Theme.builder()
-                .id("new-theme")
-                .name("name")
-                .type(ThemeType.PORTAL)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortal(portalDefinition)
-                .enabled(true)
-                .build();
+            var newTheme = aTheme("new-theme", ThemeType.PORTAL, true);
             cut.disablePreviousEnabledTheme(newTheme);
 
             assertThat(themeCrudService.storage()).hasSize(0);
@@ -78,27 +80,8 @@ public class CurrentThemeDomainServiceTest {
 
         @Test
         void should_disable_previous_portal_theme() {
-            var portalDefinition = new ThemeDefinition();
-            portalDefinition.setData(List.of());
-            var previousPortalTheme = Theme.builder()
-                .id("old-theme")
-                .name("name")
-                .type(ThemeType.PORTAL)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortal(portalDefinition)
-                .enabled(true)
-                .build();
-
-            var newTheme = Theme.builder()
-                .id("new-theme")
-                .name("name")
-                .type(ThemeType.PORTAL)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortal(portalDefinition)
-                .enabled(true)
-                .build();
+            var previousPortalTheme = aTheme("old-theme", ThemeType.PORTAL, true);
+            var newTheme = aTheme("new-theme", ThemeType.PORTAL, true);
 
             themeCrudService.initWith(Arrays.asList(previousPortalTheme, newTheme));
 
@@ -110,33 +93,8 @@ public class CurrentThemeDomainServiceTest {
 
         @Test
         void should_disable_previous_portal_next_theme() {
-            var previousPortalTheme = Theme.builder()
-                .id("old-theme")
-                .name("name")
-                .type(ThemeType.PORTAL_NEXT)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortalNext(
-                    io.gravitee.rest.api.model.theme.portalnext.ThemeDefinition.builder()
-                        .color(io.gravitee.rest.api.model.theme.portalnext.ThemeDefinition.Color.builder().primary("fff").build())
-                        .build()
-                )
-                .enabled(true)
-                .build();
-
-            var newTheme = Theme.builder()
-                .id("new-theme")
-                .name("name")
-                .type(ThemeType.PORTAL_NEXT)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortalNext(
-                    io.gravitee.rest.api.model.theme.portalnext.ThemeDefinition.builder()
-                        .color(io.gravitee.rest.api.model.theme.portalnext.ThemeDefinition.Color.builder().primary("fff").build())
-                        .build()
-                )
-                .enabled(true)
-                .build();
+            var previousPortalTheme = aTheme("old-theme", ThemeType.PORTAL_NEXT, true);
+            var newTheme = aTheme("new-theme", ThemeType.PORTAL_NEXT, true);
 
             themeCrudService.initWith(Arrays.asList(previousPortalTheme, newTheme));
 
@@ -148,38 +106,170 @@ public class CurrentThemeDomainServiceTest {
 
         @Test
         void should_not_disable_current_theme_with_different_type() {
-            var portalDefinition = new ThemeDefinition();
-            portalDefinition.setData(List.of());
-
-            var currentPortalTheme = Theme.builder()
-                .id("portal-theme")
-                .name("name")
-                .type(ThemeType.PORTAL)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortal(portalDefinition)
-                .enabled(true)
-                .build();
-
-            var newPortalNextTheme = Theme.builder()
-                .id("new-portal-next-theme")
-                .name("name")
-                .type(ThemeType.PORTAL_NEXT)
-                .referenceId(ENV_ID)
-                .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                .definitionPortalNext(
-                    io.gravitee.rest.api.model.theme.portalnext.ThemeDefinition.builder()
-                        .color(io.gravitee.rest.api.model.theme.portalnext.ThemeDefinition.Color.builder().primary("fff").build())
-                        .build()
-                )
-                .enabled(true)
-                .build();
+            var currentPortalTheme = aTheme("portal-theme", ThemeType.PORTAL, true);
+            var newPortalNextTheme = aTheme("new-portal-next-theme", ThemeType.PORTAL_NEXT, true);
 
             themeCrudService.initWith(Arrays.asList(currentPortalTheme, newPortalNextTheme));
 
             cut.disablePreviousEnabledTheme(newPortalNextTheme);
 
             assertThat(themeCrudService.storage()).contains(currentPortalTheme);
+        }
+    }
+
+    @Nested
+    class DeactivateAndFallback {
+
+        @Test
+        void should_activate_another_existing_theme_of_the_same_type() {
+            var deactivated = aTheme("deactivated", ThemeType.PORTAL_NEXT, true);
+            var other = aTheme("other", ThemeType.PORTAL_NEXT, false);
+            themeCrudService.initWith(Arrays.asList(deactivated, other));
+
+            cut.deactivateAndFallback(deactivated);
+
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("deactivated"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(false);
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("other"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(true);
+        }
+
+        @Test
+        void should_only_deactivate_when_no_other_theme_of_the_same_type_exists() {
+            var deactivated = aTheme("deactivated", ThemeType.PORTAL_NEXT, true);
+            themeCrudService.initWith(List.of(deactivated));
+
+            cut.deactivateAndFallback(deactivated);
+
+            assertThat(themeCrudService.storage()).singleElement().extracting(Theme::isEnabled).isEqualTo(false);
+        }
+
+        @Test
+        void should_not_touch_the_enabled_theme_when_the_deactivated_theme_was_already_disabled() {
+            var alreadyDisabled = aTheme("already-disabled", ThemeType.PORTAL_NEXT, false);
+            var currentlyEnabled = aTheme("currently-enabled", ThemeType.PORTAL_NEXT, true);
+            var strayOther = aTheme("stray-other", ThemeType.PORTAL_NEXT, false);
+            themeCrudService.initWith(Arrays.asList(alreadyDisabled, currentlyEnabled, strayOther));
+
+            cut.deactivateAndFallback(alreadyDisabled);
+
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("currently-enabled"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(true);
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("stray-other"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(false);
+        }
+
+        @Test
+        void should_reactivate_the_most_recently_updated_other_theme_when_several_exist() {
+            var deactivated = aTheme("deactivated", ThemeType.PORTAL_NEXT, true);
+            var staleOther = aTheme("stale-other", ThemeType.PORTAL_NEXT, false)
+                .toBuilder()
+                .updatedAt(ZonedDateTime.now().minusDays(2))
+                .build();
+            var recentOther = aTheme("recent-other", ThemeType.PORTAL_NEXT, false)
+                .toBuilder()
+                .updatedAt(ZonedDateTime.now().minusMinutes(1))
+                .build();
+            themeCrudService.initWith(Arrays.asList(deactivated, staleOther, recentOther));
+
+            cut.deactivateAndFallback(deactivated);
+
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("recent-other"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(true);
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("stale-other"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(false);
+        }
+
+        @Test
+        void should_prefer_a_non_automation_managed_theme_over_an_automation_managed_one_even_if_it_was_updated_more_recently() {
+            var deactivated = aTheme("theme-b", ThemeType.PORTAL_NEXT, true);
+            var automationManagedThemeA = aTheme("theme-a", ThemeType.PORTAL_NEXT, false)
+                .toBuilder()
+                .createdAt(ZonedDateTime.now().minusDays(1))
+                .updatedAt(ZonedDateTime.now().minusSeconds(1))
+                .automationMetadata(new ThemeAutomationMetadata("theme-a"))
+                .build();
+            var consoleTheme = aTheme("console-theme", ThemeType.PORTAL_NEXT, false)
+                .toBuilder()
+                .createdAt(ZonedDateTime.now().minusDays(10))
+                .updatedAt(ZonedDateTime.now().minusDays(10))
+                .build();
+            themeCrudService.initWith(Arrays.asList(deactivated, automationManagedThemeA, consoleTheme));
+
+            cut.deactivateAndFallback(deactivated);
+
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("console-theme"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(true);
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("theme-a"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(false);
+        }
+
+        @Test
+        void should_fall_back_to_an_automation_managed_theme_when_no_non_automation_managed_theme_exists() {
+            var deactivated = aTheme("deactivated", ThemeType.PORTAL_NEXT, true);
+            var staleManaged = aTheme("stale-managed", ThemeType.PORTAL_NEXT, false)
+                .toBuilder()
+                .updatedAt(ZonedDateTime.now().minusDays(2))
+                .automationMetadata(new ThemeAutomationMetadata("stale-managed"))
+                .build();
+            var recentManaged = aTheme("recent-managed", ThemeType.PORTAL_NEXT, false)
+                .toBuilder()
+                .updatedAt(ZonedDateTime.now().minusMinutes(1))
+                .automationMetadata(new ThemeAutomationMetadata("recent-managed"))
+                .build();
+            themeCrudService.initWith(Arrays.asList(deactivated, staleManaged, recentManaged));
+
+            cut.deactivateAndFallback(deactivated);
+
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("recent-managed"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(true);
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("stale-managed"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(false);
+        }
+
+        @Test
+        void should_not_fall_back_to_a_theme_of_a_different_type() {
+            var deactivated = aTheme("deactivated", ThemeType.PORTAL_NEXT, true);
+            var differentType = aTheme("different-type", ThemeType.PORTAL, false);
+            themeCrudService.initWith(Arrays.asList(deactivated, differentType));
+
+            cut.deactivateAndFallback(deactivated);
+
+            assertThat(themeCrudService.storage())
+                .filteredOn(t -> t.getId().equals("different-type"))
+                .singleElement()
+                .extracting(Theme::isEnabled)
+                .isEqualTo(false);
         }
     }
 }

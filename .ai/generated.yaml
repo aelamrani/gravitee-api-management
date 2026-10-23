@@ -2,51 +2,63 @@
 # Every generated file with its content fingerprint; setup and check use
 # this for ownership, incremental runs, and tamper evidence.
 version: 1
+generatedBy: "checkout"
+buildFileProbes: ["angular.json","build.gradle","build.gradle.kts","ng-package.json","package.json","pom.xml","project.json"]
+inputs:
+  - { dir: ".", buildFiles: ["package.json","pom.xml"] }
+  - { path: ".ai/manifest.yaml", hash: "sha256:3d71657b8b456f46c16e3749cabc72330953b4246f86864dbc62b5e2ad1b50e2" }
+  - { path: ".ai/rules/ai-context-authoring.md", hash: "sha256:da3b2d09f7c8e8f34d4dba3550038cc1db089751ebf641aef27c8ad8f33d83d4" }
+  - { path: ".ai/rules/apim-angular.md", hash: "sha256:9e7472cc16201f62230b0de128c0c47c370fffe517cf1b0482dd43a584f17850" }
+  - { path: ".ai/rules/apim-automation-api.md", hash: "sha256:c24ccb1f03041b276a0e5ee06836cc78fbb1118f415ca67d306a95850261ff65" }
+  - { path: ".ai/rules/apim-automation-module-ownership.md", hash: "sha256:817b9be54a62e3cdf2cd17cf16432f05aaddcf888971c7772f877b0560d7a229" }
+  - { path: ".ai/rules/apim-automation-ownership-review.md", hash: "sha256:154e43a696e47f1e100f58d1b98c547f22642bb3e4d772811c0756c91f3696a2" }
+  - { path: ".ai/rules/apim-automation-signpost-definition.md", hash: "sha256:36cdfade56e02f0f0fce4b03c1d015fb1f3d64bd8f9577b888c348055b90b7d6" }
+  - { path: ".ai/rules/apim-automation-signpost-repository.md", hash: "sha256:2445a6a106e1b3187a130f6efa374bd7f57c051d4d51df000672a265a987de8b" }
+  - { path: ".ai/rules/apim-automation-signpost-restapi.md", hash: "sha256:962751855bd090c2812076d8d465187c34e39ead0bb273ee506d4a8db778496b" }
+  - { path: ".ai/rules/apim-distribution-build.md", hash: "sha256:4efce69460a3ab2655d1039f8e0d677b14730e63159fb138efd471622d7dfb4a" }
+  - { path: ".ai/rules/apim-java.md", hash: "sha256:037362a2a791c844ecefd9e990020d1b857dd1ed81a2158c0cf59c2b174c8695" }
+  - { path: ".ai/rules/apim-jsonnode.md", hash: "sha256:0dbaec902740b64b750be53ff03062a59e4de0171a4a52576253e20ed6e2b777" }
+  - { path: ".ai/rules/apim-two-reactors.md", hash: "sha256:e8e036c1f0d1064a21c16360fd1a30a71761d0432789ea6deecee8e7416f2141" }
+  - { path: ".ai/rules/apim-ui-test-ids.md", hash: "sha256:c3ba01c50940653a37322516acec83772acc55b48f797ba677ade9f8db22f40b" }
+  - { path: ".ai/rules/console-webui.md", hash: "sha256:f5df442c57cde991ba1da02536893fd59659522f2af65a145c1c91bc13aad13c" }
+  - { path: ".ai/rules/gamma-clean-architecture.md", hash: "sha256:44b5a27cd1ff3f11333e94ca9ddf6ed3a040c3f291fd6403ff138092d9a22db0" }
+  - { path: ".ai/rules/gamma-host.md", hash: "sha256:5179639bea40e70ed1d9c082736ca1a65d261d909af49eda94fe0aab979c31da" }
+  - { path: ".ai/rules/gravitee-dashboard.md", hash: "sha256:3d416de9c07b05e834fd79402679d27cdf0892f015a79936205c980af47320ff" }
+  - { path: ".ai/rules/gravitee-kafka-explorer.md", hash: "sha256:d170ed705912f5ea0989dc4a0abb78b1816eb78f729afb92091bba14aae1e397" }
+  - { path: ".ai/rules/gravitee-markdown.md", hash: "sha256:e951338ee4033d3ddff3e95b3f658edb2a4cf3dafecbea43bdcb938d4b966906" }
+  - { path: ".ai/rules/portal-webui-next.md", hash: "sha256:8730b8d2cf98160e77eba0e6a294aa018849bc6fd2ea0125a06faa990b608f62" }
+  - { dir: "gravitee-apim-common", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-console-webui", buildFiles: ["project.json"] }
+  - { path: "gravitee-apim-console-webui/project.json", hash: "sha256:f95bedc198c00624ed1e0c3254659f5170af9873deac7f5c4ee1e0f88b96dde7" }
+  - { dir: "gravitee-apim-definition", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-distribution", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-distribution/gravitee-apim-distribution-integration-tests", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-gateway", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-plugin", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-portal-webui", buildFiles: ["angular.json","package.json"] }
+  - { dir: "gravitee-apim-portal-webui-next", buildFiles: ["project.json"] }
+  - { path: "gravitee-apim-portal-webui-next/project.json", hash: "sha256:92f0877317722bbe19d6340fabad0cfa4751bee4f5d81754d44a377bfc55b5fe" }
+  - { dir: "gravitee-apim-reporter", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-repository", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-rest-api", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-apim-webui-libs/gravitee-dashboard", buildFiles: ["ng-package.json","package.json","project.json"] }
+  - { path: "gravitee-apim-webui-libs/gravitee-dashboard/project.json", hash: "sha256:8654cdccb1ef2c24eeeb1a2f3776f3c82cb3009321e26b870c2321b069ffd1fa" }
+  - { dir: "gravitee-apim-webui-libs/gravitee-kafka-explorer", buildFiles: ["ng-package.json","package.json","project.json"] }
+  - { path: "gravitee-apim-webui-libs/gravitee-kafka-explorer/project.json", hash: "sha256:ce2317d584b45428274e1c4c5f44bc0f3a01f2cec8d46028eac440e4f63fb423" }
+  - { dir: "gravitee-apim-webui-libs/gravitee-markdown", buildFiles: ["ng-package.json","package.json","project.json"] }
+  - { path: "gravitee-apim-webui-libs/gravitee-markdown/project.json", hash: "sha256:2f261b0e84bfbf106dfa476d9ef04ea24c27f9c09042d0073fb3fad576dd4d49" }
+  - { dir: "gravitee-gamma/gravitee-gamma-control-plane-webui", buildFiles: ["project.json"] }
+  - { path: "gravitee-gamma/gravitee-gamma-control-plane-webui/project.json", hash: "sha256:70fd903be5c9e0426dbd6d83f1a374b4a7852ad06c04dcfe63a88201fc30e5f1" }
+  - { dir: "gravitee-gamma/gravitee-gamma-definition-model", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-gamma/gravitee-gamma-module-apim", buildFiles: ["package.json","pom.xml","project.json"] }
+  - { path: "gravitee-gamma/gravitee-gamma-module-apim/project.json", hash: "sha256:82cb7d3333c59a7ad132ffa29c0f4e987a9ffbfe03fbc3968bce8d837be095b4" }
+  - { dir: "gravitee-gamma/gravitee-gamma-module-platform", buildFiles: ["package.json","pom.xml","project.json"] }
+  - { path: "gravitee-gamma/gravitee-gamma-module-platform/project.json", hash: "sha256:90be49af03bd78c037c81ae4a73faed6c32949b9a4ca1b4dced015b001a4f10a" }
+  - { dir: "gravitee-gamma/gravitee-gamma-module-portals", buildFiles: ["package.json","pom.xml","project.json"] }
+  - { path: "gravitee-gamma/gravitee-gamma-module-portals/project.json", hash: "sha256:2c15ad09d5007c0e912a69d12aa551675dbe7d305db1b33b913fe7bdefe68f68" }
+  - { dir: "gravitee-gamma/gravitee-gamma-plugin", buildFiles: ["pom.xml"] }
+  - { dir: "gravitee-gamma/gravitee-gamma-rest-api", buildFiles: ["pom.xml"] }
 entries:
-  - path: ".agents/skills/analyze-test-coverage/SKILL.md"
-    hash: sha256:35f5bf7a4c37d9b7377a1c481ca8a9219b90929494b3120f7597bf38f58b6e83
-    status: generated
-    scope: local
-  - path: ".agents/skills/analyze-test-coverage/directives-template.md"
-    hash: sha256:e5396257629d371f27c81b67792352c020720ee76fcfdc85bcc30220ac3cac13
-    status: generated
-    scope: local
-  - path: ".agents/skills/debugging/SKILL.md"
-    hash: sha256:d7e51602465210acfd0574163326fb1cb6712bb99c9fc32aee8c7cd39479dade
-    status: generated
-    scope: local
-  - path: ".agents/skills/debugging/directives-template.md"
-    hash: sha256:685ec17c4a671a2d187684fc01bcac10656a87919378cc0bdceae35589af069b
-    status: generated
-    scope: local
-  - path: ".agents/skills/explain-feature/SKILL.md"
-    hash: sha256:a23f59a78f45aa772001ebbf888c8862864f6b9455be56a5da85f5c991a9f6fa
-    status: generated
-    scope: local
-  - path: ".agents/skills/explain-feature/directives-template.md"
-    hash: sha256:eeb0802c8c27f646692a7e6779cf30f0cc28d12a3bff61626cc62f4077600c95
-    status: generated
-    scope: local
-  - path: ".agents/skills/peer-code-review/SKILL.md"
-    hash: sha256:84f8c2762eff50f6301513f852cb9af2adb5e71f8de54064047ab3791a13d5b5
-    status: generated
-    scope: local
-  - path: ".agents/skills/planning/SKILL.md"
-    hash: sha256:dfadf4c50b9414f7dba9614a1755107e81eb48c7b5d2a0d8c7988cc470f54147
-    status: generated
-    scope: local
-  - path: ".agents/skills/self-code-review/SKILL.md"
-    hash: sha256:c6dee3fb46286cf5bfa3f0e484b198e67a9cc4f98c41a2bd038aaa4662f598ad
-    status: generated
-    scope: local
-  - path: ".agents/skills/write-tests/SKILL.md"
-    hash: sha256:1528ba5cdfdae07cf8259bcb026513f21b0a40e88f138b9fae59d73c6f516fdf
-    status: generated
-    scope: local
-  - path: ".agents/skills/write-tests/directives-template.md"
-    hash: sha256:208d4456693e4099c853ff82e5f7aa97c0ea8cadc3a297ae6cbc091345cccd94
-    status: generated
-    scope: local
   - path: ".ai/AGENTS.md"
     hash: sha256:c97be23e2984ae9e86f36fde09261efeef0817616c6b989204a07064708c24d4
     status: generated
@@ -55,56 +67,20 @@ entries:
     hash: sha256:336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49
     status: generated
     scope: committed
-  - path: ".claude/skills/analyze-test-coverage/SKILL.md"
-    hash: sha256:35f5bf7a4c37d9b7377a1c481ca8a9219b90929494b3120f7597bf38f58b6e83
+  - path: ".github/instructions/apim-automation-ownership-review.instructions.md"
+    hash: sha256:8ca32f5fdfc9f5f6c6d8c4dedbb3b11544a4702736181ac87d4af58a3d19fc57
     status: generated
-    scope: local
-  - path: ".claude/skills/analyze-test-coverage/directives-template.md"
-    hash: sha256:e5396257629d371f27c81b67792352c020720ee76fcfdc85bcc30220ac3cac13
-    status: generated
-    scope: local
-  - path: ".claude/skills/debugging/SKILL.md"
-    hash: sha256:d7e51602465210acfd0574163326fb1cb6712bb99c9fc32aee8c7cd39479dade
-    status: generated
-    scope: local
-  - path: ".claude/skills/debugging/directives-template.md"
-    hash: sha256:685ec17c4a671a2d187684fc01bcac10656a87919378cc0bdceae35589af069b
-    status: generated
-    scope: local
-  - path: ".claude/skills/explain-feature/SKILL.md"
-    hash: sha256:a23f59a78f45aa772001ebbf888c8862864f6b9455be56a5da85f5c991a9f6fa
-    status: generated
-    scope: local
-  - path: ".claude/skills/explain-feature/directives-template.md"
-    hash: sha256:eeb0802c8c27f646692a7e6779cf30f0cc28d12a3bff61626cc62f4077600c95
-    status: generated
-    scope: local
-  - path: ".claude/skills/peer-code-review/SKILL.md"
-    hash: sha256:84f8c2762eff50f6301513f852cb9af2adb5e71f8de54064047ab3791a13d5b5
-    status: generated
-    scope: local
-  - path: ".claude/skills/planning/SKILL.md"
-    hash: sha256:dfadf4c50b9414f7dba9614a1755107e81eb48c7b5d2a0d8c7988cc470f54147
-    status: generated
-    scope: local
-  - path: ".claude/skills/self-code-review/SKILL.md"
-    hash: sha256:c6dee3fb46286cf5bfa3f0e484b198e67a9cc4f98c41a2bd038aaa4662f598ad
-    status: generated
-    scope: local
-  - path: ".claude/skills/write-tests/SKILL.md"
-    hash: sha256:1528ba5cdfdae07cf8259bcb026513f21b0a40e88f138b9fae59d73c6f516fdf
-    status: generated
-    scope: local
-  - path: ".claude/skills/write-tests/directives-template.md"
-    hash: sha256:208d4456693e4099c853ff82e5f7aa97c0ea8cadc3a297ae6cbc091345cccd94
-    status: generated
-    scope: local
+    scope: committed
   - path: ".github/instructions/code-review.instructions.md"
-    hash: sha256:099ebc0d75d677d12cdc8e55aca4241a24551a3b76a9b47fde81f3742848c2e9
+    hash: sha256:d3cafa9551f1f1be59bb035ae0cd043667434dcea4380c2ddd4d491e6ac2693c
+    status: generated
+    scope: committed
+  - path: ".github/scripts/verify-ai-context.mjs"
+    hash: sha256:261d29ae7fe29a7700361f03395b0ca054a4393b8f423644c21951b514d70196
     status: generated
     scope: committed
   - path: "AGENTS.md"
-    hash: sha256:86cb313afd2ab68b21c56fdf325aca368f1d61aab587c32df3ac396d55e60d17
+    hash: sha256:371af208cf1ecd4a2b6a863cb815cfb919836bb989d913ce9fe1f73e0aff0c08
     status: generated
     scope: committed
   - path: "CLAUDE.md"
@@ -120,7 +96,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-console-webui/AGENTS.md"
-    hash: sha256:227fe34daa5aa24ab327bcd89a4140c557c0ea09dda7c94927c0a568e56fe745
+    hash: sha256:4aecc960b7f1adab75f38b7c4d79fbc946e16fe38996803ab13829d245da0c0b
     status: generated
     scope: committed
   - path: "gravitee-apim-console-webui/CLAUDE.md"
@@ -128,7 +104,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-definition/AGENTS.md"
-    hash: sha256:7d47d7d7466aee68a9bfdd5b98ffe9c903abc46244a8dd80c16f7ddf0da990b7
+    hash: sha256:997fd53f80279e776905dc9ed7900943e6f79beca3ccd26ada110274f7b61171
     status: generated
     scope: committed
   - path: "gravitee-apim-definition/CLAUDE.md"
@@ -136,7 +112,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-distribution/AGENTS.md"
-    hash: sha256:f613c462abe9b601345e0101efda33fa4e2ed5e620ac726d29c3a2ea11ecad03
+    hash: sha256:5bb4d1bab2de94f37fe04681ba7a515b8e5978f3de63ce19b2485e1813b93d9c
     status: generated
     scope: committed
   - path: "gravitee-apim-distribution/CLAUDE.md"
@@ -144,7 +120,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-distribution/gravitee-apim-distribution-integration-tests/AGENTS.md"
-    hash: sha256:1b8739465a7ccf122c6962b41a207c1108b727d02e3c03b6ff803d1c14bb9133
+    hash: sha256:30a908a7af3561d325bc237d4118865a1f09edf301ac75f7ec7ab5abea7d41ad
     status: generated
     scope: committed
   - path: "gravitee-apim-distribution/gravitee-apim-distribution-integration-tests/CLAUDE.md"
@@ -168,7 +144,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-portal-webui-next/AGENTS.md"
-    hash: sha256:ecaa4045aef3fdabbb3d4a9cca15bbac05b656cc34fbc7ebd0b7f2676355fa29
+    hash: sha256:35bbf2e9999e6db21ba67169365a2743a8a604a34a25724862d4a5ab0a45a0d6
     status: generated
     scope: committed
   - path: "gravitee-apim-portal-webui-next/CLAUDE.md"
@@ -176,7 +152,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-portal-webui/AGENTS.md"
-    hash: sha256:b647415b44d6f67c6623190667ae7d925da320b55c05ba8f40b993e27338cb3a
+    hash: sha256:dd5d5c5c521b089bac09ce24e6451ebe739f79b18159840f349fee6c1f145138
     status: generated
     scope: committed
   - path: "gravitee-apim-portal-webui/CLAUDE.md"
@@ -192,7 +168,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-repository/AGENTS.md"
-    hash: sha256:af5400bf5f6e56cda549c194b5b043b7c6cf1226370bd02a6a89b071da0cd429
+    hash: sha256:bb3275c4f09bc3b44b1bec94312470edc9f0cdfb3e029c40ad2b9e30562565be
     status: generated
     scope: committed
   - path: "gravitee-apim-repository/CLAUDE.md"
@@ -200,15 +176,23 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-rest-api/AGENTS.md"
-    hash: sha256:a7c14e86b5bc01a4b91d9b1f511a437846940c3e548ebc87a67d608b65122a80
+    hash: sha256:50604d481de243fdd20db280c08d47c275a2e6f6d8a91846c0c8ef01676ff91c
     status: generated
     scope: committed
   - path: "gravitee-apim-rest-api/CLAUDE.md"
     hash: sha256:336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49
     status: generated
     scope: committed
+  - path: "gravitee-apim-rest-api/gravitee-apim-rest-api-automation/AGENTS.md"
+    hash: sha256:23f0685f61274ec1a4e27b11046d71e05ac10975845ba59247adfc40f8c203cb
+    status: generated
+    scope: committed
+  - path: "gravitee-apim-rest-api/gravitee-apim-rest-api-automation/CLAUDE.md"
+    hash: sha256:336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49
+    status: generated
+    scope: committed
   - path: "gravitee-apim-webui-libs/gravitee-dashboard/AGENTS.md"
-    hash: sha256:ac8918010dfdb8c006fb5f5c3f399571ae883ccfc06850e77c27a6e121e5f652
+    hash: sha256:801e313ea5cb113fb55d09d19ae1ead33a41e8206e85466d758e01e242b54046
     status: generated
     scope: committed
   - path: "gravitee-apim-webui-libs/gravitee-dashboard/CLAUDE.md"
@@ -216,7 +200,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-webui-libs/gravitee-kafka-explorer/AGENTS.md"
-    hash: sha256:1bc2f3b4227abfd2725315995318fbcccaa527cc3b1ba0698a254af94c614237
+    hash: sha256:c7f9a1cc10cef9849a02fccda813303af6ec872adb5bf039b737547bcd476fdb
     status: generated
     scope: committed
   - path: "gravitee-apim-webui-libs/gravitee-kafka-explorer/CLAUDE.md"
@@ -224,7 +208,7 @@ entries:
     status: generated
     scope: committed
   - path: "gravitee-apim-webui-libs/gravitee-markdown/AGENTS.md"
-    hash: sha256:ee1ef6c2898247904d4c2b16141194cde2fd431d68008570e5b0ba15d99b83d7
+    hash: sha256:159ad86930d0188d50f4a8062d0daf8943455294c448ccbb6d8e32e19d6d25ba
     status: generated
     scope: committed
   - path: "gravitee-apim-webui-libs/gravitee-markdown/CLAUDE.md"
@@ -263,6 +247,14 @@ entries:
     hash: sha256:336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49
     status: generated
     scope: committed
+  - path: "gravitee-gamma/gravitee-gamma-module-portals/AGENTS.md"
+    hash: sha256:d18028e7c28dfbe092256fe1ec1688f08919810bea04c5ebf36bdeeb28467d39
+    status: generated
+    scope: committed
+  - path: "gravitee-gamma/gravitee-gamma-module-portals/CLAUDE.md"
+    hash: sha256:336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49
+    status: generated
+    scope: committed
   - path: "gravitee-gamma/gravitee-gamma-plugin/AGENTS.md"
     hash: sha256:4866e798893f2823b5fb9075badb4e906a7aeb0000bd756366bac831bbcef5d9
     status: generated
@@ -279,4 +271,4 @@ entries:
     hash: sha256:336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49
     status: generated
     scope: committed
-record: sha256:058a1e48b43ee752f62e2adc30b7ddc1b332fd6552efb03a6611e858aa2023a2
+record: sha256:de4a9c7cac7413e940bd7853c6b1cd980742f1c75fc4edc3cea6fd21e5220bb6

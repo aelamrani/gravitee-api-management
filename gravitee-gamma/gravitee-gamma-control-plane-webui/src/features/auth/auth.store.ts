@@ -17,14 +17,22 @@ import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 
+import { licenseService } from '@gravitee/gamma-modules-sdk';
+
 import type { CurrentUser, SocialIdentityProvider } from './auth.types';
-import { managementApi } from '../../shared/api/api-client';
+import { normalizeCurrentUser } from './normalizeCurrentUser';
+import { isPlatformUnavailable, managementApi } from '../../shared/api/api-client';
 import { useBootstrapStore } from '../../shared/config/bootstrap.store';
 import { useEnvironmentStore } from '../environment/environment.store';
+import { loadOrganizationLicense } from '../license/load-organization-license';
 
 const USER_PROVIDER_ID_SELECTED = 'user-provider-id-selected';
+const LOGIN_LICENSE_TIMEOUT_MS = 2000;
 
 const oidcManagers: Record<string, UserManager> = {};
+
+/** Bumped on logout so in-flight GET /user cannot write the store after sign-out. */
+let sessionEpoch = 0;
 
 function getOrCreateUserManager(provider: SocialIdentityProvider): UserManager {
     if (oidcManagers[provider.id]) return oidcManagers[provider.id];
@@ -63,15 +71,40 @@ function findProvider(providerId: string): SocialIdentityProvider | undefined {
     return useBootstrapStore.getState().config?.identityProviders.find(p => p.id === providerId);
 }
 
+async function loadLicenseBeforeSignIn(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>(resolve => {
+        timer = setTimeout(() => {
+            console.warn(`Organization license did not load within ${LOGIN_LICENSE_TIMEOUT_MS} ms; continuing sign-in`);
+            resolve();
+        }, LOGIN_LICENSE_TIMEOUT_MS);
+    });
+    try {
+        await Promise.race([
+            loadOrganizationLicense().catch((error: unknown) => {
+                console.error('Failed to load organization license', error);
+            }),
+            timeout,
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 interface AuthState {
     user: CurrentUser | null;
     loading: boolean;
     initialized: boolean;
+    /** The session could not be checked at startup: the login page says so. */
+    sessionCheckFailed: boolean;
     oauthRedirectUrl: string | null;
+    avatarCacheBust: number;
     initialize: () => Promise<void>;
     login: (username: string, password: string) => Promise<void>;
     loginWithProvider: (providerId: string, redirectUrl: string) => Promise<void>;
     logout: () => Promise<void>;
+    refreshCurrentUser: () => Promise<CurrentUser>;
+    applySessionUser: (user: CurrentUser) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -80,7 +113,9 @@ export const useAuthStore = create<AuthState>()(
             user: null,
             loading: false,
             initialized: false,
+            sessionCheckFailed: false,
             oauthRedirectUrl: null,
+            avatarCacheBust: 0,
 
             initialize: async () => {
                 if (get().initialized) return;
@@ -94,25 +129,28 @@ export const useAuthStore = create<AuthState>()(
                     if (provider) {
                         const manager = getOrCreateUserManager(provider);
                         const oidcUser = await manager.signinRedirectCallback();
-                        const user = await managementApi.get<CurrentUser>('/user');
+                        const user = normalizeCurrentUser(await managementApi.get<unknown>('/user'));
                         const redirectUrl = (oidcUser.state as string) ?? '/';
                         set({ user, loading: false, initialized: true, oauthRedirectUrl: redirectUrl });
                         return;
                     }
 
-                    const user = await managementApi.get<CurrentUser>('/user');
+                    const user = normalizeCurrentUser(await managementApi.get<unknown>('/user'));
                     set({ user, loading: false, initialized: true });
-                } catch {
-                    set({ user: null, loading: false, initialized: true });
+                } catch (error) {
+                    set({ user: null, loading: false, initialized: true, sessionCheckFailed: isPlatformUnavailable(error) });
                 }
             },
 
             login: async (username: string, password: string) => {
                 localStorage.removeItem(USER_PROVIDER_ID_SELECTED);
+                // The sign-in now speaks for the session: its outcome replaces what the startup check said.
+                set({ sessionCheckFailed: false });
                 await managementApi.post<void>('/user/login', undefined, {
                     Authorization: `Basic ${btoa(`${username}:${password}`)}`,
                 });
-                const user = await managementApi.get<CurrentUser>('/user');
+                const user = normalizeCurrentUser(await managementApi.get<unknown>('/user'));
+                await loadLicenseBeforeSignIn();
                 set({ user });
                 const config = useBootstrapStore.getState().config!;
                 void useEnvironmentStore.getState().initialize(config.organizationId);
@@ -128,6 +166,7 @@ export const useAuthStore = create<AuthState>()(
             },
 
             logout: async () => {
+                sessionEpoch += 1;
                 await managementApi.post<void>('/user/logout').catch(() => {});
 
                 const providerIdSelected = localStorage.getItem(USER_PROVIDER_ID_SELECTED);
@@ -141,8 +180,26 @@ export const useAuthStore = create<AuthState>()(
 
                 localStorage.removeItem(USER_PROVIDER_ID_SELECTED);
                 localStorage.removeItem('XSRF-TOKEN');
-                set({ user: null });
+                set({ user: null, avatarCacheBust: 0 });
                 useEnvironmentStore.getState().reset();
+                licenseService.setLicense(null);
+            },
+
+            refreshCurrentUser: async () => {
+                const epoch = sessionEpoch;
+                const user = normalizeCurrentUser(await managementApi.get<unknown>('/user'));
+                if (epoch !== sessionEpoch) {
+                    throw new Error('Signed out');
+                }
+                set({ user, avatarCacheBust: Date.now() });
+                return user;
+            },
+
+            applySessionUser: user => {
+                if (get().user === null) {
+                    return;
+                }
+                set({ user, avatarCacheBust: Date.now() });
             },
         }),
         { name: 'auth' },

@@ -36,7 +36,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.SequencedMap;
 import java.util.SequencedSet;
-import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -58,7 +57,7 @@ public class ValidateGroupCRDDomainServiceImpl implements ValidateGroupCRDDomain
     public Result<ValidateGroupCRDDomainService.Input> validateAndSanitize(ValidateGroupCRDDomainService.Input input) {
         var errors = new ArrayList<Error>();
 
-        validateAndSanitizeId(input.spec().getId()).peek(id -> input.spec().setId(id), errors::addAll);
+        validateAndSanitizeId(input.spec()).peek(id -> input.spec().setId(id), errors::addAll);
         validateAndSanitizedName(input.spec().getName()).peek(name -> input.spec().setName(name), errors::addAll);
         validateAndSanitizeDefaultRoles(input, errors);
         validateAndSanitizeMembers(input).peek(members -> input.spec().setMembers(members), errors::addAll);
@@ -66,15 +65,11 @@ public class ValidateGroupCRDDomainServiceImpl implements ValidateGroupCRDDomain
         return Result.ofBoth(input, errors);
     }
 
-    private Result<String> validateAndSanitizeId(String id) {
-        if (StringUtils.isEmpty(id)) {
-            return Result.ofErrors(List.of(Error.severe("property [id] must be a valid UUID")));
-        }
-        try {
-            return Result.ofValue(UUID.fromString(id).toString());
-        } catch (IllegalArgumentException e) {
-            return Result.ofErrors(List.of(Error.severe("property [id] must be a valid UUID")));
-        }
+    private Result<String> validateAndSanitizeId(GroupCRDSpec spec) {
+        return spec
+            .canonicalId()
+            .map(Result::ofValue)
+            .orElseGet(() -> Result.ofErrors(List.of(Error.severe("property [id] must be a valid UUID"))));
     }
 
     private Result<String> validateAndSanitizedName(String name) {
@@ -84,7 +79,13 @@ public class ValidateGroupCRDDomainServiceImpl implements ValidateGroupCRDDomain
         return Result.ofValue(name);
     }
 
+    private static final List<RoleScope> GROUP_DEFAULT_ROLE_SCOPES = List.of(RoleScope.API, RoleScope.APPLICATION, RoleScope.API_PRODUCT);
+
     private void validateAndSanitizeDefaultRoles(ValidateGroupCRDDomainService.Input input, ArrayList<Error> errors) {
+        if (input.spec().getDefaultMemberRoles() != null) {
+            validateAndSanitizeDefaultMemberRoles(input, errors);
+            return;
+        }
         validateAndSanitizeDefaultRole(input, input.spec().getApiRole(), RoleScope.API, role -> input.spec().setApiRole(role), errors);
         validateAndSanitizeDefaultRole(
             input,
@@ -100,6 +101,27 @@ public class ValidateGroupCRDDomainServiceImpl implements ValidateGroupCRDDomain
             role -> input.spec().setApiProductRole(role),
             errors
         );
+    }
+
+    private void validateAndSanitizeDefaultMemberRoles(ValidateGroupCRDDomainService.Input input, ArrayList<Error> errors) {
+        var sanitized = new LinkedHashMap<RoleScope, String>();
+        input
+            .spec()
+            .getDefaultMemberRoles()
+            .forEach((roleScope, roleName) -> {
+                if (!GROUP_DEFAULT_ROLE_SCOPES.contains(roleScope)) {
+                    errors.add(
+                        Error.severe(
+                            "defaultMemberRoles: scope [%s] is not a group default role scope (API, APPLICATION, API_PRODUCT)",
+                            roleScope
+                        )
+                    );
+                    return;
+                }
+                validateAndSanitizeDefaultRole(input, roleName, roleScope, role -> sanitized.put(roleScope, role), errors);
+            });
+        sanitized.values().removeIf(java.util.Objects::isNull);
+        input.spec().setDefaultMemberRoles(sanitized);
     }
 
     private void validateAndSanitizeDefaultRole(
@@ -135,7 +157,7 @@ public class ValidateGroupCRDDomainServiceImpl implements ValidateGroupCRDDomain
     }
 
     private Result<SequencedSet<GroupCRDSpec.Member>> validateAndSanitizeMembers(ValidateGroupCRDDomainService.Input input) {
-        if (CollectionUtils.isEmpty(input.spec().getMembers())) {
+        if (input.spec().isIgnoreMembers() || CollectionUtils.isEmpty(input.spec().getMembers())) {
             return Result.ofBoth(new LinkedHashSet<>(), List.of());
         }
 

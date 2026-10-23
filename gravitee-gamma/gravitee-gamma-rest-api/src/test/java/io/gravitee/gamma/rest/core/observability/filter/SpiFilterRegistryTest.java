@@ -87,6 +87,21 @@ class SpiFilterRegistryTest {
     }
 
     @Test
+    void should_offer_the_api_product_filter_wherever_a_product_routes_traffic() {
+        FilterRegistry registry = registryWith();
+
+        // An API product fronts LLM, MCP and A2A APIs as well as HTTP ones — an AI Workspace is one. Leaving
+        // those out left the filter unlistable there: its values endpoint answers "filter not found", so the
+        // picker on an LLM dashboard came back empty.
+        for (ApiType apiType : List.of(ApiType.HTTP_PROXY, ApiType.LLM, ApiType.MCP, ApiType.A2A)) {
+            assertThat(registry.getFilters(null, Set.of(apiType)))
+                .as("API_PRODUCT on %s", apiType)
+                .extracting(FilterSpec::name)
+                .contains("API_PRODUCT");
+        }
+    }
+
+    @Test
     void should_offer_the_decisions_screen_only_what_the_decision_search_can_apply() {
         FilterRegistry registry = registryWith();
 
@@ -107,7 +122,8 @@ class SpiFilterRegistryTest {
                 "AUTHZ_RESOURCE_ID",
                 "AUTHZ_CALLER",
                 "AUTHZ_STATUS",
-                "AUTHZ_OPERATION",
+                "AUTHZ_INDETERMINATE_CAUSE",
+                "AUTHZ_ERROR_TYPE",
                 "AUTHZ_PDP",
                 "AUTHZ_MATCHED_POLICY",
                 "AUTHZ_REASON",
@@ -116,7 +132,7 @@ class SpiFilterRegistryTest {
                 // to that call's HTTP log. It was absent here only until the search could apply it.
                 "REQUEST_ID"
             )
-            .doesNotContain("API_TYPE", "RECORD_TYPE", "ENTRYPOINT", "HTTP_STATUS", "PAYLOAD");
+            .doesNotContain("API_TYPE", "RECORD_TYPE", "ENTRYPOINT", "HTTP_STATUS", "PAYLOAD", "AUTHZ_OPERATION");
     }
 
     @Test
@@ -126,8 +142,17 @@ class SpiFilterRegistryTest {
         List<FilterSpec> result = registry.getFilters(Set.of(Signal.ANALYTICS), Set.of(ApiType.AUTHZ_DECISION));
 
         assertThat(result.stream().map(FilterSpec::name).toList())
-            .contains("AUTHZ_DECISION", "AUTHZ_OPERATION", "AUTHZ_STATUS", "AUTHZ_CALLER", "AUTHZ_ACTION")
-            .doesNotContain("ENTRYPOINT", "HTTP_STATUS", "PAYLOAD", "API_TYPE", "RECORD_TYPE");
+            .contains("AUTHZ_DECISION", "AUTHZ_STATUS", "AUTHZ_CALLER", "AUTHZ_ACTION", "AUTHZ_PDP")
+            .doesNotContain("ENTRYPOINT", "HTTP_STATUS", "PAYLOAD", "API_TYPE", "RECORD_TYPE", "AUTHZ_OPERATION", "AUTHZ_SEARCH_TYPE");
+    }
+
+    @Test
+    void should_scope_the_authzen_traffic_filters_to_authz_apis_not_to_decisions() {
+        FilterRegistry registry = registryWith();
+
+        List<FilterSpec> result = registry.getFilters(Set.of(Signal.ANALYTICS), Set.of(ApiType.AUTHZ));
+
+        assertThat(result.stream().map(FilterSpec::name).toList()).contains("AUTHZ_OPERATION", "AUTHZ_SEARCH_TYPE");
     }
 
     @Test

@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-import { useHasPermission } from '@gravitee/gamma-modules-sdk';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
+
+import { useHasPermission } from '@gravitee/gamma-modules-sdk';
 
 import { ApiLoggingSettingsPage } from './ApiLoggingSettingsPage';
 import { useOrgConsoleSettings } from '../features/organization-settings/hooks/useOrgConsoleSettings';
@@ -122,6 +123,15 @@ describe('ApiLoggingSettingsPage', () => {
         expect(screen.queryByRole('button', { name: /Save changes/i })).toBeNull();
     });
 
+    it('shows classic temporal validation messages on default and limit fields', () => {
+        renderPage();
+
+        fireEvent.change(screen.getByLabelText('Temporal default'), { target: { value: 'PT10S' } });
+        fireEvent.change(screen.getByLabelText('Temporal limit'), { target: { value: 'PT20S' } });
+
+        expect(screen.getAllByText('Default should be greater than Limit')).toHaveLength(2);
+    });
+
     it('keeps Save disabled when sampling validation fails', () => {
         const mutate = jest.fn();
         mockUseSaveOrgConsoleSettings.mockReturnValue({
@@ -136,5 +146,16 @@ describe('ApiLoggingSettingsPage', () => {
         expect(screen.getByRole('button', { name: /Save changes/i })).toHaveProperty('disabled', true);
         fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
         expect(mutate).not.toHaveBeenCalled();
+    });
+
+    it('shows temporal ISO and compare errors and keeps Save disabled for invalid default duration', () => {
+        renderPage();
+
+        fireEvent.change(screen.getByLabelText('Temporal default'), { target: { value: 'PT1SS' } });
+        fireEvent.change(screen.getByLabelText('Temporal limit'), { target: { value: 'PT1S' } });
+
+        expect(screen.getAllByText('Default value should conform to ISO-8601 duration format')).toHaveLength(1);
+        expect(screen.getAllByText('Default should be greater than Limit')).toHaveLength(2);
+        expect(screen.getByRole('button', { name: /Save changes/i })).toHaveProperty('disabled', true);
     });
 });

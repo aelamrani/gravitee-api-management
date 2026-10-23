@@ -21,17 +21,26 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import io.gravitee.common.event.EventListener;
 import io.gravitee.common.event.EventManager;
+import io.gravitee.common.event.impl.SimpleEvent;
 import io.gravitee.definition.model.cluster.ClusterEvent;
 import io.gravitee.definition.model.cluster.KafkaClusterReactableCluster;
 import io.gravitee.definition.model.cluster.ReactableCluster;
+import io.gravitee.secrets.api.discovery.Definition;
+import io.gravitee.secrets.api.discovery.DefinitionMetadata;
+import io.gravitee.secrets.api.event.SecretDiscoveryEvent;
+import io.gravitee.secrets.api.event.SecretDiscoveryEventType;
 import java.util.Date;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
@@ -178,5 +187,150 @@ class ClusterManagerImplTest {
         cut.register(KafkaClusterReactableCluster.builder().id("c2").deployedAt(new Date()).build());
 
         assertThat(cut.clusters()).hasSize(2);
+    }
+
+    @Test
+    void should_resolve_cluster_by_cross_id_and_environment() {
+        ReactableCluster envA = cluster("c1", "shared-cross-id", "env-a");
+        ReactableCluster envB = cluster("c2", "shared-cross-id", "env-b");
+        cut.register(envA);
+        cut.register(envB);
+
+        assertThat(cut.get("shared-cross-id", "env-a")).isSameAs(envA);
+        assertThat(cut.get("shared-cross-id", "env-b")).isSameAs(envB);
+        assertThat(cut.get("shared-cross-id", "env-c")).isNull();
+        assertThat(cut.get("unknown", "env-a")).isNull();
+    }
+
+    @Test
+    void should_resolve_the_updated_cluster_by_cross_id() {
+        cut.register(KafkaClusterReactableCluster.builder().id("c1").crossId("my-cluster").environmentId("env-a").version(1).build());
+        ReactableCluster updated = KafkaClusterReactableCluster.builder()
+            .id("c1")
+            .crossId("my-cluster")
+            .environmentId("env-a")
+            .version(2)
+            .build();
+
+        cut.register(updated);
+
+        assertThat(cut.get("my-cluster", "env-a")).isSameAs(updated);
+    }
+
+    @Test
+    void should_not_resolve_an_undeployed_cluster_by_cross_id() {
+        cut.register(cluster("c1", "my-cluster", "env-a"));
+
+        cut.unregister("c1");
+
+        assertThat(cut.get("my-cluster", "env-a")).isNull();
+    }
+
+    @Test
+    void should_not_resolve_null_cross_id_or_environment() {
+        cut.register(cluster("c1", "my-cluster", "env-a"));
+
+        assertThat(cut.get(null, "env-a")).isNull();
+        assertThat(cut.get("my-cluster", null)).isNull();
+    }
+
+    @Test
+    void should_discover_the_secrets_of_a_cluster_before_deploying_it() {
+        KafkaClusterReactableCluster cluster = cluster("c1", "my-cluster", "env-a");
+        cluster.setVersion(3);
+
+        cut.register(cluster);
+
+        InOrder inOrder = Mockito.inOrder(eventManager);
+        inOrder
+            .verify(eventManager)
+            .publishEvent(SecretDiscoveryEventType.DISCOVER, new SecretDiscoveryEvent("env-a", cluster, new DefinitionMetadata("3")));
+        inOrder.verify(eventManager).publishEvent(ClusterEvent.DEPLOY, cluster);
+    }
+
+    @Test
+    void should_discover_the_new_version_and_revoke_the_previous_one_on_update() {
+        KafkaClusterReactableCluster previous = cluster("c1", "my-cluster", "env-a");
+        previous.setVersion(1);
+        KafkaClusterReactableCluster updated = cluster("c1", "my-cluster", "env-a");
+        updated.setVersion(2);
+        cut.register(previous);
+
+        cut.register(updated);
+
+        InOrder inOrder = Mockito.inOrder(eventManager);
+        inOrder
+            .verify(eventManager)
+            .publishEvent(SecretDiscoveryEventType.DISCOVER, new SecretDiscoveryEvent("env-a", updated, new DefinitionMetadata("2")));
+        inOrder.verify(eventManager).publishEvent(ClusterEvent.UPDATE, updated);
+        inOrder
+            .verify(eventManager)
+            .publishEvent(SecretDiscoveryEventType.REVOKE, new SecretDiscoveryEvent("env-a", previous, new DefinitionMetadata("1")));
+    }
+
+    @Test
+    void should_not_revoke_the_secrets_it_just_discovered_when_neither_version_is_set() {
+        KafkaClusterReactableCluster previous = cluster("c1", "my-cluster", "env-a");
+        previous.setDeployedAt(new Date(1000));
+        KafkaClusterReactableCluster updated = cluster("c1", "my-cluster", "env-a");
+        updated.setDeployedAt(new Date(2000));
+        cut.register(previous);
+
+        cut.register(updated);
+
+        verify(eventManager).publishEvent(ClusterEvent.UPDATE, updated);
+        verify(eventManager, never()).publishEvent(eq(SecretDiscoveryEventType.REVOKE), any());
+    }
+
+    @Test
+    void should_revoke_the_secrets_of_an_undeployed_cluster() {
+        KafkaClusterReactableCluster cluster = cluster("c1", "my-cluster", "env-a");
+        cut.register(cluster);
+
+        cut.unregister("c1");
+
+        verify(eventManager).publishEvent(
+            SecretDiscoveryEventType.REVOKE,
+            new SecretDiscoveryEvent("env-a", cluster, new DefinitionMetadata(null))
+        );
+    }
+
+    @Test
+    void should_publish_the_cluster_again_when_one_of_its_secrets_changes() {
+        KafkaClusterReactableCluster cluster = cluster("c1", "my-cluster", "env-a");
+        cut.register(cluster);
+
+        valueChangedListener().onEvent(valueChanged(new Definition("cluster", "c1")));
+
+        verify(eventManager).publishEvent(ClusterEvent.UPDATE, cluster);
+    }
+
+    @Test
+    void should_ignore_a_secret_change_for_another_definition_or_an_unknown_cluster() {
+        cut.register(cluster("c1", "my-cluster", "env-a"));
+        EventListener<SecretDiscoveryEventType, SecretDiscoveryEvent> listener = valueChangedListener();
+
+        listener.onEvent(valueChanged(new Definition("shared-policy-group", "c1")));
+        listener.onEvent(valueChanged(new Definition("cluster", "unknown")));
+
+        verify(eventManager, never()).publishEvent(eq(ClusterEvent.UPDATE), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    private EventListener<SecretDiscoveryEventType, SecretDiscoveryEvent> valueChangedListener() {
+        ArgumentCaptor<EventListener<SecretDiscoveryEventType, SecretDiscoveryEvent>> captor = ArgumentCaptor.forClass(EventListener.class);
+        verify(eventManager).subscribeForEvents(captor.capture(), eq(SecretDiscoveryEventType.VALUE_CHANGED));
+        return captor.getValue();
+    }
+
+    private static SimpleEvent<SecretDiscoveryEventType, SecretDiscoveryEvent> valueChanged(Definition definition) {
+        return new SimpleEvent<>(
+            SecretDiscoveryEventType.VALUE_CHANGED,
+            new SecretDiscoveryEvent("env-a", definition, new DefinitionMetadata("1"))
+        );
+    }
+
+    private static KafkaClusterReactableCluster cluster(String id, String crossId, String environmentId) {
+        return KafkaClusterReactableCluster.builder().id(id).crossId(crossId).environmentId(environmentId).deployedAt(new Date()).build();
     }
 }

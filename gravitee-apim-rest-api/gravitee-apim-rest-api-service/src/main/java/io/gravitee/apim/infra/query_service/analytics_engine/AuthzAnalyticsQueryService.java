@@ -17,6 +17,7 @@ package io.gravitee.apim.infra.query_service.analytics_engine;
 
 import io.gravitee.apim.core.analytics_engine.model.FacetsRequest;
 import io.gravitee.apim.core.analytics_engine.model.FacetsResponse;
+import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresRequest;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresResponse;
 import io.gravitee.apim.core.analytics_engine.model.MetricSpec.Name;
@@ -24,6 +25,7 @@ import io.gravitee.apim.core.analytics_engine.model.TimeSeriesRequest;
 import io.gravitee.apim.core.analytics_engine.model.TimeSeriesResponse;
 import io.gravitee.apim.core.analytics_engine.query_service.AnalyticsEngineQueryService;
 import io.gravitee.apim.infra.adapter.AnalyticsMeasuresAdapter;
+import io.gravitee.repository.analytics.engine.api.query.AnalyticsSearchPath;
 import io.gravitee.repository.log.v4.api.AnalyticsRepository;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.util.Set;
@@ -40,14 +42,17 @@ public class AuthzAnalyticsQueryService implements AnalyticsEngineQueryService {
     }
 
     @Override
+    public boolean narrowsBy(Name metric, FilterSpec.Name filter) {
+        return IgnoredFilters.narrows(analyticsRepository, AnalyticsSearchPath.AUTHZ, filter);
+    }
+
+    @Override
     public Set<Name> metrics() {
         return Set.of(
-            Name.AUTHZ_OPERATIONS,
             Name.AUTHZ_DECISIONS,
             Name.AUTHZ_PERMITS,
             Name.AUTHZ_FORBIDS,
             Name.AUTHZ_NOT_APPLICABLE,
-            Name.AUTHZ_SEARCHES,
             Name.AUTHZ_FAILURES,
             Name.AUTHZ_EVAL_DURATION
         );
@@ -57,20 +62,29 @@ public class AuthzAnalyticsQueryService implements AnalyticsEngineQueryService {
     public MeasuresResponse searchMeasures(ExecutionContext context, MeasuresRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchAuthzMeasures(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.AUTHZ, query)
+        );
     }
 
     @Override
     public FacetsResponse searchFacets(ExecutionContext context, FacetsRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchAuthzFacets(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.AUTHZ, query)
+        );
     }
 
     @Override
     public TimeSeriesResponse searchTimeSeries(ExecutionContext context, TimeSeriesRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchAuthzTimeSeries(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.AUTHZ, query)
+        );
     }
 }

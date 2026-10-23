@@ -15,6 +15,7 @@
  */
 package io.gravitee.apim.core.api.use_case;
 
+import static io.gravitee.apim.core.utils.EncryptedValueMask.ENCRYPTED_VALUE_MASK;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
@@ -49,10 +50,13 @@ import io.gravitee.apim.core.api.domain_service.UpdateNativeApiDomainService;
 import io.gravitee.apim.core.api.domain_service.ValidateApiDomainService;
 import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
 import io.gravitee.apim.core.api.exception.ApiNotFoundException;
+import io.gravitee.apim.core.api.exception.ApiPropertyEncryptedToPlainException;
+import io.gravitee.apim.core.api.exception.ApiPropertyNotCiphertextException;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.UpdateNativeApi;
 import io.gravitee.apim.core.api.model.property.EncryptableProperty;
 import io.gravitee.apim.core.audit.domain_service.AuditDomainService;
+import io.gravitee.apim.core.exception.TechnicalDomainException;
 import io.gravitee.apim.core.exception.ValidationDomainException;
 import io.gravitee.apim.core.group.model.Group;
 import io.gravitee.apim.core.membership.domain_service.ApiPrimaryOwnerDomainService;
@@ -92,10 +96,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.mock.env.MockEnvironment;
 
 public class UpdateNativeApiUseCaseTest {
 
     private static final Instant INSTANT_NOW = Instant.parse("2023-10-22T10:15:30Z");
+    private static final DataEncryptor REAL_DATA_ENCRYPTOR = new DataEncryptor(
+        new MockEnvironment(),
+        "api.properties.encryption.secret",
+        "vvLJ4Q8Khvv9tm2tIPdkGEdmgKUruAL6"
+    );
     private static final String API_ID = "my-api";
     private static final String ORGANIZATION_ID = "organization-id";
     private static final String USER_ID = "user-id";
@@ -367,6 +377,212 @@ public class UpdateNativeApiUseCaseTest {
         );
         verify(categoryDomainService, times(1)).toCategoryKey(eq(apiToUpdate), eq(ENVIRONMENT_ID));
         assertThat(indexer.storage()).hasSize(1);
+    }
+
+    @Test
+    void should_reject_making_an_encrypted_property_plain() {
+        var existingApi = ApiFixtures.aNativeApi();
+        existingApi
+            .getApiDefinitionNativeV4()
+            .setProperties(List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build()));
+        apiCrudService.initWith(List.of(existingApi));
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(List.of(EncryptableProperty.builder().key("secret").value("ciphertext").build()))
+            .build();
+        var auditInfo = AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist");
+
+        assertThatExceptionOfType(ApiPropertyEncryptedToPlainException.class).isThrownBy(() ->
+            cut.execute(new UpdateNativeApiUseCase.Input(apiToUpdate, auditInfo))
+        );
+        assertThat(apiCrudService.get(existingApi.getId()).getApiDefinitionNativeV4().getProperties()).containsExactly(
+            Property.builder().key("secret").value("ciphertext").encrypted(true).build()
+        );
+        assertThat(auditCrudService.storage()).isEmpty();
+    }
+
+    @Test
+    void should_not_audit_the_value_of_an_encrypted_property_and_mark_the_entry() throws GeneralSecurityException {
+        var existingApi = ApiFixtures.aNativeApi();
+        apiCrudService.initWith(List.of(existingApi));
+        when(dataEncryptor.encrypt("plain-secret")).thenReturn("ciphertext");
+        givenValidationKeepsTheUpdatedApi();
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(List.of(EncryptableProperty.builder().key("secret").value("plain-secret").encryptable(true).build()))
+            .build();
+
+        cut.execute(
+            new UpdateNativeApiUseCase.Input(
+                apiToUpdate,
+                AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist")
+            )
+        );
+
+        var audit = auditCrudService.storage().getFirst();
+        assertThat(audit.getPatch()).doesNotContain("ciphertext").doesNotContain("plain-secret");
+        assertThat(audit.getProperties()).containsEntry("ENCRYPTED", "true");
+    }
+
+    @Test
+    void should_not_mark_the_audit_when_no_property_is_encrypted() {
+        var existingApi = ApiFixtures.aNativeApi();
+        apiCrudService.initWith(List.of(existingApi));
+        givenValidationKeepsTheUpdatedApi();
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(List.of(EncryptableProperty.builder().key("plain").value("value").build()))
+            .build();
+
+        cut.execute(
+            new UpdateNativeApiUseCase.Input(
+                apiToUpdate,
+                AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist")
+            )
+        );
+
+        assertThat(auditCrudService.storage().getFirst().getProperties()).doesNotContainKey("ENCRYPTED");
+    }
+
+    @Test
+    void should_not_mark_the_audit_when_an_encrypted_value_is_resubmitted_as_the_same_plaintext() throws GeneralSecurityException {
+        when(dataEncryptor.encrypt(any())).thenAnswer(invocation -> REAL_DATA_ENCRYPTOR.encrypt(invocation.getArgument(0)));
+        var storedCiphertext = REAL_DATA_ENCRYPTOR.encrypt("s3cret");
+        var existingApi = ApiFixtures.aNativeApi();
+        existingApi
+            .getApiDefinitionNativeV4()
+            .setProperties(List.of(Property.builder().key("secret").value(storedCiphertext).encrypted(true).build()));
+        apiCrudService.initWith(List.of(existingApi));
+        givenValidationKeepsTheUpdatedApi();
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(List.of(EncryptableProperty.builder().key("secret").value("s3cret").encryptable(true).build()))
+            .build();
+
+        cut.execute(
+            new UpdateNativeApiUseCase.Input(
+                apiToUpdate,
+                AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist")
+            )
+        );
+
+        assertThat(apiCrudService.get(existingApi.getId()).getApiDefinitionNativeV4().getProperties()).contains(
+            Property.builder().key("secret").value(storedCiphertext).encrypted(true).build()
+        );
+        assertThat(auditCrudService.storage().getFirst().getProperties()).doesNotContainKey("ENCRYPTED");
+    }
+
+    @Test
+    void should_not_mark_the_audit_when_a_plain_property_is_added_beside_an_unchanged_encrypted_one() {
+        var existingApi = ApiFixtures.aNativeApi();
+        existingApi
+            .getApiDefinitionNativeV4()
+            .setProperties(List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build()));
+        apiCrudService.initWith(List.of(existingApi));
+        givenValidationKeepsTheUpdatedApi();
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(
+                List.of(
+                    EncryptableProperty.builder().key("secret").value(ENCRYPTED_VALUE_MASK).encrypted(true).build(),
+                    EncryptableProperty.builder().key("plain-c").value("plain-c").build()
+                )
+            )
+            .build();
+
+        cut.execute(
+            new UpdateNativeApiUseCase.Input(
+                apiToUpdate,
+                AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist")
+            )
+        );
+
+        assertThat(apiCrudService.get(existingApi.getId()).getApiDefinitionNativeV4().getProperties()).contains(
+            Property.builder().key("secret").value("ciphertext").encrypted(true).build()
+        );
+        assertThat(auditCrudService.storage().getFirst().getProperties()).doesNotContainKey("ENCRYPTED");
+    }
+
+    @Test
+    void should_not_audit_when_encryption_fails() throws GeneralSecurityException {
+        var existingApi = ApiFixtures.aNativeApi();
+        apiCrudService.initWith(List.of(existingApi));
+        when(dataEncryptor.encrypt(any())).thenThrow(new GeneralSecurityException("broken encryption secret"));
+        givenValidationKeepsTheUpdatedApi();
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(List.of(EncryptableProperty.builder().key("secret").value("plain-secret").encryptable(true).build()))
+            .build();
+
+        assertThatExceptionOfType(TechnicalDomainException.class).isThrownBy(() ->
+            cut.execute(
+                new UpdateNativeApiUseCase.Input(
+                    apiToUpdate,
+                    AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist")
+                )
+            )
+        );
+        assertThat(auditCrudService.storage()).isEmpty();
+    }
+
+    @Test
+    void should_reject_a_changed_plaintext_flagged_encrypted() throws GeneralSecurityException {
+        var existingApi = ApiFixtures.aNativeApi();
+        existingApi
+            .getApiDefinitionNativeV4()
+            .setProperties(List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build()));
+        apiCrudService.initWith(List.of(existingApi));
+        when(dataEncryptor.decrypt("n3w-plaintext")).thenThrow(new GeneralSecurityException("bad padding"));
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(List.of(EncryptableProperty.builder().key("secret").value("n3w-plaintext").encrypted(true).build()))
+            .build();
+        var auditInfo = AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist");
+
+        assertThatExceptionOfType(ApiPropertyNotCiphertextException.class).isThrownBy(() ->
+            cut.execute(new UpdateNativeApiUseCase.Input(apiToUpdate, auditInfo))
+        );
+        assertThat(apiCrudService.get(existingApi.getId()).getApiDefinitionNativeV4().getProperties()).containsExactly(
+            Property.builder().key("secret").value("ciphertext").encrypted(true).build()
+        );
+    }
+
+    @Test
+    void should_reject_making_an_encrypted_property_plain_before_encrypting_the_other_properties() throws GeneralSecurityException {
+        var existingApi = ApiFixtures.aNativeApi();
+        existingApi
+            .getApiDefinitionNativeV4()
+            .setProperties(List.of(Property.builder().key("secret").value("ciphertext").encrypted(true).build()));
+        apiCrudService.initWith(List.of(existingApi));
+        when(dataEncryptor.encrypt(any())).thenThrow(new GeneralSecurityException("broken encryption secret"));
+        var apiToUpdate = anUpdateNativeApi()
+            .toBuilder()
+            .id(existingApi.getId())
+            .properties(
+                List.of(
+                    EncryptableProperty.builder().key("secret").value("ciphertext").build(),
+                    EncryptableProperty.builder().key("other").value("value").encryptable(true).build()
+                )
+            )
+            .build();
+        var auditInfo = AuditInfoFixtures.anAuditInfo(ORGANIZATION_ID, ENVIRONMENT_ID, "user-does-not-exist");
+
+        assertThatExceptionOfType(ApiPropertyEncryptedToPlainException.class).isThrownBy(() ->
+            cut.execute(new UpdateNativeApiUseCase.Input(apiToUpdate, auditInfo))
+        );
+    }
+
+    private void givenValidationKeepsTheUpdatedApi() {
+        when(validateApiDomainService.validateAndSanitizeForUpdate(any(), any(), any(), any(), any())).thenAnswer(invocation ->
+            invocation.getArgument(1)
+        );
     }
 
     private static UpdateNativeApi anUpdateNativeApi() {

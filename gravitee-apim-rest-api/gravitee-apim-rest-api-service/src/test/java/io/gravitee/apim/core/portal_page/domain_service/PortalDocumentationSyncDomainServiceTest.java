@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
+import inmemory.ApiCrudServiceInMemory;
 import inmemory.ApiProductQueryServiceInMemory;
 import inmemory.PortalNavigationItemSourceDomainServiceInMemory;
 import inmemory.PortalNavigationItemsCrudServiceInMemory;
@@ -47,6 +48,7 @@ import io.gravitee.apim.core.portal_page.model.PortalPageContentId;
 import io.gravitee.rest.api.service.common.HRIDToUUID;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
@@ -87,7 +89,7 @@ class PortalDocumentationSyncDomainServiceTest {
 
     @Test
     void materialize_creates_nav_page_with_deterministic_id() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
 
         assertThat(navItemCrud.storage()).hasSize(1);
 
@@ -109,16 +111,16 @@ class PortalDocumentationSyncDomainServiceTest {
 
     @Test
     void materialize_invokes_nav_item_validator_on_create_path() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
 
-        verify(validatorService).validateOne(any(), eq(AUDIT_INFO.environmentId()));
+        verify(validatorService).validateOne(any(), eq(AUDIT_INFO.environmentId()), eq(Set.of(DOC_ID)), eq(Set.of()));
     }
 
     @Test
     void materialize_invokes_nav_item_validator_on_update_path() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
 
-        syncService.materialize(AUDIT_INFO, markdownDoc("Renamed", "/projects/alpha", 2));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Renamed", "/projects/alpha", 2));
 
         verify(validatorService).validateToUpdate(any(), any());
     }
@@ -127,17 +129,17 @@ class PortalDocumentationSyncDomainServiceTest {
     void materialize_is_idempotent() {
         var doc = markdownDoc("Getting Started", "/projects/alpha", 1);
 
-        syncService.materialize(AUDIT_INFO, doc);
-        syncService.materialize(AUDIT_INFO, doc);
+        syncService.rematerialize(AUDIT_INFO, doc);
+        syncService.rematerialize(AUDIT_INFO, doc);
 
         assertThat(navItemCrud.storage()).hasSize(1);
     }
 
     @Test
     void materialize_updates_nav_page_when_doc_changes() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
 
-        syncService.materialize(AUDIT_INFO, markdownDoc("Renamed", "/projects/beta", 2));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Renamed", "/projects/beta", 2));
 
         var page = (PortalNavigationPage) navItemCrud.storage().get(0);
         assertThat(page.getTitle()).isEqualTo("Renamed");
@@ -150,7 +152,7 @@ class PortalDocumentationSyncDomainServiceTest {
 
     @Test
     void dematerialize_removes_nav_page() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
 
         syncService.dematerialize(AUDIT_INFO, PORTAL_ID.toString(), DOC_ID);
 
@@ -166,7 +168,7 @@ class PortalDocumentationSyncDomainServiceTest {
 
     @Test
     void materialize_with_null_location_marks_page_as_root() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", null, 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", null, 1));
 
         var page = (PortalNavigationPage) navItemCrud.storage().get(0);
         assertThat(page.getParentId()).isNull();
@@ -192,7 +194,7 @@ class PortalDocumentationSyncDomainServiceTest {
             )
         );
 
-        syncService.materialize(AUDIT_INFO, markdownDoc("Setup", "/private-guides", 0));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Setup", "/private-guides", 0));
 
         var page = (PortalNavigationPage) navItemCrud
             .storage()
@@ -235,7 +237,7 @@ class PortalDocumentationSyncDomainServiceTest {
             )
         );
 
-        syncService.materialize(AUDIT_INFO, markdownDoc("Setup", "/projects/alpha", 0));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Setup", "/projects/alpha", 0));
 
         var page = (PortalNavigationPage) navItemCrud
             .storage()
@@ -247,8 +249,51 @@ class PortalDocumentationSyncDomainServiceTest {
     }
 
     @Test
+    void doc_apply_resolves_from_parent_when_caller_omits_visibility_on_an_existing_page() {
+        var parentFolderId = expectedFolderId("/projects/alpha");
+        navItemCrud.initWith(
+            List.of(
+                PortalNavigationFolder.builder()
+                    .id(parentFolderId)
+                    .organizationId(AUDIT_INFO.organizationId())
+                    .environmentId(AUDIT_INFO.environmentId())
+                    .title("alpha")
+                    .segment("alpha")
+                    .area(PortalArea.TOP_NAVBAR)
+                    .order(0)
+                    .published(true)
+                    .visibility(PortalVisibility.PUBLIC)
+                    .build(),
+                PortalNavigationPage.builder()
+                    .id(expectedNavItemId())
+                    .organizationId(AUDIT_INFO.organizationId())
+                    .environmentId(AUDIT_INFO.environmentId())
+                    .title("Setup")
+                    .segment("setup")
+                    .area(PortalArea.TOP_NAVBAR)
+                    .order(0)
+                    .parentId(parentFolderId)
+                    .portalPageContentId(DOC_ID)
+                    .published(true)
+                    .visibility(PortalVisibility.PRIVATE)
+                    .build()
+            )
+        );
+
+        syncService.materialize(AUDIT_INFO, markdownDoc("Setup", "/projects/alpha", 0), PortalArea.TOP_NAVBAR, null);
+
+        var page = (PortalNavigationPage) navItemCrud
+            .storage()
+            .stream()
+            .filter(PortalNavigationPage.class::isInstance)
+            .findFirst()
+            .orElseThrow();
+        assertThat(page.getVisibility()).isEqualTo(PortalVisibility.PUBLIC);
+    }
+
+    @Test
     void materialize_points_at_deterministic_folder_id_even_when_folder_missing() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/unknown", 1));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/unknown", 1));
 
         var page = (PortalNavigationPage) navItemCrud.storage().get(0);
         assertThat(page.getParentId()).isEqualTo(expectedFolderId("/unknown"));
@@ -256,10 +301,59 @@ class PortalDocumentationSyncDomainServiceTest {
 
     @Test
     void materialize_uses_zero_when_order_is_null() {
-        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", null));
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", null));
 
         var page = (PortalNavigationPage) navItemCrud.storage().get(0);
         assertThat(page.getOrder()).isZero();
+    }
+
+    @Test
+    void materialize_moves_an_existing_page_to_a_different_area_via_delete_and_recreate() {
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+
+        syncService.materialize(AUDIT_INFO, markdownDoc("Getting Started", null, 0), PortalArea.HOMEPAGE, null);
+
+        assertThat(navItemCrud.storage()).hasSize(1);
+        var page = (PortalNavigationPage) navItemCrud.storage().get(0);
+        assertThat(page.getId()).isEqualTo(expectedNavItemId());
+        assertThat(page.getArea()).isEqualTo(PortalArea.HOMEPAGE);
+    }
+
+    @Test
+    void validate_placement_allows_moving_an_existing_page_to_a_different_area_without_writing_anything() {
+        syncService.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        var storageBefore = List.copyOf(navItemCrud.storage());
+
+        syncService.validatePlacement(AUDIT_INFO, markdownDoc("Getting Started", null, 0), PortalArea.HOMEPAGE, null);
+
+        assertThat(navItemCrud.storage()).containsExactlyInAnyOrderElementsOf(storageBefore);
+    }
+
+    @Test
+    void materialize_rejects_moving_an_existing_page_to_a_conflicting_homepage_without_losing_it() {
+        var syncWithRealValidator = new PortalDocumentationSyncDomainService(
+            navItemCrud,
+            navItemQuery,
+            new HomepageReconciler(navItemQuery, navItemCrud, pageContentCrud),
+            new PortalNavigationItemValidatorService(
+                navItemQuery,
+                new PortalPageContentQueryServiceInMemory(pageContentCrud.storage()),
+                new ApiProductQueryServiceInMemory(),
+                new PortalNavigationItemSourceDomainServiceInMemory(),
+                new ApiCrudServiceInMemory()
+            )
+        );
+        var existingHomepage = automationOwnedHomepagePage();
+        navItemCrud.create(existingHomepage);
+        pageContentCrud.create(staleContent(existingHomepage));
+        syncWithRealValidator.rematerialize(AUDIT_INFO, markdownDoc("Getting Started", "/projects/alpha", 1));
+        var storageBefore = List.copyOf(navItemCrud.storage());
+
+        assertThatThrownBy(() ->
+            syncWithRealValidator.materialize(AUDIT_INFO, markdownDoc("Getting Started", null, 0), PortalArea.HOMEPAGE, null)
+        ).isInstanceOf(HomepageAlreadyExistsException.class);
+
+        assertThat(navItemCrud.storage()).containsExactlyInAnyOrderElementsOf(storageBefore);
     }
 
     @Test
@@ -311,7 +405,8 @@ class PortalDocumentationSyncDomainServiceTest {
                 navItemQuery,
                 new PortalPageContentQueryServiceInMemory(pageContentCrud.storage()),
                 new ApiProductQueryServiceInMemory(),
-                new PortalNavigationItemSourceDomainServiceInMemory()
+                new PortalNavigationItemSourceDomainServiceInMemory(),
+                new ApiCrudServiceInMemory()
             )
         );
         var existing = automationOwnedHomepagePage();
@@ -324,6 +419,32 @@ class PortalDocumentationSyncDomainServiceTest {
 
         assertThat(navItemCrud.storage()).hasSize(1);
         assertThat(navItemCrud.storage().get(0).getId()).isEqualTo(existing.getId());
+    }
+
+    @Test
+    void validate_placement_writes_nothing_when_a_new_page_conflicts_with_an_existing_homepage() {
+        var syncWithRealValidator = new PortalDocumentationSyncDomainService(
+            navItemCrud,
+            navItemQuery,
+            new HomepageReconciler(navItemQuery, navItemCrud, pageContentCrud),
+            new PortalNavigationItemValidatorService(
+                navItemQuery,
+                new PortalPageContentQueryServiceInMemory(pageContentCrud.storage()),
+                new ApiProductQueryServiceInMemory(),
+                new PortalNavigationItemSourceDomainServiceInMemory(),
+                new ApiCrudServiceInMemory()
+            )
+        );
+        var existingHomepage = automationOwnedHomepagePage();
+        navItemCrud.create(existingHomepage);
+        pageContentCrud.create(staleContent(existingHomepage));
+        var storageBefore = List.copyOf(navItemCrud.storage());
+
+        assertThatThrownBy(() ->
+            syncWithRealValidator.validatePlacement(AUDIT_INFO, homepageDoc("Home", "/homepage"), PortalArea.HOMEPAGE, null)
+        ).isInstanceOf(HomepageAlreadyExistsException.class);
+
+        assertThat(navItemCrud.storage()).containsExactlyInAnyOrderElementsOf(storageBefore);
     }
 
     @Test
@@ -411,7 +532,7 @@ class PortalDocumentationSyncDomainServiceTest {
             .id(PortalNavigationItemId.of("00000000-0000-0000-0000-00000000c0d2"))
             .organizationId(AUDIT_INFO.organizationId())
             .environmentId(AUDIT_INFO.environmentId())
-            .reference(NavigationItemReference.DEFAULT)
+            .reference(NavigationItemReference.defaultReference())
             .title("Seeded")
             .segment("seeded")
             .area(PortalArea.HOMEPAGE)

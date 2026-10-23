@@ -16,8 +16,8 @@
 import {
     Avatar,
     AvatarFallback,
-    AvatarImage,
     Badge,
+    type BadgeVariant,
     Button,
     DataTable,
     DataTableColumnHeader,
@@ -32,23 +32,25 @@ import {
     type DataTableProps,
 } from '@gravitee/graphene-core';
 import { ActivityIcon, CircleCheckIcon, CircleXIcon, GlobeIcon, MoreVerticalIcon, SearchIcon } from '@gravitee/graphene-core/icons';
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 
-import { NON_SORTABLE_COLUMN } from '../../applications/utils/dataTableHeaders';
 import type { ColCell, ColHeader } from '../../applications/utils/dataTableTypes';
 import { TABLE_PAGE_SIZE_OPTIONS } from '../../applications/utils/paginationConstants';
 import type { TableSortingState } from '../../applications/utils/tableSort';
+import { NON_SORTABLE_COLUMN } from '../../shared/utils/dataTableHeaders';
 import { useEnvironmentHealthAvailability } from '../hooks/useEnvironmentHealthAvailability';
 import type { EnvironmentHealthApi } from '../types';
 import type { AvailabilityView } from '../utils/availability';
 import { HEALTH_CHECK_FILTER_QUERY } from '../utils/healthCheckQuery';
+import type { HealthTimeRange, Timeframe } from '../utils/healthTimeframe';
 import { AVAILABILITY_ERROR_THRESHOLD, AVAILABILITY_WARNING_THRESHOLD } from '../utils/reportBuckets';
 
-const WORKFLOW_BADGE: Partial<Record<string, { label: string; className: string }>> = {
-    DEPRECATED: { label: 'Deprecated', className: 'border-destructive/20 text-destructive' },
-    DRAFT: { label: 'Draft', className: 'border-primary/20 text-primary' },
-    IN_REVIEW: { label: 'In Review', className: 'border-destructive/20 text-destructive' },
-    REQUEST_FOR_CHANGES: { label: 'Need changes', className: 'border-destructive/20 text-destructive' },
+const WORKFLOW_BADGE: Partial<Record<string, { label: string; variant: BadgeVariant }>> = {
+    DEPRECATED: { label: 'Deprecated', variant: 'destructive' },
+    DRAFT: { label: 'Draft', variant: 'default' },
+    IN_REVIEW: { label: 'In Review', variant: 'outline' },
+    REQUEST_FOR_CHANGES: { label: 'Need changes', variant: 'warning' },
 };
 
 function AvailabilityGauge({ pct }: Readonly<{ pct: number }>) {
@@ -101,14 +103,14 @@ function AvailabilityStatus({ availability }: Readonly<{ availability?: Availabi
 
 function AvailabilityCell({
     api,
-    from,
-    to,
+    timeframe,
+    range,
     reloadToken,
-}: Readonly<{ api: EnvironmentHealthApi; from: number; to: number; reloadToken: number }>) {
+}: Readonly<{ api: EnvironmentHealthApi; timeframe: Timeframe; range: HealthTimeRange; reloadToken: number }>) {
     const { availability, isLoading, isError } = useEnvironmentHealthAvailability({
         apiId: api.id,
-        from,
-        to,
+        timeframe,
+        range,
         enabled: api.healthcheckEnabled,
         reloadToken,
     });
@@ -130,48 +132,38 @@ function ApiStates({ api }: Readonly<{ api: EnvironmentHealthApi }>) {
     return (
         <div className="flex flex-wrap items-center gap-1.5">
             {api.state === 'STARTED' ? (
-                <Badge variant="outline" className="border-success/20 text-success">
+                <Badge variant="success">
                     <CircleCheckIcon className="mr-1 size-3" aria-hidden />
                     Started
                 </Badge>
             ) : (
-                <Badge variant="outline" className="border-destructive/20 text-destructive">
+                <Badge variant="secondary">
                     <CircleXIcon className="mr-1 size-3" aria-hidden />
                     Stopped
                 </Badge>
             )}
             {api.lifecycleState === 'PUBLISHED' ? (
-                <Badge variant="outline" className="border-success/20 text-success">
+                <Badge variant="success">
                     <GlobeIcon className="mr-1 size-3" aria-hidden />
                     Published
                 </Badge>
             ) : (
-                <Badge variant="outline" className="text-muted-foreground">
-                    Unpublished
-                </Badge>
+                <Badge variant="outline">Unpublished</Badge>
             )}
-            {api.origin === 'KUBERNETES' ? (
-                <Badge variant="outline" className="text-muted-foreground">
-                    Kubernetes
-                </Badge>
-            ) : null}
-            {workflow ? (
-                <Badge variant="outline" className={workflow.className}>
-                    {workflow.label}
-                </Badge>
-            ) : null}
+            {api.origin === 'KUBERNETES' ? <Badge variant="outline">Kubernetes</Badge> : null}
+            {workflow ? <Badge variant={workflow.variant}>{workflow.label}</Badge> : null}
         </div>
     );
 }
 
 function buildColumns({
-    from,
-    to,
+    timeframe,
+    range,
     reloadToken,
     dashboardHref,
 }: {
-    from: number;
-    to: number;
+    timeframe: Timeframe;
+    range: HealthTimeRange;
     reloadToken: number;
     dashboardHref: (apiId: string) => string;
 }): DataTableProps<EnvironmentHealthApi>['columns'] {
@@ -182,10 +174,12 @@ function buildColumns({
             header: ({ column }: ColHeader<EnvironmentHealthApi>) => <DataTableColumnHeader column={column} title="Name" />,
             cell: ({ row }: ColCell<EnvironmentHealthApi>) => (
                 <div className="flex items-center gap-3">
+                    {/*
+                     * No AvatarImage: the search response advertises _links.pictureUrl for every API whether or not
+                     * one was ever uploaded, so requesting it cost a round trip per row that always came back empty
+                     * and always fell through to this icon.
+                     */}
                     <Avatar size="sm" className="shrink-0 rounded-md">
-                        {row.original.pictureUrl ? (
-                            <AvatarImage src={row.original.pictureUrl} alt="" className="rounded-md object-cover" />
-                        ) : null}
                         <AvatarFallback className="bg-primary/10 text-primary rounded-md">
                             <GlobeIcon className="size-3.5" aria-hidden />
                         </AvatarFallback>
@@ -210,7 +204,7 @@ function buildColumns({
             ...NON_SORTABLE_COLUMN,
             header: ({ column }: ColHeader<EnvironmentHealthApi>) => <DataTableColumnHeader column={column} title="API Availability" />,
             cell: ({ row }: ColCell<EnvironmentHealthApi>) => (
-                <AvailabilityCell api={row.original} from={from} to={to} reloadToken={reloadToken} />
+                <AvailabilityCell api={row.original} timeframe={timeframe} range={range} reloadToken={reloadToken} />
             ),
         },
     ];
@@ -259,8 +253,8 @@ export function HealthCheckApisTable({
     page,
     pageSize,
     sorting,
-    from,
-    to,
+    timeframe,
+    range,
     reloadToken,
     dashboardHref,
     onSearchChange,
@@ -275,8 +269,8 @@ export function HealthCheckApisTable({
     page: number;
     pageSize: number;
     sorting: TableSortingState;
-    from: number;
-    to: number;
+    timeframe: Timeframe;
+    range: HealthTimeRange;
     reloadToken: number;
     dashboardHref: (apiId: string) => string;
     onSearchChange: (value: string) => void;
@@ -284,7 +278,12 @@ export function HealthCheckApisTable({
     onPageSizeChange: (size: number) => void;
     onSortingChange: (updater: TableSortingState | ((previous: TableSortingState) => TableSortingState)) => void;
 }>) {
-    const columns = buildColumns({ from, to, reloadToken, dashboardHref });
+    // Memoised on purpose: a fresh column array on every render remounts each cell, and a remounted
+    // availability query refetches, which doubled this page's requests.
+    const columns = useMemo(
+        () => buildColumns({ timeframe, range, reloadToken, dashboardHref }),
+        [timeframe, range, reloadToken, dashboardHref],
+    );
     const emptyMessage = query.includes(HEALTH_CHECK_FILTER_QUERY)
         ? 'No APIs with health check enabled.'
         : query.trim()

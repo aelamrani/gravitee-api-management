@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import { Badge } from '@gravitee/graphene-core';
-import { useEffect, type ComponentProps } from 'react';
+import { Badge, type BadgeVariant } from '@gravitee/graphene-core';
+import { useEffect } from 'react';
 
 import type { IntegrationAgentStatus } from '../types/integration';
 
-const STATUS_CONFIG: Record<IntegrationAgentStatus, { label: string; variant: ComponentProps<typeof Badge>['variant'] }> = {
+const STATUS_CONFIG: Record<IntegrationAgentStatus, { label: string; variant: BadgeVariant }> = {
     CONNECTED: { label: 'Connected', variant: 'success' },
     DISCONNECTED: { label: 'Disconnected', variant: 'destructive' },
 };
@@ -35,7 +35,7 @@ export function IntegrationStatusBadge({ agentStatus }: Readonly<{ agentStatus: 
     useEffect(() => {
         if (unrecognizedStatus) {
             console.warn(
-                `Integration agent status "${unrecognizedStatus}" is not one of ${Object.keys(STATUS_CONFIG).join(', ')}; rendering an empty Status cell`,
+                `Integration agent status "${unrecognizedStatus}" is not one of ${Object.keys(STATUS_CONFIG).join(', ')}; rendering no status badge`,
             );
         }
     }, [unrecognizedStatus]);

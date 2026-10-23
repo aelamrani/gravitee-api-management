@@ -16,15 +16,22 @@
 package io.gravitee.gateway.dictionary;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
+import io.gravitee.common.util.DataEncryptor;
+import io.gravitee.definition.model.dictionary.DictionaryProperty;
+import io.gravitee.el.TemplateEngine;
 import io.gravitee.gateway.dictionary.model.Dictionary;
+import java.security.GeneralSecurityException;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.env.StandardEnvironment;
 
 @DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
 class MultiEnvironmentDictionaryManagerTest {
@@ -32,11 +39,17 @@ class MultiEnvironmentDictionaryManagerTest {
     private static final String ENV = "DEFAULT";
     private static final String OTHER_ENV = "OTHER";
 
+    private static final DataEncryptor DATA_ENCRYPTOR = new DataEncryptor(
+        new StandardEnvironment(),
+        "api.properties.encryption.secret",
+        "vvLJ4Q8Khvv9tm2tIPdkGEdmgKUruAL6"
+    );
+
     private MultiEnvironmentDictionaryManager cut;
 
     @BeforeEach
     void setUp() {
-        cut = new MultiEnvironmentDictionaryManager();
+        cut = new MultiEnvironmentDictionaryManager(DATA_ENCRYPTOR);
     }
 
     @Nested
@@ -89,6 +102,85 @@ class MultiEnvironmentDictionaryManagerTest {
 
             assertThat(property(ENV, "idp-server-details")).isEqualTo("default-value");
             assertThat(property(OTHER_ENV, "idp-server-details")).isEqualTo("other-value");
+        }
+
+        @Test
+        void should_skip_a_property_whose_value_is_null() {
+            Dictionary dictionary = dictionary("idp-server-details", null, ENV, "first-value", 1L);
+            Map<String, DictionaryProperty> properties = new HashMap<>(dictionary.getProperties());
+            properties.put("VALUELESS_PROP", new DictionaryProperty(null, false));
+            dictionary.setProperties(properties);
+
+            cut.deploy(dictionary);
+
+            assertThat(property(ENV, "idp-server-details")).isEqualTo("first-value");
+            assertThat(cut.getDictionaries(ENV).get("idp-server-details")).doesNotContainKey("VALUELESS_PROP");
+        }
+
+        @Test
+        void should_deploy_without_throwing_when_a_property_value_is_null() {
+            Dictionary dictionary = dictionary("idp-server-details", null, ENV, "first-value", 1L);
+            Map<String, DictionaryProperty> properties = new HashMap<>(dictionary.getProperties());
+            properties.put("NULL_PROP", null);
+            dictionary.setProperties(properties);
+
+            cut.deploy(dictionary);
+
+            assertThat(property(ENV, "idp-server-details")).isEqualTo("first-value");
+            assertThat(cut.getDictionaries(ENV).get("idp-server-details")).doesNotContainKey("NULL_PROP");
+        }
+    }
+
+    @Nested
+    class EncryptionTest {
+
+        @Test
+        void should_decrypt_an_encrypted_property_so_that_el_sees_plaintext() throws GeneralSecurityException {
+            String ciphertext = DATA_ENCRYPTOR.encrypt("s3cr3t-api-key");
+
+            cut.deploy(dictionary(Map.of("MY_PROP", new DictionaryProperty(ciphertext, true))));
+
+            assertThat(property(ENV, "idp-server-details")).isEqualTo("s3cr3t-api-key");
+        }
+
+        @Test
+        void should_leave_a_plaintext_property_untouched() {
+            cut.deploy(dictionary(Map.of("MY_PROP", new DictionaryProperty("not-a-secret", false))));
+
+            assertThat(property(ENV, "idp-server-details")).isEqualTo("not-a-secret");
+        }
+
+        @Test
+        void should_keep_the_stored_value_when_a_property_cannot_be_decrypted() {
+            cut.deploy(dictionary(Map.of("MY_PROP", new DictionaryProperty("***", true))));
+
+            assertThat(property(ENV, "idp-server-details")).isEqualTo("***");
+        }
+
+        @Test
+        void should_resolve_a_decrypted_value_through_the_dictionaries_el_variable() throws GeneralSecurityException {
+            cut.deploy(dictionary(Map.of("MY_PROP", new DictionaryProperty(DATA_ENCRYPTOR.encrypt("s3cr3t-api-key"), true))));
+
+            TemplateEngine engine = TemplateEngine.templateEngine();
+            new EnvironmentDictionaryTemplateVariableProvider(ENV, cut).provide(engine.getTemplateContext());
+
+            assertThat(engine.getValue("{#dictionaries['idp-server-details']['MY_PROP']}", String.class)).isEqualTo("s3cr3t-api-key");
+        }
+
+        @Test
+        void should_deploy_the_other_properties_when_one_cannot_be_decrypted() throws GeneralSecurityException {
+            Map<String, DictionaryProperty> properties = new HashMap<>();
+            properties.put("MY_PROP", new DictionaryProperty(DATA_ENCRYPTOR.encrypt("s3cr3t-api-key"), true));
+            properties.put("BROKEN", new DictionaryProperty("***", true));
+            properties.put("PLAIN", new DictionaryProperty("not-a-secret", false));
+
+            cut.deploy(dictionary(properties));
+
+            assertThat(cut.getDictionaries(ENV).get("idp-server-details")).containsOnly(
+                entry("MY_PROP", "s3cr3t-api-key"),
+                entry("BROKEN", "***"),
+                entry("PLAIN", "not-a-secret")
+            );
         }
     }
 
@@ -145,6 +237,12 @@ class MultiEnvironmentDictionaryManagerTest {
         return envValues.get(runtimeKey).get("MY_PROP");
     }
 
+    private static Dictionary dictionary(Map<String, DictionaryProperty> properties) {
+        Dictionary dictionary = dictionary("idp-server-details", null, ENV, "unused", 1L);
+        dictionary.setProperties(properties);
+        return dictionary;
+    }
+
     private static Dictionary dictionary(String id, String key, String environmentId, String propertyValue, long deployedAt) {
         Dictionary dictionary = new Dictionary();
         dictionary.setId(id);
@@ -152,7 +250,7 @@ class MultiEnvironmentDictionaryManagerTest {
         dictionary.setEnvironmentId(environmentId);
         dictionary.setName(id);
         dictionary.setDeployedAt(new Date(deployedAt));
-        dictionary.setProperties(Map.of("MY_PROP", propertyValue));
+        dictionary.setProperties(Map.of("MY_PROP", new DictionaryProperty(propertyValue, false)));
         return dictionary;
     }
 }

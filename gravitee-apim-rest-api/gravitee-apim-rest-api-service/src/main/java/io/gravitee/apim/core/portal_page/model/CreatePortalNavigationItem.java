@@ -37,11 +37,13 @@ public final class CreatePortalNavigationItem {
     private PortalArea area;
 
     @Builder.Default
-    private NavigationItemReference reference = NavigationItemReference.DEFAULT;
+    private NavigationItemReference reference = NavigationItemReference.defaultReference();
 
     private Integer order;
     private PortalNavigationItemType type;
     private PortalNavigationItemId parentId;
+    /** Server-resolved display parent, retained for validation when parentId is normalized to the API documentation root. */
+    private PortalNavigationItemId renderedParentId;
     private PortalPageContentId portalPageContentId;
 
     @NotNull

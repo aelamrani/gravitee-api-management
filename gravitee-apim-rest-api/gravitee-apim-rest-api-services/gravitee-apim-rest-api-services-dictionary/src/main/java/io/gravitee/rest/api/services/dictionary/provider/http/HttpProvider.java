@@ -56,6 +56,8 @@ public class HttpProvider implements Provider {
 
     private Node node;
 
+    private String organizationId;
+
     public HttpProvider(final HttpProviderConfiguration configuration) {
         Objects.requireNonNull(configuration, "Configuration must not be null");
         this.configuration = configuration;
@@ -69,9 +71,15 @@ public class HttpProvider implements Provider {
         try {
             URL requestUrl = new URL(configuration.getUrl());
 
-            final HttpClient httpClient = httpClientService.createHttpClient(requestUrl.getProtocol(), configuration.isUseSystemProxy());
+            final HttpClient httpClient = httpClientService.createHttpClient(
+                organizationId,
+                requestUrl.getProtocol(),
+                configuration.isUseSystemProxy()
+            );
 
-            final int port = requestUrl.getPort() != -1 ? requestUrl.getPort() : (HTTPS_SCHEME.equals(requestUrl.getProtocol()) ? 443 : 80);
+            final int port = requestUrl.getPort() != -1
+                ? requestUrl.getPort()
+                : (HTTPS_SCHEME.equalsIgnoreCase(requestUrl.getProtocol()) ? 443 : 80);
 
             String relativeUri = (requestUrl.getQuery() == null)
                 ? requestUrl.getPath()
@@ -98,9 +106,6 @@ public class HttpProvider implements Provider {
                         @Override
                         public void handle(Throwable event) {
                             promise.fail(event);
-
-                            // Close client
-                            httpClient.close();
                         }
                     }
                 )
@@ -114,22 +119,13 @@ public class HttpProvider implements Provider {
                                     if (response.statusCode() == HttpStatusCode.OK_200) {
                                         response.bodyHandler(buffer -> {
                                             promise.complete(buffer);
-
-                                            // Close client
-                                            httpClient.close();
                                         });
                                     } else {
                                         promise.complete(null);
-
-                                        // Close client
-                                        httpClient.close();
                                     }
                                 })
                                 .onFailure(throwable -> {
                                     promise.fail(throwable);
-
-                                    // Close client
-                                    httpClient.close();
                                 });
 
                             if (!StringUtils.isEmpty(configuration.getBody())) {
@@ -176,5 +172,12 @@ public class HttpProvider implements Provider {
 
     public void setNode(Node node) {
         this.node = node;
+    }
+
+    /**
+     * The organization owning the dictionary, so that its endpoint is called with the client of that organization.
+     */
+    public void setOrganizationId(String organizationId) {
+        this.organizationId = organizationId;
     }
 }

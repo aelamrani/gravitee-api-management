@@ -140,6 +140,10 @@ jest.mock('../../../services/entrypoints', () => ({
     updateApiListeners: jest.fn(),
 }));
 
+jest.mock('../../../services/apiProxy', () => ({
+    verifyApiHosts: jest.fn(() => Promise.resolve({ ok: true })),
+}));
+
 jest.mock('../../../utils/queryKeys', () => ({
     apiDetailKeys: {
         all: ['api-detail'],
@@ -153,6 +157,7 @@ jest.mock('../../../utils/queryKeys', () => ({
 
 import { ApiEntrypointsPage } from './ApiEntrypointsPage';
 import { useApiDetailContext } from '../../../context/ApiDetailContext';
+import { verifyApiHosts } from '../../../services/apiProxy';
 import { getExposedEntrypoints, updateApiListeners } from '../../../services/entrypoints';
 
 const mockUseEnvironment = useEnvironment as jest.Mock;
@@ -160,6 +165,7 @@ const mockUseHasPermission = useHasPermission as jest.Mock;
 const mockUseApiDetailContext = useApiDetailContext as jest.Mock;
 const mockGetExposedEntrypoints = getExposedEntrypoints as jest.Mock;
 const mockUpdateApiListeners = updateApiListeners as jest.Mock;
+const mockVerifyApiHosts = verifyApiHosts as jest.Mock;
 
 const API_WITH_PATHS = {
     id: 'api-1',
@@ -230,6 +236,7 @@ describe('ApiEntrypointsPage', () => {
         mockUseApiDetailContext.mockReturnValue({ api: API_WITH_PATHS, isLoading: false, permissionsReady: true });
         mockGetExposedEntrypoints.mockResolvedValue([{ value: 'http://localhost:8080/boarding' }]);
         mockUpdateApiListeners.mockResolvedValue(API_WITH_PATHS);
+        mockVerifyApiHosts.mockResolvedValue({ ok: true });
     });
 
     afterEach(() => jest.clearAllMocks());
@@ -319,6 +326,28 @@ describe('ApiEntrypointsPage', () => {
         );
     });
 
+    it('shows virtual hosts when the host is stored on the listener path', () => {
+        mockUseApiDetailContext.mockReturnValue({
+            api: {
+                id: 'api-1',
+                name: 'VH API',
+                listeners: [
+                    {
+                        type: 'HTTP' as const,
+                        paths: [{ host: 'vh-parity.example.com', path: '/zz-parity-vhost/', overrideAccess: false }],
+                        entrypoints: [{ type: 'http-proxy' }],
+                    },
+                ],
+            },
+            isLoading: false,
+            permissionsReady: true,
+        });
+        renderPage();
+        expect(screen.getByDisplayValue('vh-parity.example.com')).toBeInTheDocument();
+        expect(screen.getByDisplayValue('/zz-parity-vhost/')).toBeInTheDocument();
+        expect(screen.queryByText(/entrypoint context-paths/i)).not.toBeInTheDocument();
+    });
+
     it('shows virtual hosts card when API is in virtual host mode', () => {
         mockUseApiDetailContext.mockReturnValue({ api: API_WITH_VIRTUAL_HOSTS, isLoading: false, permissionsReady: true });
         renderPage();
@@ -345,6 +374,25 @@ describe('ApiEntrypointsPage', () => {
         expect(screen.getByText(/entrypoint context-paths/i)).toBeInTheDocument();
     });
 
+    it('keeps every existing context path as a virtual host row when virtual hosts are enabled', () => {
+        mockUseApiDetailContext.mockReturnValue({
+            api: {
+                id: 'api-1',
+                name: 'Multi path API',
+                listeners: [{ type: 'HTTP', paths: [{ path: '/orders' }, { path: '/invoices' }], hosts: [], entrypoints: [] }],
+            },
+            isLoading: false,
+            permissionsReady: true,
+        });
+        renderPage();
+
+        fireEvent.click(screen.getByRole('checkbox', { name: /enable virtual hosts/i }));
+
+        const paths = screen.getAllByRole('textbox', { name: /context path/i }).map(input => (input as HTMLInputElement).value);
+        expect(paths).toEqual(['/orders', '/invoices']);
+        expect(screen.getAllByRole('textbox', { name: /virtual host/i })).toHaveLength(2);
+    });
+
     // ── TCP entrypoints ────────────────────────────────────────────────────────
 
     describe('tcp-proxy entrypoints', () => {
@@ -360,9 +408,25 @@ describe('ApiEntrypointsPage', () => {
             expect(screen.queryByText(/why configure entrypoints/i)).not.toBeInTheDocument();
         });
 
+        it('loads and shows exposed entrypoints for TCP APIs', async () => {
+            mockGetExposedEntrypoints.mockResolvedValue([{ value: 'aaa:4082' }]);
+            renderPage('api-2');
+
+            expect(mockGetExposedEntrypoints).toHaveBeenCalledWith('DEFAULT', 'api-2');
+            expect(await screen.findByText('aaa:4082')).toBeInTheDocument();
+            expect(screen.getByText(/exposed entrypoints/i)).toBeInTheDocument();
+        });
+
         it('seeds the host input from the existing TCP listener', () => {
             renderPage('api-2');
             expect(screen.getByRole('textbox', { name: /^host$/i })).toHaveValue('tcp.example.com');
+        });
+
+        it('does not verify a host that was loaded from the API', async () => {
+            renderPage('api-2');
+            expect(screen.getByRole('textbox', { name: /^host$/i })).toHaveValue('tcp.example.com');
+            await waitFor(() => expect(mockGetExposedEntrypoints).toHaveBeenCalled());
+            expect(mockVerifyApiHosts).not.toHaveBeenCalled();
         });
 
         it('adds a new empty host row when "Add host" is clicked', () => {
@@ -380,14 +444,27 @@ describe('ApiEntrypointsPage', () => {
             renderPage('api-2');
 
             fireEvent.change(screen.getByRole('textbox', { name: /^host$/i }), { target: { value: 'new-tcp.example.com' } });
+            await waitFor(() => expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled());
             fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
 
             await waitFor(() => expect(mockUpdateApiListeners).toHaveBeenCalledTimes(1));
+            expect(mockVerifyApiHosts).toHaveBeenCalledWith('DEFAULT', 'TCP', ['new-tcp.example.com'], 'api-2');
 
             const [, , , listeners] = mockUpdateApiListeners.mock.calls[0];
             expect(listeners).toEqual([
                 expect.objectContaining({ type: 'TCP', hosts: ['new-tcp.example.com'], entrypoints: [{ type: 'tcp-proxy' }] }),
             ]);
+        });
+
+        it('keeps Save disabled and shows the reason when another API already uses the host', async () => {
+            mockVerifyApiHosts.mockResolvedValue({ ok: false, reason: 'Host already exists' });
+            renderPage('api-2');
+
+            fireEvent.change(screen.getByRole('textbox', { name: /^host$/i }), { target: { value: 'taken.example.com' } });
+
+            expect(await screen.findByText('Host already exists')).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+            expect(mockUpdateApiListeners).not.toHaveBeenCalled();
         });
     });
 

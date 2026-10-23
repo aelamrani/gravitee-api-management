@@ -51,16 +51,19 @@ public class HttpProvider implements Provider {
     private final JoltMapper mapper;
     private final HttpClientService httpClientService;
     private final Node node;
+    private final String organizationId;
 
     public HttpProvider(
         final DynamicPropertyProviderConfiguration dpConfiguration,
         final HttpClientService httpClientService,
-        final Node node
+        final Node node,
+        final String organizationId
     ) {
         this.dpConfiguration = (HttpDynamicPropertyProviderConfiguration) dpConfiguration;
         this.mapper = new JoltMapper(this.dpConfiguration.getSpecification());
         this.httpClientService = httpClientService;
         this.node = node;
+        this.organizationId = organizationId;
     }
 
     @Override
@@ -75,10 +78,12 @@ public class HttpProvider implements Provider {
             }
 
             final io.vertx.rxjava3.core.http.HttpClient httpClient = HttpClient.newInstance(
-                httpClientService.createHttpClient(requestUrl.getProtocol(), dpConfiguration.isUseSystemProxy())
+                httpClientService.createHttpClient(organizationId, requestUrl.getProtocol(), dpConfiguration.isUseSystemProxy())
             );
 
-            final int port = requestUrl.getPort() != -1 ? requestUrl.getPort() : (HTTPS_SCHEME.equals(requestUrl.getProtocol()) ? 443 : 80);
+            final int port = requestUrl.getPort() != -1
+                ? requestUrl.getPort()
+                : (HTTPS_SCHEME.equalsIgnoreCase(requestUrl.getProtocol()) ? 443 : 80);
 
             String relativeUri = (requestUrl.getQuery() == null)
                 ? requestUrl.getPath()
@@ -116,8 +121,7 @@ public class HttpProvider implements Provider {
                 .filter(response -> response.statusCode() == HttpStatusCode.OK_200)
                 .flatMap(response -> response.rxBody().toMaybe())
                 .observeOn(Schedulers.computation())
-                .map(buffer -> mapper.map(buffer.toString()))
-                .doFinally(httpClient::close);
+                .map(buffer -> mapper.map(buffer.toString()));
         });
     }
 

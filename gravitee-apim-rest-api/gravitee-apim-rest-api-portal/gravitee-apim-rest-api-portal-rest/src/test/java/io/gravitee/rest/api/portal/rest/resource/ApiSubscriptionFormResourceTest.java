@@ -91,6 +91,7 @@ class ApiSubscriptionFormResourceTest extends AbstractResourceTest {
     @Test
     void should_return_200_with_subscription_form_and_resolved_options() {
         var form = SubscriptionFormFixtures.aSubscriptionFormBuilder()
+            .apiIds(List.of(API_ID))
             .environmentId(ENV_ID)
             .enabled(true)
             .gmdContent(GraviteeMarkdown.of("<gmd-select fieldKey=\"env\" options=\"{#api.metadata['envs']}:Prod,Test\"/>"))
@@ -134,7 +135,7 @@ class ApiSubscriptionFormResourceTest extends AbstractResourceTest {
                     .build()
             )
         );
-        var form = SubscriptionFormFixtures.aSubscriptionFormBuilder().environmentId(ENV_ID).enabled(true).build();
+        var form = SubscriptionFormFixtures.aSubscriptionFormBuilder().apiIds(List.of(API_ID)).environmentId(ENV_ID).enabled(true).build();
         subscriptionFormQueryService.initWith(List.of(form));
 
         Response response = target(API_ID + "/subscription-form").request().get();
@@ -148,7 +149,7 @@ class ApiSubscriptionFormResourceTest extends AbstractResourceTest {
 
     @Test
     void should_return_404_when_form_disabled() {
-        var form = SubscriptionFormFixtures.aSubscriptionFormBuilder().environmentId(ENV_ID).enabled(false).build();
+        var form = SubscriptionFormFixtures.aSubscriptionFormBuilder().apiIds(List.of(API_ID)).environmentId(ENV_ID).enabled(false).build();
         subscriptionFormQueryService.initWith(List.of(form));
 
         Response response = target(API_ID + "/subscription-form").request().get();
@@ -159,6 +160,7 @@ class ApiSubscriptionFormResourceTest extends AbstractResourceTest {
     @Test
     void should_return_fallback_options_when_el_resolver_has_no_resolved_values() {
         var form = SubscriptionFormFixtures.aSubscriptionFormBuilder()
+            .apiIds(List.of(API_ID))
             .environmentId(ENV_ID)
             .enabled(true)
             .gmdContent(GraviteeMarkdown.of("<gmd-select fieldKey=\"plan\" options=\"{#api.metadata['plans']}:Free,Pro\"/>"))

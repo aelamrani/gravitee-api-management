@@ -20,6 +20,8 @@ import static io.gravitee.rest.api.model.api.ApiLifecycleState.CREATED;
 import static org.apache.commons.lang3.StringUtils.isBlank;
 
 import io.gravitee.apim.core.api_product.query_service.ApiProductQueryService;
+import io.gravitee.apim.core.cluster.domain_service.ValidateKafkaClusterBindingDomainService;
+import io.gravitee.apim.core.flow.domain_service.ApiResourceNames;
 import io.gravitee.apim.core.flow.domain_service.FlowValidationDomainService;
 import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.definition.model.v4.ApiType;
@@ -61,6 +63,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 import lombok.CustomLog;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 /**
@@ -83,6 +86,7 @@ public class ApiValidationServiceImpl extends TransactionalService implements Ap
     private final ApiServicePluginService apiServicePluginService;
     private final FlowValidationDomainService flowValidationDomainService;
     private final ApiProductQueryService apiProductQueryService;
+    private final ValidateKafkaClusterBindingDomainService validateKafkaClusterBindingDomainService;
 
     public ApiValidationServiceImpl(
         final TagsValidationService tagsValidationService,
@@ -96,7 +100,8 @@ public class ApiValidationServiceImpl extends TransactionalService implements Ap
         final PlanValidationService planValidationService,
         ApiServicePluginService apiServicePluginService,
         FlowValidationDomainService flowValidationDomainService,
-        ApiProductQueryService apiProductQueryService
+        ApiProductQueryService apiProductQueryService,
+        @Lazy ValidateKafkaClusterBindingDomainService validateKafkaClusterBindingDomainService
     ) {
         this.tagsValidationService = tagsValidationService;
         this.groupValidationService = groupValidationService;
@@ -110,6 +115,7 @@ public class ApiValidationServiceImpl extends TransactionalService implements Ap
         this.apiServicePluginService = apiServicePluginService;
         this.flowValidationDomainService = flowValidationDomainService;
         this.apiProductQueryService = apiProductQueryService;
+        this.validateKafkaClusterBindingDomainService = validateKafkaClusterBindingDomainService;
     }
 
     @Override
@@ -141,6 +147,7 @@ public class ApiValidationServiceImpl extends TransactionalService implements Ap
         newApiEntity.setEndpointGroups(
             endpointGroupsValidationService.validateAndSanitizeHttpV4(newApiEntity.getType(), newApiEntity.getEndpointGroups())
         );
+        validateKafkaClusterBindingDomainService.validate(executionContext.getEnvironmentId(), newApiEntity.getEndpointGroups());
         // Validate and clean logging
         newApiEntity.setAnalytics(
             analyticsValidationService.validateAndSanitize(executionContext, newApiEntity.getType(), newApiEntity.getAnalytics())
@@ -198,17 +205,28 @@ public class ApiValidationServiceImpl extends TransactionalService implements Ap
         updateApiEntity.setEndpointGroups(
             endpointGroupsValidationService.validateAndSanitizeHttpV4(updateApiEntity.getType(), updateApiEntity.getEndpointGroups())
         );
+        validateKafkaClusterBindingDomainService.validate(executionContext.getEnvironmentId(), updateApiEntity.getEndpointGroups());
         // Validate and clean logging
         updateApiEntity.setAnalytics(
             analyticsValidationService.validateAndSanitize(executionContext, updateApiEntity.getType(), updateApiEntity.getAnalytics())
         );
         // Validate and clean flow
         updateApiEntity.setFlows(
-            flowValidationDomainService.validateAndSanitizeHttpV4(updateApiEntity.getType(), updateApiEntity.getFlows())
+            flowValidationDomainService.validateAndSanitizeHttpV4(
+                updateApiEntity.getType(),
+                updateApiEntity.getFlows(),
+                ApiResourceNames.from(updateApiEntity.getResources())
+            )
         );
 
         // Validate and clean plans
-        updateApiEntity.setPlans(planValidationService.validateAndSanitize(updateApiEntity.getType(), updateApiEntity.getPlans()));
+        updateApiEntity.setPlans(
+            planValidationService.validateAndSanitize(
+                updateApiEntity.getType(),
+                updateApiEntity.getPlans(),
+                ApiResourceNames.from(updateApiEntity.getResources())
+            )
+        );
 
         // Validate path parameters
         flowValidationDomainService.validatePathParameters(
@@ -259,15 +277,28 @@ public class ApiValidationServiceImpl extends TransactionalService implements Ap
         apiEntity.setEndpointGroups(
             endpointGroupsValidationService.validateAndSanitizeHttpV4(apiEntity.getType(), apiEntity.getEndpointGroups())
         );
+        validateKafkaClusterBindingDomainService.validate(executionContext.getEnvironmentId(), apiEntity.getEndpointGroups());
         // Validate and clean logging
         apiEntity.setAnalytics(
             analyticsValidationService.validateAndSanitize(executionContext, apiEntity.getType(), apiEntity.getAnalytics())
         );
         // Validate and clean flow
-        apiEntity.setFlows(flowValidationService.validateAndSanitize(apiEntity.getType(), apiEntity.getFlows()));
+        apiEntity.setFlows(
+            flowValidationService.validateAndSanitize(
+                apiEntity.getType(),
+                apiEntity.getFlows(),
+                ApiResourceNames.from(apiEntity.getResources())
+            )
+        );
 
         // Validate and clean plans
-        apiEntity.setPlans(planValidationService.validateAndSanitize(apiEntity.getType(), apiEntity.getPlans()));
+        apiEntity.setPlans(
+            planValidationService.validateAndSanitize(
+                apiEntity.getType(),
+                apiEntity.getPlans(),
+                ApiResourceNames.from(apiEntity.getResources())
+            )
+        );
 
         // Validate path parameters
         flowValidationDomainService.validatePathParameters(

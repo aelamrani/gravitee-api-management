@@ -34,9 +34,17 @@ public class UpdateDictionaryEntity {
 
     private Map<String, String> properties;
 
+    /**
+     * Encryption options for the properties above, keyed by property key. A key omitted here keeps
+     * whatever classification it already has.
+     */
+    private Map<String, DictionaryPropertyOptions> propertyOptions;
+
     private DictionaryProviderEntity provider;
 
     private DictionaryTriggerEntity trigger;
+
+    private DictionaryEncryptionPolicyEntity encryption;
 
     public String getName() {
         return name;
@@ -70,6 +78,14 @@ public class UpdateDictionaryEntity {
         this.properties = properties;
     }
 
+    public Map<String, DictionaryPropertyOptions> getPropertyOptions() {
+        return propertyOptions;
+    }
+
+    public void setPropertyOptions(Map<String, DictionaryPropertyOptions> propertyOptions) {
+        this.propertyOptions = propertyOptions;
+    }
+
     public DictionaryProviderEntity getProvider() {
         return provider;
     }
@@ -84,6 +100,14 @@ public class UpdateDictionaryEntity {
 
     public void setTrigger(DictionaryTriggerEntity trigger) {
         this.trigger = trigger;
+    }
+
+    public DictionaryEncryptionPolicyEntity getEncryption() {
+        return encryption;
+    }
+
+    public void setEncryption(DictionaryEncryptionPolicyEntity encryption) {
+        this.encryption = encryption;
     }
 
     @Override

@@ -40,6 +40,7 @@ import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.ApiProductsRepository;
 import io.gravitee.repository.management.api.ApiRepository;
 import io.gravitee.repository.management.api.ApplicationRepository;
+import io.gravitee.repository.management.api.ClusterRepository;
 import io.gravitee.repository.management.api.CommandRepository;
 import io.gravitee.repository.management.api.IntegrationRepository;
 import io.gravitee.repository.management.api.MembershipRepository;
@@ -130,7 +131,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.CustomLog;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
@@ -188,6 +188,7 @@ public class MembershipServiceImpl extends AbstractService implements Membership
     private final ParameterService parameterService;
 
     private final IntegrationRepository integrationRepository;
+    private final ClusterRepository clusterRepository;
     private final Node node;
     private final ObjectMapper objectMapper;
     private final CommandRepository commandRepository;
@@ -222,7 +223,8 @@ public class MembershipServiceImpl extends AbstractService implements Membership
         @Autowired @Lazy CommandRepository commandRepository,
         @Autowired @Lazy ApiMetadataService apiMetadataService,
         @Autowired @Lazy SearchEngineService searchEngineService,
-        @Autowired @Lazy ApiProductGroupService apiProductGroupService
+        @Autowired @Lazy ApiProductGroupService apiProductGroupService,
+        @Autowired @Lazy ClusterRepository clusterRepository
     ) {
         this.identityService = identityService;
         this.userService = userService;
@@ -249,6 +251,7 @@ public class MembershipServiceImpl extends AbstractService implements Membership
         this.apiMetadataService = apiMetadataService;
         this.searchEngineService = searchEngineService;
         this.apiProductGroupService = apiProductGroupService;
+        this.clusterRepository = clusterRepository;
     }
 
     @Override
@@ -490,7 +493,7 @@ public class MembershipServiceImpl extends AbstractService implements Membership
         }
     }
 
-    private static @NotNull InvalidateRoleCacheCommandEntity getEventData(
+    private static InvalidateRoleCacheCommandEntity getEventData(
         String referenceType,
         String referenceId,
         String memberType,
@@ -1352,6 +1355,15 @@ public class MembershipServiceImpl extends AbstractService implements Membership
     }
 
     @Override
+    public Set<String> getRoleIdsByMember(MembershipMemberType memberType, String memberId) {
+        try {
+            return membershipRepository.findRoleIdsByMemberIdAndMemberType(memberId, convert(memberType));
+        } catch (TechnicalException ex) {
+            throw new TechnicalManagementException("An error occurs while trying to get the roles held by " + memberId, ex);
+        }
+    }
+
+    @Override
     public Set<MembershipEntity> getMembershipsByMemberAndReference(
         MembershipMemberType memberType,
         String memberId,
@@ -1601,6 +1613,10 @@ public class MembershipServiceImpl extends AbstractService implements Membership
                     .findByIntegrationId(referenceId)
                     .orElseThrow(() -> new ApplicationNotFoundException(referenceId))
                     .getGroups();
+                case CLUSTER -> clusterRepository
+                    .findById(referenceId)
+                    .map(c -> c.getGroups())
+                    .orElse(Set.of());
                 default -> Set.of();
             };
 

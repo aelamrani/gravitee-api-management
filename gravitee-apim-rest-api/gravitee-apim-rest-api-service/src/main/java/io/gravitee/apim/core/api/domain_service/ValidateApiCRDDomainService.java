@@ -16,15 +16,20 @@
 package io.gravitee.apim.core.api.domain_service;
 
 import io.gravitee.apim.core.DomainService;
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
+import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.crd.ApiCRDSpec;
+import io.gravitee.apim.core.api.query_service.ApiQueryService;
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.category.domain_service.ValidateCategoryIdsDomainService;
 import io.gravitee.apim.core.documentation.domain_service.ValidatePagesDomainService;
 import io.gravitee.apim.core.documentation.model.factory.PageModelFactory;
+import io.gravitee.apim.core.exception.ValidationDomainException;
 import io.gravitee.apim.core.flow.domain_service.FlowValidationDomainService;
 import io.gravitee.apim.core.flow.exception.InvalidFlowException;
 import io.gravitee.apim.core.group.domain_service.ValidateGroupsDomainService;
 import io.gravitee.apim.core.group.model.Group;
+import io.gravitee.apim.core.member.domain_service.CRDMembersDomainService;
 import io.gravitee.apim.core.member.domain_service.ValidateCRDMembersDomainService;
 import io.gravitee.apim.core.member.model.MembershipReferenceType;
 import io.gravitee.apim.core.notification.domain_service.ValidatePortalNotificationDomainService;
@@ -72,8 +77,17 @@ public class ValidateApiCRDDomainService implements Validator<ValidateApiCRDDoma
 
     private final ValidateHealthCheckScheduleDomainService healthCheckScheduleValidator;
 
+    private final ApiQueryService apiQueryService;
+
+    private final PropertyDomainService propertyDomainService;
+
+    private final CRDMembersDomainService membersDomainService;
+
     @Override
     public Validator.Result<ValidateApiCRDDomainService.Input> validateAndSanitize(ValidateApiCRDDomainService.Input input) {
+        var existingApi = apiQueryService.findByEnvironmentIdAndCrossId(input.auditInfo().environmentId(), input.spec().getCrossId());
+        existingApi.ifPresent(api -> validateAgainstExistingApi(api, input.spec()));
+
         var errors = new ArrayList<Error>();
 
         var sanitizedBuilder = input.spec().toBuilder();
@@ -101,7 +115,8 @@ public class ValidateApiCRDDomainService implements Validator<ValidateApiCRDDoma
             .validateAndSanitize(
                 new ValidateGroupsDomainService.Input(
                     input.auditInfo.environmentId(),
-                    input.spec().getGroups(),
+                    // ignoreGroups: validate nothing that will not be applied; default groups are still injected on create
+                    input.spec().isIgnoreGroups() ? null : input.spec().getGroups(),
                     input.spec().getDefinitionVersion(),
                     input.spec().getDefinitionContext() != null ? input.spec().getDefinitionContext().getOrigin() : null,
                     Group.GroupEvent.API_CREATE,
@@ -148,7 +163,27 @@ public class ValidateApiCRDDomainService implements Validator<ValidateApiCRDDoma
             )
             .peek(sanitized -> sanitizedBuilder.plans(sanitized.plans()), errors::addAll);
 
-        return Validator.Result.ofBoth(new ValidateApiCRDDomainService.Input(input.auditInfo(), sanitizedBuilder.build()), errors);
+        var sanitizedSpec = sanitizedBuilder.build();
+        // Checked here, after the members are sanitized, so a dry run refuses what the import would refuse
+        existingApi.ifPresent(api ->
+            membersDomainService.checkApiMembersUpdate(input.auditInfo(), api.getId(), sanitizedSpec.getMembers())
+        );
+
+        return Validator.Result.ofBoth(new ValidateApiCRDDomainService.Input(input.auditInfo(), sanitizedSpec), errors);
+    }
+
+    private void validateAgainstExistingApi(Api existingApi, ApiCRDSpec spec) {
+        rejectAnotherApiId(existingApi, spec);
+        propertyDomainService.validateClassification(existingApi.getApiDefinitionValue(), spec.getProperties());
+    }
+
+    // An import updates the API found by cross id: every write must target that same API
+    private static void rejectAnotherApiId(Api existingApi, ApiCRDSpec spec) {
+        if (spec.getId() != null && !spec.getId().equals(existingApi.getId())) {
+            throw new ValidationDomainException(
+                String.format("API id [%s] does not match the API with cross id [%s]", spec.getId(), spec.getCrossId())
+            );
+        }
     }
 
     private void validateAndSanitizeHttpV4ForCreation(Input input, ApiCRDSpec.ApiCRDSpecBuilder sanitizedBuilder, ArrayList<Error> errors) {

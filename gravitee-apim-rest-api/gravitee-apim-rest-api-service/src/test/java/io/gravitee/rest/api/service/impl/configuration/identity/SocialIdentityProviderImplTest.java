@@ -86,7 +86,7 @@ class SocialIdentityProviderImplTest {
     }
 
     @ParameterizedTest
-    @CsvSource({ "client_secret_basic, CLIENT_SECRET_BASIC", "client_secret_post, CLIENT_SECRET_POST" })
+    @CsvSource({ "client_secret_basic, CLIENT_SECRET_BASIC", "client_secret_post, CLIENT_SECRET_POST", "none, NONE" })
     void should_resolve_the_configured_client_authentication_method(String configured, ClientAuthenticationMethod expected) {
         configuration.put("tokenEndpointAuthMethod", configured);
 
@@ -94,12 +94,12 @@ class SocialIdentityProviderImplTest {
     }
 
     @Test
-    void should_leave_the_method_unset_when_the_provider_declares_none() {
+    void should_leave_the_method_unset_when_the_provider_declares_no_method() {
         assertThat(findProvider().getTokenEndpointAuthMethod()).isNull();
     }
 
     @ParameterizedTest
-    @ValueSource(strings = { "client_secret_jwt", "none", "typo", "  " })
+    @ValueSource(strings = { "client_secret_jwt", "private_key_jwt", "typo", "  " })
     void should_fall_back_to_the_endpoint_defaults_on_an_unusable_value(String configured) {
         configuration.put("tokenEndpointAuthMethod", configured);
 
@@ -159,7 +159,11 @@ class SocialIdentityProviderImplTest {
     void find_by_id_should_return_enabled_idp_for_organization_target() {
         givenActivatedIdp(ORGANIZATION_TARGET, googleIdp("enabled-idp", "Enabled", true));
 
-        assertThat(socialIdentityProvider.findById("enabled-idp", ORGANIZATION_TARGET).getId()).isEqualTo("enabled-idp");
+        SocialIdentityProviderEntity result = socialIdentityProvider.findById("enabled-idp", ORGANIZATION_TARGET);
+
+        assertThat(result.getId()).isEqualTo("enabled-idp");
+        // Login still reads the secret in-process even though Management API responses omit it.
+        assertThat(result.getClientSecret()).isEqualTo("client-secret");
     }
 
     @Test

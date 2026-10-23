@@ -17,13 +17,16 @@ package io.gravitee.apim.rest.api.automation.resource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.InstanceOfAssertFactories.MAP;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.gravitee.apim.core.api.model.crd.ApiCRDSpec;
@@ -31,6 +34,7 @@ import io.gravitee.apim.core.api.model.crd.PageCRD;
 import io.gravitee.apim.core.api.model.crd.PlanCRD;
 import io.gravitee.apim.core.api.use_case.ExportApiCRDUseCase;
 import io.gravitee.apim.core.audit.model.AuditInfo;
+import io.gravitee.apim.core.exception.TechnicalDomainException;
 import io.gravitee.apim.core.shared_policy_group.model.SharedPolicyGroupPolicyPlugin;
 import io.gravitee.apim.rest.api.automation.helpers.HRIDHelper;
 import io.gravitee.apim.rest.api.automation.model.ApiV4State;
@@ -38,9 +42,23 @@ import io.gravitee.apim.rest.api.automation.model.PlanSecurityType;
 import io.gravitee.apim.rest.api.automation.model.PlanV4;
 import io.gravitee.apim.rest.api.automation.model.StepV4;
 import io.gravitee.apim.rest.api.automation.resource.base.AbstractResourceTest;
+import io.gravitee.definition.model.Cors;
+import io.gravitee.definition.model.RequestValidation;
+import io.gravitee.definition.model.v4.analytics.Analytics;
+import io.gravitee.definition.model.v4.analytics.tracing.MaskingType;
+import io.gravitee.definition.model.v4.analytics.tracing.Tracing;
+import io.gravitee.definition.model.v4.analytics.tracing.TracingMaskingStrategy;
+import io.gravitee.definition.model.v4.analytics.tracing.TracingRedactionConfig;
+import io.gravitee.definition.model.v4.analytics.tracing.TracingRedactionRule;
+import io.gravitee.definition.model.v4.failover.Failover;
 import io.gravitee.definition.model.v4.flow.Flow;
 import io.gravitee.definition.model.v4.flow.step.Step;
+import io.gravitee.definition.model.v4.listener.entrypoint.Entrypoint;
+import io.gravitee.definition.model.v4.listener.http.HttpListener;
+import io.gravitee.definition.model.v4.listener.http.Path;
 import io.gravitee.definition.model.v4.plan.PlanSecurity;
+import io.gravitee.rest.api.model.permissions.RolePermission;
+import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
 import io.gravitee.rest.api.service.common.HRIDToUUID;
@@ -50,9 +68,14 @@ import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.MediaType;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Stream;
 import org.assertj.core.api.SoftAssertions;
 import org.assertj.core.groups.Tuple;
@@ -98,6 +121,70 @@ class ApiResourceTest extends AbstractResourceTest {
                     assertThat(state.getCrossId()).isEqualTo(API_CROSS_ID);
                     assertThat(state.getOrganizationId()).isEqualTo(ORGANIZATION);
                     assertThat(state.getEnvironmentId()).isEqualTo(ENVIRONMENT);
+                });
+            }
+        }
+
+        @Test
+        void should_get_listener_tracing_and_failover_settings() {
+            var maskingStrategy = new TracingMaskingStrategy();
+            maskingStrategy.setType(MaskingType.PARTIAL);
+            maskingStrategy.setReplacement("#");
+            maskingStrategy.setPrefixLength(7);
+            maskingStrategy.setSuffixLength(2);
+            var rule = new TracingRedactionRule();
+            rule.setAttributeNamePattern("http.request.header.authorization");
+            rule.setValuePattern("^Bearer ");
+            rule.setMaskingStrategy(maskingStrategy);
+            var redaction = new TracingRedactionConfig();
+            redaction.setDefaultReplacement("[MASKED]");
+            redaction.setRules(List.of(rule));
+            var tracing = new Tracing();
+            tracing.setEnabled(true);
+            tracing.setRedaction(redaction);
+            var spec = ApiCRDSpec.builder()
+                .id(API_ID)
+                .crossId(API_CROSS_ID)
+                .hrid(HRID)
+                .listeners(
+                    List.of(
+                        HttpListener.builder()
+                            .paths(List.of(Path.builder().path("/test-hrid").build()))
+                            .pathMappings(Set.of("/products/:productId"))
+                            .cors(Cors.builder().enabled(true).allowPrivateNetwork(true).build())
+                            .requestValidation(RequestValidation.builder().rejectNullByte(true).build())
+                            .entrypoints(List.of(Entrypoint.builder().type("http-proxy").build()))
+                            .build()
+                    )
+                )
+                .analytics(Analytics.builder().enabled(true).tracing(tracing).build())
+                .failover(
+                    Failover.builder().enabled(true).failureCondition("{#response.status >= 500}").forceNextEndpointOnFailure(true).build()
+                )
+                .build();
+
+            try (var ctx = mockStatic(GraviteeContext.class)) {
+                ctx.when(GraviteeContext::getExecutionContext).thenReturn(new ExecutionContext(ORGANIZATION, ENVIRONMENT));
+                when(exportApiCRDUseCase.execute(any(ExportApiCRDUseCase.Input.class))).thenReturn(new ExportApiCRDUseCase.Output(spec));
+
+                var state = expectEntity(HRID, false);
+
+                var listener = state.getListeners().getFirst().getHttpListener();
+                var stateRedaction = state.getAnalytics().getTracing().getRedaction();
+                var stateRule = stateRedaction.getRules().getFirst();
+                SoftAssertions.assertSoftly(soft -> {
+                    soft.assertThat(listener.getPathMappings()).containsExactly("/products/:productId");
+                    soft.assertThat(listener.getCors().getAllowPrivateNetwork()).isTrue();
+                    soft.assertThat(listener.getRequestValidation().getRejectNullByte()).isTrue();
+                    soft.assertThat(stateRedaction.getDefaultReplacement()).isEqualTo("[MASKED]");
+                    soft.assertThat(stateRule.getAttributeNamePattern()).isEqualTo("http.request.header.authorization");
+                    soft.assertThat(stateRule.getValuePattern()).isEqualTo("^Bearer ");
+                    soft.assertThat(stateRule.getMaskingStrategy().getType().getValue()).isEqualTo("PARTIAL");
+                    soft.assertThat(stateRule.getMaskingStrategy().getReplacement()).isEqualTo("#");
+                    soft.assertThat(stateRule.getMaskingStrategy().getPrefixLength()).isEqualTo(7);
+                    soft.assertThat(stateRule.getMaskingStrategy().getSuffixLength()).isEqualTo(2);
+                    soft.assertThat(state.getFailover().getFailureCondition()).isEqualTo("{#response.status >= 500}");
+                    soft.assertThat(state.getFailover().getForceNextEndpointOnFailure()).isTrue();
                 });
             }
         }
@@ -281,6 +368,49 @@ class ApiResourceTest extends AbstractResourceTest {
             expectNotFound("unknown");
         }
 
+        @ParameterizedTest
+        @MethodSource("setHridHeaderValues")
+        void should_never_export_an_api_the_caller_has_no_permission_on(List<String> setHridHeaderValues) throws Exception {
+            var uuid = UUID.randomUUID().toString();
+            var hridDerivedId = HRIDToUUID.api().context(auditInfo).hrid(uuid).id();
+            grantApiDefinitionOnlyOn(hridDerivedId);
+            when(exportApiCRDUseCase.execute(any(ExportApiCRDUseCase.Input.class))).thenReturn(
+                new ExportApiCRDUseCase.Output(ApiCRDSpec.builder().id(hridDerivedId).crossId(API_CROSS_ID).hrid(uuid).name("api").build())
+            );
+
+            // java.net.http sends each value on its own header line; the JAX-RS client would join them into one
+            var request = HttpRequest.newBuilder(rootTarget().path(uuid).getUri()).GET();
+            setHridHeaderValues.forEach(value -> request.header(HRIDHelper.HEADER_X_GRAVITEE_SET_HRID, value));
+            try (var client = HttpClient.newHttpClient()) {
+                var status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
+                assertThat(status).isIn(200, 403);
+            }
+
+            verify(exportApiCRDUseCase, never()).execute(argThat(input -> uuid.equals(input.apiId())));
+        }
+
+        @Test
+        void should_never_export_an_api_the_caller_has_no_permission_on_with_hrid_contains_uuid() {
+            var uuid = UUID.randomUUID().toString();
+            grantApiDefinitionOnlyOn(HRIDToUUID.api().context(auditInfo).hrid(uuid).id());
+
+            try (var response = rootTarget().queryParam("hridContainsUUID", true).path(uuid).request().get()) {
+                assertThat(response.getStatus()).isEqualTo(403);
+            }
+
+            verify(exportApiCRDUseCase, never()).execute(argThat(input -> uuid.equals(input.apiId())));
+        }
+
+        private static Stream<Arguments> setHridHeaderValues() {
+            return Stream.of(
+                Arguments.of(List.of()),
+                Arguments.of(List.of("true")),
+                Arguments.of(List.of("true", "true")),
+                Arguments.of(List.of("true", "false")),
+                Arguments.of(List.of("false", "true"))
+            );
+        }
+
         private void expectNotFound(String hrid) {
             try (var response = rootTarget().path(hrid).request().get()) {
                 assertThat(response.getStatus()).isEqualTo(404);
@@ -324,21 +454,21 @@ class ApiResourceTest extends AbstractResourceTest {
 
         @AfterEach
         void tearDown() {
-            reset(apiService);
+            reset(apiService, apiSearchServiceV4);
         }
 
         @Test
         void should_delete_api_and_return_no_content() {
             expectNoContent(HRID);
 
-            verify(apiService, atLeastOnce()).delete(any(), eq(HRIDToUUID.api().context(auditInfo).hrid(HRID).id()), eq(true));
+            verify(apiService).delete(any(), eq(HRIDToUUID.api().context(auditInfo).hrid(HRID).id()), eq(true));
         }
 
         @Test
         void should_delete_api_and_return_no_content_with_valid_guid() {
             expectNoContent(API_ID, true);
 
-            verify(apiService, atLeastOnce()).delete(any(), eq(API_ID), eq(true));
+            verify(apiService).delete(any(), eq(API_ID), eq(true));
         }
 
         @Test
@@ -346,6 +476,60 @@ class ApiResourceTest extends AbstractResourceTest {
             doThrow(new ApiNotFoundException("unknown")).when(apiService).delete(any(), any(), eq(true));
 
             expectNotFound("unknown");
+        }
+
+        @Test
+        void should_return_a_404_status_code_and_not_delete_an_api_outside_the_environment() {
+            when(
+                apiSearchServiceV4.findRepositoryApiById(
+                    argThat(executionContext -> ENVIRONMENT.equals(executionContext.getEnvironmentId())),
+                    eq(API_ID)
+                )
+            ).thenThrow(new ApiNotFoundException(API_ID));
+
+            try (var response = rootTarget().queryParam("hridContainsUUID", true).path(API_ID).request().delete()) {
+                assertThat(response.getStatus()).isEqualTo(404);
+            }
+            verify(apiService, never()).delete(any(), any(), anyBoolean());
+        }
+
+        @Test
+        void should_return_a_500_status_code_when_documentation_cleanup_fails() {
+            var apiId = HRIDToUUID.api().context(auditInfo).hrid(HRID).id();
+            doThrow(new TechnicalDomainException("Failed to clean up API documentation"))
+                .when(apiService)
+                .delete(any(), eq(apiId), eq(true));
+
+            try (var response = rootTarget().path(HRID).request().delete()) {
+                assertThat(response.getStatus()).isEqualTo(500);
+            }
+
+            verify(apiService).delete(any(), eq(apiId), eq(true));
+        }
+
+        @Test
+        void should_return_a_403_status_code_without_delete_permission() {
+            when(
+                permissionService.hasPermission(any(), eq(RolePermission.API_DEFINITION), any(), any(RolePermissionAction[].class))
+            ).thenReturn(false);
+
+            try (var response = rootTarget().path(HRID).request().delete()) {
+                assertThat(response.getStatus()).isEqualTo(403);
+            }
+
+            verifyNoInteractions(apiService);
+        }
+
+        @Test
+        void should_never_delete_an_api_the_caller_has_no_permission_on() {
+            var uuid = UUID.randomUUID().toString();
+            grantApiDefinitionOnlyOn(HRIDToUUID.api().context(auditInfo).hrid(uuid).id());
+
+            try (var response = rootTarget().queryParam("hridContainsUUID", true).path(uuid).request().delete()) {
+                assertThat(response.getStatus()).isEqualTo(403);
+            }
+
+            verify(apiService, never()).delete(any(), eq(uuid), anyBoolean());
         }
 
         private void expectNoContent(String hrid) {
@@ -363,6 +547,15 @@ class ApiResourceTest extends AbstractResourceTest {
                 assertThat(response.getStatus()).isEqualTo(404);
             }
         }
+    }
+
+    private void grantApiDefinitionOnlyOn(String apiId) {
+        when(
+            permissionService.hasPermission(any(), eq(RolePermission.API_DEFINITION), any(), any(RolePermissionAction[].class))
+        ).thenReturn(false);
+        when(
+            permissionService.hasPermission(any(), eq(RolePermission.API_DEFINITION), eq(apiId), any(RolePermissionAction[].class))
+        ).thenReturn(true);
     }
 
     @Override

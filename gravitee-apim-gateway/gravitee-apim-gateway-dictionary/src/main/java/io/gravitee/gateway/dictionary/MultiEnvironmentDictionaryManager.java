@@ -15,7 +15,10 @@
  */
 package io.gravitee.gateway.dictionary;
 
+import io.gravitee.common.util.DataEncryptor;
+import io.gravitee.definition.model.dictionary.DictionaryProperty;
 import io.gravitee.gateway.dictionary.model.Dictionary;
+import java.security.GeneralSecurityException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -31,6 +34,11 @@ public class MultiEnvironmentDictionaryManager implements DictionaryManager {
 
     private final Map<String, Map<String, Dictionary>> dictionaries = new HashMap<>();
     private final Map<String, Map<String, Map<String, String>>> values = new HashMap<>();
+    private final DataEncryptor dataEncryptor;
+
+    public MultiEnvironmentDictionaryManager(DataEncryptor dataEncryptor) {
+        this.dataEncryptor = dataEncryptor;
+    }
 
     @Override
     public void deploy(Dictionary dictionary) {
@@ -58,9 +66,33 @@ public class MultiEnvironmentDictionaryManager implements DictionaryManager {
                 dictionary.setProperties(Collections.emptyMap());
             }
 
-            log.info("Dictionary {} has been deployed with {} properties", dictionary, dictionary.getProperties().size());
+            int propertyCount = dictionary.getProperties().size();
+            log.info("Dictionary {} has been deployed with {} properties", dictionary, propertyCount);
             dictionaries.get(environmentId).put(key, dictionary);
-            values.get(environmentId).put(key, dictionary.getProperties());
+            Map<String, String> flattenedProperties = new HashMap<>((propertyCount * 4) / 3 + 1);
+            for (Map.Entry<String, DictionaryProperty> entry : dictionary.getProperties().entrySet()) {
+                DictionaryProperty property = entry.getValue();
+                if (property != null && property.value() != null) {
+                    flattenedProperties.put(entry.getKey(), decryptOrKeep(dictionary, entry.getKey(), property));
+                }
+            }
+            values.get(environmentId).put(key, flattenedProperties);
+        }
+    }
+
+    /**
+     * Decrypts at deploy and refresh so no crypto runs per request. An undecryptable value is logged and left
+     * as stored, so EL resolves it as ciphertext, as AbstractApiDeployer.decryptProperties does.
+     */
+    private String decryptOrKeep(Dictionary dictionary, String key, DictionaryProperty property) {
+        if (!property.encrypted()) {
+            return property.value();
+        }
+        try {
+            return dataEncryptor.decrypt(property.value());
+        } catch (GeneralSecurityException | RuntimeException e) {
+            log.error("Error decrypting dictionary property value for key {} on dictionary {}", key, dictionary.getId(), e);
+            return property.value();
         }
     }
 

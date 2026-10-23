@@ -37,7 +37,9 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import lombok.CustomLog;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -51,8 +53,17 @@ import org.springframework.stereotype.Component;
 public class WebNotifierServiceImpl implements WebNotifierService {
 
     private static final String HTTPS_SCHEME = "https";
+    private static final int MAX_CONNECTIONS = 20;
 
     private final Configuration configuration;
+
+    /**
+     * Vert.x holds on to every client it creates until the Vert.x instance itself is closed, so a client per
+     * notification would accumulate for as long as the node runs. A client is built once per distinct configuration
+     * and shared, and the organization is part of the configuration so that an unresponsive webhook endpoint can only
+     * exhaust the connections of the organization that configured it.
+     */
+    private final Map<ClientKey, HttpClient> clients = new ConcurrentHashMap<>();
 
     public WebNotifierServiceImpl(Configuration configuration) {
         this.configuration = configuration;
@@ -61,7 +72,14 @@ public class WebNotifierServiceImpl implements WebNotifierService {
     @Autowired
     private Vertx vertx;
 
-    public void request(HttpMethod method, final String uri, final Map<String, String> headers, String body, boolean useSystemProxy) {
+    public void request(
+        String organizationId,
+        HttpMethod method,
+        final String uri,
+        final Map<String, String> headers,
+        String body,
+        boolean useSystemProxy
+    ) {
         if (uri == null || uri.isEmpty()) {
             log.error("Webhook Notifier configuration is empty");
             return;
@@ -69,37 +87,14 @@ public class WebNotifierServiceImpl implements WebNotifierService {
 
         CompletableFuture<Buffer> future = new CompletableFuture<>();
         URI requestUri = URI.create(uri);
-        boolean ssl = HTTPS_SCHEME.equalsIgnoreCase(requestUri.getScheme());
+        final HttpClient httpClient = clients.computeIfAbsent(
+            new ClientKey(organizationId, HTTPS_SCHEME.equalsIgnoreCase(requestUri.getScheme()), useSystemProxy),
+            key -> buildHttpClient(key.ssl(), key.proxy())
+        );
 
-        final HttpClientOptions clientOptions = new HttpClientOptions()
-            .setSsl(ssl)
-            .setTrustAll(true)
-            .setKeepAlive(false)
-            .setTcpKeepAlive(false)
-            .setConnectTimeout(httpClientTimeout());
-
-        final PoolOptions poolOptions = new PoolOptions().setHttp1MaxSize(1);
-
-        if (useSystemProxy) {
-            ProxyOptions proxyOptions = new ProxyOptions();
-            proxyOptions.setType(ProxyType.valueOf(httpClientProxyType()));
-            if (HTTPS_SCHEME.equals(requestUri.getScheme())) {
-                proxyOptions.setHost(httpClientProxyHttpsHost());
-                proxyOptions.setPort(httpClientProxyHttpsPort());
-                proxyOptions.setUsername(httpClientProxyHttpsUsername());
-                proxyOptions.setPassword(httpClientProxyHttpsPassword());
-            } else {
-                proxyOptions.setHost(httpClientProxyHttpHost());
-                proxyOptions.setPort(httpClientProxyHttpPort());
-                proxyOptions.setUsername(httpClientProxyHttpUsername());
-                proxyOptions.setPassword(httpClientProxyHttpPassword());
-            }
-            clientOptions.setProxyOptions(proxyOptions);
-        }
-
-        final HttpClient httpClient = vertx.createHttpClient(clientOptions, poolOptions);
-
-        final int port = requestUri.getPort() != -1 ? requestUri.getPort() : (HTTPS_SCHEME.equals(requestUri.getScheme()) ? 443 : 80);
+        final int port = requestUri.getPort() != -1
+            ? requestUri.getPort()
+            : (HTTPS_SCHEME.equalsIgnoreCase(requestUri.getScheme()) ? 443 : 80);
 
         RequestOptions options = new RequestOptions()
             .setMethod(io.vertx.core.http.HttpMethod.valueOf(method.name()))
@@ -119,9 +114,6 @@ public class WebNotifierServiceImpl implements WebNotifierService {
         requestFuture
             .onFailure(throwable -> {
                 future.completeExceptionally(throwable);
-
-                // Close client
-                httpClient.close();
             })
             .onSuccess(request -> {
                 request
@@ -129,9 +121,6 @@ public class WebNotifierServiceImpl implements WebNotifierService {
                     .onComplete(asyncResponse -> {
                         if (asyncResponse.failed()) {
                             future.completeExceptionally(asyncResponse.cause());
-
-                            // Close client
-                            httpClient.close();
                         } else {
                             HttpClientResponse response = asyncResponse.result();
                             log.debug("Web response status code : {}", response.statusCode());
@@ -139,9 +128,6 @@ public class WebNotifierServiceImpl implements WebNotifierService {
                             if (isStatus2xx(response)) {
                                 response.bodyHandler(buffer -> {
                                     future.complete(buffer);
-
-                                    // Close client
-                                    httpClient.close();
                                 });
                             } else {
                                 future.completeExceptionally(
@@ -172,6 +158,38 @@ public class WebNotifierServiceImpl implements WebNotifierService {
             Thread.currentThread().interrupt();
             throw new TechnicalManagementException(e.getMessage(), e);
         }
+    }
+
+    private HttpClient buildHttpClient(boolean ssl, boolean proxy) {
+        final HttpClientOptions clientOptions = new HttpClientOptions()
+            .setSsl(ssl)
+            .setTrustAll(true)
+            .setKeepAlive(false)
+            .setTcpKeepAlive(false)
+            .setConnectTimeout(httpClientTimeout())
+            .setIdleTimeout(httpClientTimeout())
+            .setIdleTimeoutUnit(TimeUnit.MILLISECONDS);
+
+        final PoolOptions poolOptions = new PoolOptions().setHttp1MaxSize(MAX_CONNECTIONS);
+
+        if (proxy) {
+            ProxyOptions proxyOptions = new ProxyOptions();
+            proxyOptions.setType(ProxyType.valueOf(httpClientProxyType()));
+            if (ssl) {
+                proxyOptions.setHost(httpClientProxyHttpsHost());
+                proxyOptions.setPort(httpClientProxyHttpsPort());
+                proxyOptions.setUsername(httpClientProxyHttpsUsername());
+                proxyOptions.setPassword(httpClientProxyHttpsPassword());
+            } else {
+                proxyOptions.setHost(httpClientProxyHttpHost());
+                proxyOptions.setPort(httpClientProxyHttpPort());
+                proxyOptions.setUsername(httpClientProxyHttpUsername());
+                proxyOptions.setPassword(httpClientProxyHttpPassword());
+            }
+            clientOptions.setProxyOptions(proxyOptions);
+        }
+
+        return vertx.createHttpClient(clientOptions, poolOptions);
     }
 
     private static boolean isStatus2xx(HttpClientResponse httpResponse) {
@@ -225,4 +243,10 @@ public class WebNotifierServiceImpl implements WebNotifierService {
     private String httpClientProxyHttpsPassword() {
         return configuration.getProperty("httpClient.proxy.https.password");
     }
+
+    /**
+     * A setting that can differ per organization (SSL or proxy settings, timeouts, trust) has to be part of this key,
+     * otherwise organizations would silently share a client configured for one of them.
+     */
+    private record ClientKey(String organizationId, boolean ssl, boolean proxy) {}
 }

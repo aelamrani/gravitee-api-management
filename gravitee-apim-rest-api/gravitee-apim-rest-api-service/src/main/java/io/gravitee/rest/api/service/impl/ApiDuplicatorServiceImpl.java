@@ -16,6 +16,8 @@
 package io.gravitee.rest.api.service.impl;
 
 import static io.gravitee.rest.api.model.permissions.RolePermission.API_DEFINITION;
+import static io.gravitee.rest.api.model.permissions.RolePermission.ENVIRONMENT_API;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.CREATE;
 import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE;
 import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
@@ -101,7 +103,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import lombok.CustomLog;
 import net.minidev.json.JSONObject;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Component;
@@ -183,7 +184,12 @@ public class ApiDuplicatorServiceImpl extends AbstractService implements ApiDupl
 
     @Override
     public ApiEntity createWithImportedDefinition(final ExecutionContext executionContext, Object apiDefinitionOrURL) {
-        String apiDefinition = fetchApiDefinitionContentFromURL(apiDefinitionOrURL);
+        // Deny URL fetch before any network call when the caller cannot create APIs in this environment.
+        if (isImportFromUrl(apiDefinitionOrURL)) {
+            assertCanCreateEnvironmentApis(executionContext);
+        }
+
+        String apiDefinition = fetchApiDefinitionContentFromURL(executionContext, apiDefinitionOrURL);
         try {
             // Read the whole input API definition, and recalculate its ID
             ImportApiJsonNode apiJsonNode = apiIdsCalculatorService.recalculateApiDefinitionIds(
@@ -217,7 +223,16 @@ public class ApiDuplicatorServiceImpl extends AbstractService implements ApiDupl
 
     @Override
     public ApiEntity updateWithImportedDefinition(final ExecutionContext executionContext, String urlApiId, Object apiDefinitionOrURL) {
-        String apiDefinition = fetchApiDefinitionContentFromURL(apiDefinitionOrURL);
+        // Deny URL fetch before any network call. Prefer API-scoped permission when the target id is known.
+        if (isImportFromUrl(apiDefinitionOrURL)) {
+            if (urlApiId != null) {
+                assertCanUpdateApiDefinition(executionContext, urlApiId);
+            } else {
+                assertCanUpdateEnvironmentApis(executionContext);
+            }
+        }
+
+        String apiDefinition = fetchApiDefinitionContentFromURL(executionContext, apiDefinitionOrURL);
 
         try {
             // Read the whole input API definition, and recalculate its ID
@@ -230,12 +245,7 @@ public class ApiDuplicatorServiceImpl extends AbstractService implements ApiDupl
             UpdateApiEntity importedApi = convertToEntity(executionContext, apiJsonNode.toString(), apiJsonNode);
 
             // ensure user has required permission to update target API
-            if (
-                !isAuthenticated() ||
-                !(isEnvironmentAdmin() || permissionService.hasPermission(executionContext, API_DEFINITION, apiJsonNode.getId(), UPDATE))
-            ) {
-                throw new ForbiddenAccessException();
-            }
+            assertCanUpdateApiDefinition(executionContext, apiJsonNode.getId());
 
             // check API consistency before import
             checkApiJsonConsistency(executionContext, apiJsonNode, urlApiId);
@@ -247,6 +257,43 @@ public class ApiDuplicatorServiceImpl extends AbstractService implements ApiDupl
         } catch (IOException e) {
             throw new TechnicalManagementException("An error occurs while trying to JSON deserialize the API definition.");
         }
+    }
+
+    private void assertCanCreateEnvironmentApis(ExecutionContext executionContext) {
+        if (
+            !isAuthenticated() ||
+            !(isEnvironmentAdmin() ||
+                permissionService.hasPermission(executionContext, ENVIRONMENT_API, executionContext.getEnvironmentId(), CREATE))
+        ) {
+            throw new ForbiddenAccessException();
+        }
+    }
+
+    private void assertCanUpdateEnvironmentApis(ExecutionContext executionContext) {
+        if (
+            !isAuthenticated() ||
+            !(isEnvironmentAdmin() ||
+                permissionService.hasPermission(executionContext, ENVIRONMENT_API, executionContext.getEnvironmentId(), UPDATE))
+        ) {
+            throw new ForbiddenAccessException();
+        }
+    }
+
+    private void assertCanUpdateApiDefinition(ExecutionContext executionContext, String apiId) {
+        if (
+            !isAuthenticated() ||
+            !(isEnvironmentAdmin() || permissionService.hasPermission(executionContext, API_DEFINITION, apiId, UPDATE))
+        ) {
+            throw new ForbiddenAccessException();
+        }
+    }
+
+    private boolean isImportFromUrl(Object apiDefinitionOrURL) {
+        return isHttpUrl(stringifyApiDefinitionFromJackson(apiDefinitionOrURL));
+    }
+
+    private static boolean isHttpUrl(String definitionOrURL) {
+        return definitionOrURL != null && definitionOrURL.trim().toUpperCase().startsWith("HTTP");
     }
 
     @Override
@@ -400,15 +447,12 @@ public class ApiDuplicatorServiceImpl extends AbstractService implements ApiDupl
         }
     }
 
-    private String fetchApiDefinitionContentFromURL(Object apiDefinitionOrURL) {
+    private String fetchApiDefinitionContentFromURL(ExecutionContext executionContext, Object apiDefinitionOrURL) {
         String definitionOrURL = stringifyApiDefinitionFromJackson(apiDefinitionOrURL);
-        if (definitionOrURL.toUpperCase().startsWith("HTTP")) {
-            UrlSanitizerUtils.checkAllowed(
-                definitionOrURL,
-                importConfiguration.getImportWhitelist(),
-                importConfiguration.isAllowImportFromPrivate()
-            );
-            Buffer buffer = httpClientService.request(HttpMethod.GET, definitionOrURL, null, null, null);
+        if (isHttpUrl(definitionOrURL)) {
+            String url = definitionOrURL.trim();
+            UrlSanitizerUtils.checkAllowed(url, importConfiguration.getImportWhitelist(), importConfiguration.isAllowImportFromPrivate());
+            Buffer buffer = httpClientService.request(executionContext.getOrganizationId(), HttpMethod.GET, url, null, null, null);
             return buffer.toString();
         }
         return definitionOrURL;
@@ -545,7 +589,6 @@ public class ApiDuplicatorServiceImpl extends AbstractService implements ApiDupl
         }
     }
 
-    @NotNull
     protected Set<MemberToImport> getAPICurrentMembers(ExecutionContext executionContext, String apiId) {
         return membershipService
             .getMembersByReference(executionContext, MembershipReferenceType.API, apiId)

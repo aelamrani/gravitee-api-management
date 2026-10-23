@@ -15,12 +15,15 @@
  */
 package io.gravitee.apim.core.group.model.crd;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.gravitee.apim.core.group.model.Group;
 import io.gravitee.apim.core.member.model.RoleScope;
 import io.gravitee.definition.model.Origin;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.SequencedSet;
+import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -52,6 +55,20 @@ public class GroupCRDSpec {
 
     private String apiProductRole;
 
+    /**
+     * Default role per scope, from the Automation API. {@code null} means not declared: the platform's defaults are
+     * left untouched. When declared, it is authoritative for API, APPLICATION and API_PRODUCT; a missing scope is cleared.
+     * The flat {@code apiRole}, {@code applicationRole} and {@code apiProductRole} remain for the Management API import.
+     */
+    private Map<RoleScope, String> defaultMemberRoles;
+
+    /**
+     * Set by the Automation API from the {@code ignoreMembers} query parameter, never read from the payload.
+     * When true, {@code members} is not applied: the group's memberships are left as the platform holds them.
+     */
+    @JsonIgnore
+    private boolean ignoreMembers;
+
     @Builder.Default
     private String origin = Origin.KUBERNETES.name();
 
@@ -72,6 +89,21 @@ public class GroupCRDSpec {
             .emailInvitation(false)
             .disableMembershipNotifications(!notifyMembers)
             .build();
+    }
+
+    /**
+     * The id the group is stored under, or empty when the id is not a UUID. Looking a group up by any other form of the
+     * same UUID would miss it.
+     */
+    public Optional<String> canonicalId() {
+        if (id == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(UUID.fromString(id).toString());
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
     }
 
     @AllArgsConstructor

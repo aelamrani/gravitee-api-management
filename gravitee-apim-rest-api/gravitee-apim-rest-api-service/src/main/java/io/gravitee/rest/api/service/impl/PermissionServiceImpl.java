@@ -21,6 +21,7 @@ import io.gravitee.rest.api.model.*;
 import io.gravitee.rest.api.model.permissions.*;
 import io.gravitee.rest.api.service.MembershipService;
 import io.gravitee.rest.api.service.PermissionService;
+import io.gravitee.rest.api.service.PermissionService.MemberSearchAccess;
 import io.gravitee.rest.api.service.RoleService;
 import io.gravitee.rest.api.service.UserService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
@@ -109,6 +110,77 @@ public class PermissionServiceImpl extends AbstractService implements Permission
         }
         UserEntity user = userService.findByIdWithRoles(executionContext, userId);
         return hasOrganizationManagementRole(user) || hasEnvironmentManagementRole(user) || hasApiManagementRole(executionContext, user);
+    }
+
+    @Override
+    public MemberSearchAccess memberSearchAccess(final ExecutionContext executionContext, String userId) {
+        if (isOrganizationAdmin()) {
+            log.debug("User [{}] can search the full directory because of its ORGANIZATION ADMIN role", userId);
+            return MemberSearchAccess.FULL;
+        }
+        Set<String> roleIds = membershipService.getRoleIdsByMember(MembershipMemberType.USER, userId);
+        if (roleIds.isEmpty()) {
+            return MemberSearchAccess.NONE;
+        }
+        var roles = roleService.findByIds(roleIds).values();
+        boolean hasApplicationScope = false;
+        boolean hasNonApplicationScope = false;
+        for (var role : roles) {
+            if (grantsMemberManagement(role)) {
+                if (role.getScope() == RoleScope.APPLICATION) {
+                    hasApplicationScope = true;
+                } else {
+                    hasNonApplicationScope = true;
+                }
+            }
+        }
+        if (hasNonApplicationScope) {
+            return MemberSearchAccess.FULL;
+        }
+        return hasApplicationScope ? MemberSearchAccess.APPLICATION_ONLY : MemberSearchAccess.NONE;
+    }
+
+    @Override
+    public boolean canManageMembers(final ExecutionContext executionContext, String userId) {
+        return memberSearchAccess(executionContext, userId) != MemberSearchAccess.NONE;
+    }
+
+    // Roles are checked where they are held, whatever reference they apply to: a group role is the one its members
+    // inherit on the APIs, applications, integrations and clusters the group is attached to. Adding a member is a
+    // CREATE on the add endpoints and in the Console, so CREATE counts as much as UPDATE. An AI workspace has users
+    // (consumers granted a tier) as well as members, both picked from the directory, so either permission counts.
+    private boolean grantsMemberManagement(RoleEntity role) {
+        Map<String, char[]> permissions = role.getPermissions();
+        return switch (role.getScope()) {
+            case ORGANIZATION -> grants(permissions, OrganizationPermission.USER, RolePermissionAction.READ, RolePermissionAction.UPDATE) ||
+            grants(permissions, OrganizationPermission.ROLE, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case ENVIRONMENT -> grants(permissions, EnvironmentPermission.GROUP, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case API -> grants(permissions, ApiPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case APPLICATION -> grants(permissions, ApplicationPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case INTEGRATION -> grants(permissions, IntegrationPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case CLUSTER -> grants(permissions, ClusterPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case API_PRODUCT -> grants(permissions, ApiProductPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case AI_CATALOG -> grants(permissions, AiCatalogPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case EXPLORER -> grants(permissions, ExplorerPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case AI_WORKSPACE -> grants(
+                permissions,
+                AiWorkspacePermission.USER,
+                RolePermissionAction.CREATE,
+                RolePermissionAction.UPDATE
+            ) ||
+            grants(permissions, AiWorkspacePermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            case GROUP -> grants(permissions, GroupPermission.MEMBER, RolePermissionAction.CREATE, RolePermissionAction.UPDATE);
+            default -> false;
+        };
+    }
+
+    private static boolean grants(Map<String, char[]> permissions, Permission permission, RolePermissionAction... acls) {
+        char[] granted = permissions == null ? null : permissions.get(permission.getName());
+        if (granted == null) {
+            return false;
+        }
+        String grantedActions = new String(granted);
+        return Arrays.stream(acls).anyMatch(acl -> grantedActions.indexOf(acl.getId()) >= 0);
     }
 
     public static boolean isOrganizationAdmin() {

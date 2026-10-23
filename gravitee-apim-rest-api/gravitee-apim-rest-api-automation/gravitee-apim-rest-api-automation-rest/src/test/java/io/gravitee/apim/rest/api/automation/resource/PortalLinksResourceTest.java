@@ -15,21 +15,32 @@
  */
 package io.gravitee.apim.rest.api.automation.resource;
 
+import static io.gravitee.rest.api.model.permissions.RolePermission.ENVIRONMENT_PORTAL;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.CREATE;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import inmemory.PortalNavigationItemsCrudServiceInMemory;
 import io.gravitee.apim.core.audit.model.AuditInfo;
+import io.gravitee.apim.core.portal.model.PortalArea;
 import io.gravitee.apim.core.portal.model.PortalId;
+import io.gravitee.apim.core.portal.model.PortalVisibility;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItemId;
+import io.gravitee.apim.core.portal_page.model.PortalNavigationLink;
 import io.gravitee.apim.core.portal_page.use_case.CreateOrUpdatePortalLinkUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ValidatePortalLinkUseCase;
 import io.gravitee.apim.core.validation.Validator;
+import io.gravitee.apim.rest.api.automation.model.PortalLinkSpec;
 import io.gravitee.apim.rest.api.automation.model.PortalLinkState;
 import io.gravitee.apim.rest.api.automation.resource.base.AbstractResourceTest;
+import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.service.common.HRIDToUUID;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.client.Entity;
@@ -37,6 +48,7 @@ import jakarta.ws.rs.core.MediaType;
 import java.util.List;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
@@ -59,6 +71,9 @@ class PortalLinksResourceTest extends AbstractResourceTest {
 
     @Inject
     private ValidatePortalLinkUseCase validatePortalLinkUseCase;
+
+    @Inject
+    private PortalNavigationItemsCrudServiceInMemory portalNavigationItemsCrudService;
 
     @AfterEach
     void tearDown() {
@@ -148,7 +163,9 @@ class PortalLinksResourceTest extends AbstractResourceTest {
 
         @Test
         void should_create_or_update_portal_link() {
-            when(createOrUpdatePortalLinkUseCase.execute(any())).thenReturn(new CreateOrUpdatePortalLinkUseCase.Output(null, List.of()));
+            when(createOrUpdatePortalLinkUseCase.execute(any())).thenReturn(
+                new CreateOrUpdatePortalLinkUseCase.Output(aPersistedLink("External Docs"), List.of())
+            );
 
             try (
                 var response = rootTarget().request().accept(MediaType.APPLICATION_JSON_TYPE).put(Entity.json(readJSON("portal-link.json")))
@@ -162,6 +179,23 @@ class PortalLinksResourceTest extends AbstractResourceTest {
                     soft.assertThat(state.getHrid()).isEqualTo("external-docs");
                     soft.assertThat(state.getPortalHrid()).isEqualTo(PORTAL_HRID);
                 });
+            }
+        }
+
+        @Test
+        void should_build_the_response_from_the_persisted_link_not_from_the_submitted_spec() {
+            when(createOrUpdatePortalLinkUseCase.execute(any())).thenReturn(
+                new CreateOrUpdatePortalLinkUseCase.Output(aPersistedLink("Normalized Name"), List.of())
+            );
+
+            try (
+                var response = rootTarget()
+                    .request()
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(aLinkSpec("  Normalized Name  ")))
+            ) {
+                assertThat(response.getStatus()).isEqualTo(200);
+                assertThat(response.readEntity(PortalLinkState.class).getName()).isEqualTo("Normalized Name");
             }
         }
 
@@ -180,6 +214,102 @@ class PortalLinksResourceTest extends AbstractResourceTest {
                 assertThat(state.getErrors()).isNotNull();
                 assertThat(state.getErrors().getSevere()).hasSize(1);
                 assertThat(state.getErrors().getSevere().get(0)).contains("href");
+            }
+        }
+    }
+
+    private static PortalLinkSpec aLinkSpec(String name) {
+        return new PortalLinkSpec().hrid("external-docs").name(name).href("https://docs.example.com");
+    }
+
+    private static PortalNavigationLink aPersistedLink(String name) {
+        return PortalNavigationLink.builder()
+            .id(LINK_ID)
+            .organizationId(ORGANIZATION)
+            .environmentId(ENVIRONMENT)
+            .title(name)
+            .segment("external-docs")
+            .area(PortalArea.TOP_NAVBAR)
+            .order(3)
+            .url("https://docs.example.com")
+            .published(true)
+            .visibility(PortalVisibility.PUBLIC)
+            .build();
+    }
+
+    @Nested
+    class Authorization {
+
+        @BeforeEach
+        void setUp() {
+            when(createOrUpdatePortalLinkUseCase.execute(any())).thenReturn(
+                new CreateOrUpdatePortalLinkUseCase.Output(aPersistedLink("External Docs"), List.of())
+            );
+            when(validatePortalLinkUseCase.execute(any())).thenReturn(new CreateOrUpdatePortalLinkUseCase.Output(null, List.of()));
+        }
+
+        @AfterEach
+        void tearDown() {
+            portalNavigationItemsCrudService.reset();
+            reset(permissionService);
+        }
+
+        @Test
+        void should_return_403_when_the_caller_cannot_update_the_existing_link() {
+            portalNavigationItemsCrudService.initWith(List.of(aPersistedLink("Existing")));
+            deny(UPDATE);
+
+            assertThat(put(false)).isEqualTo(403);
+            verify(createOrUpdatePortalLinkUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_return_403_on_dry_run_when_the_caller_cannot_update_the_existing_link() {
+            portalNavigationItemsCrudService.initWith(List.of(aPersistedLink("Existing")));
+            deny(UPDATE);
+
+            assertThat(put(true)).isEqualTo(403);
+            verify(validatePortalLinkUseCase, never()).execute(any());
+        }
+
+        @Test
+        void should_update_the_existing_link_with_update_and_no_create() {
+            portalNavigationItemsCrudService.initWith(List.of(aPersistedLink("Existing")));
+            deny(CREATE);
+
+            assertThat(put(false)).isEqualTo(200);
+            verify(createOrUpdatePortalLinkUseCase).execute(any());
+        }
+
+        @Test
+        void should_create_a_new_link_with_create_and_no_update() {
+            deny(UPDATE);
+
+            assertThat(put(false)).isEqualTo(200);
+            verify(createOrUpdatePortalLinkUseCase).execute(any());
+        }
+
+        @Test
+        void should_return_403_when_the_caller_cannot_create_a_new_link() {
+            deny(CREATE);
+
+            assertThat(put(false)).isEqualTo(403);
+            verify(createOrUpdatePortalLinkUseCase, never()).execute(any());
+        }
+
+        private void deny(RolePermissionAction action) {
+            when(permissionService.hasPermission(any(), eq(ENVIRONMENT_PORTAL), eq(ENVIRONMENT), eq(action))).thenReturn(false);
+        }
+
+        private int put(boolean dryRun) {
+            try (
+                var response = rootTarget()
+                    .queryParam("dryRun", dryRun)
+                    .request()
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(readJSON("portal-link.json")))
+            ) {
+                return response.getStatus();
             }
         }
     }

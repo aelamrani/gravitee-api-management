@@ -19,7 +19,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { createPlan, deletePlan, getPlan, listPlans, transitionPlan, updatePlan } from '../services/plans';
 import type { ManagedPlan, PlanContext, PlanFormValue, PlanStatus, PlanTransitionAction } from '../types/plan';
 import { planFormToPayload } from '../utils/planTransformers';
-import { apiDetailKeys, apiPlanKeys } from '../utils/queryKeys';
+import { apiDetailKeys, apiPlanKeys, apiSubscriptionKeys } from '../utils/queryKeys';
 
 /** Paginated plan list filtered by statuses. */
 export function usePlanList(ctx: PlanContext, statuses: PlanStatus[], page: number, perPage = 10) {
@@ -84,6 +84,8 @@ export function usePlan(ctx: PlanContext, planId: string | undefined) {
 
 function invalidatePlans(qc: ReturnType<typeof useQueryClient>, ctx: PlanContext, envId: string) {
     qc.invalidateQueries({ queryKey: [apiPlanKeys.all[0], ctx.type, ctx.entityId] });
+    // Create Subscription lists plans under its own key and keeps them for minutes.
+    qc.invalidateQueries({ queryKey: apiSubscriptionKeys.plans(envId, ctx) });
     if (ctx.type === 'api') {
         qc.invalidateQueries({ queryKey: apiDetailKeys.detail(envId, ctx.entityId) });
     }
@@ -95,19 +97,28 @@ export function useCreatePlan(ctx: PlanContext) {
     const envId = env?.id ?? '';
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: (form: PlanFormValue) => createPlan(envId, ctx, planFormToPayload(form, ctx)),
+        mutationFn: (form: PlanFormValue) => createPlan(envId, ctx, planFormToPayload(form, ctx, 'V4')),
         onSuccess: () => invalidatePlans(qc, ctx, envId),
     });
 }
 
-/** Update an existing plan — mutate receives { planId, form }. */
+/** Update an existing plan — mutate receives { planId, form, definitionVersion }. */
 export function useUpdatePlan(ctx: PlanContext) {
     const env = useEnvironment();
     const envId = env?.id ?? '';
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: ({ planId, form }: { planId: string; form: PlanFormValue }) =>
-            updatePlan(envId, ctx, planId, planFormToPayload(form, ctx)),
+        mutationFn: ({
+            planId,
+            form,
+            definitionVersion,
+            order,
+        }: {
+            planId: string;
+            form: PlanFormValue;
+            definitionVersion: NonNullable<ManagedPlan['definitionVersion']>;
+            order?: ManagedPlan['order'];
+        }) => updatePlan(envId, ctx, planId, { ...planFormToPayload(form, ctx, definitionVersion), order }),
         onSuccess: updated => {
             qc.setQueryData(apiPlanKeys.detail(envId, ctx, updated.id), updated);
             invalidatePlans(qc, ctx, envId);

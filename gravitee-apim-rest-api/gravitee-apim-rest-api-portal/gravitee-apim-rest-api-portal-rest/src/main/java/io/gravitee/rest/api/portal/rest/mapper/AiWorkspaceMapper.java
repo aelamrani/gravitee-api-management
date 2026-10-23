@@ -1,0 +1,63 @@
+/*
+ * Copyright © 2015 The Gravitee team (http://gravitee.io)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.gravitee.rest.api.portal.rest.mapper;
+
+import io.gravitee.apim.core.ai_workspace.model.AiWorkspaceBudget;
+import io.gravitee.apim.core.ai_workspace.model.AiWorkspaceConsumption;
+import io.gravitee.apim.core.ai_workspace.model.AiWorkspaceDetails;
+import io.gravitee.apim.core.ai_workspace.model.AiWorkspaceKey;
+import io.gravitee.apim.core.ai_workspace.model.AiWorkspaceModel;
+import io.gravitee.apim.core.ai_workspace.model.AiWorkspaceSummary;
+import java.math.BigDecimal;
+import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
+import org.mapstruct.Named;
+import org.mapstruct.factory.Mappers;
+
+@Mapper
+public interface AiWorkspaceMapper {
+    AiWorkspaceMapper INSTANCE = Mappers.getMapper(AiWorkspaceMapper.class);
+
+    io.gravitee.rest.api.portal.rest.model.AiWorkspaceSummary toSummary(AiWorkspaceSummary summary);
+
+    io.gravitee.rest.api.portal.rest.model.AiWorkspace toDetails(AiWorkspaceDetails details);
+
+    io.gravitee.rest.api.portal.rest.model.AiWorkspaceModel toModel(AiWorkspaceModel model);
+
+    io.gravitee.rest.api.portal.rest.model.AiWorkspaceConsumption toConsumption(AiWorkspaceConsumption consumption);
+
+    @Mapping(target = "amount", source = "amount", qualifiedByName = "toDollars")
+    @Mapping(target = "period", source = "period", qualifiedByName = "toPeriod")
+    io.gravitee.rest.api.portal.rest.model.AiWorkspaceBudget toBudget(AiWorkspaceBudget budget);
+
+    @Named("toDollars")
+    default Double toDollars(BigDecimal amount) {
+        return amount == null ? null : amount.doubleValue();
+    }
+
+    @Named("toPeriod")
+    default io.gravitee.rest.api.portal.rest.model.AiWorkspaceBudget.PeriodEnum toPeriod(String period) {
+        return period == null ? null : io.gravitee.rest.api.portal.rest.model.AiWorkspaceBudget.PeriodEnum.fromValue(period);
+    }
+
+    @Mapping(target = "status", source = "status", qualifiedByName = "toKeyStatus")
+    io.gravitee.rest.api.portal.rest.model.AiWorkspaceKey toKey(AiWorkspaceKey key);
+
+    @Named("toKeyStatus")
+    default io.gravitee.rest.api.portal.rest.model.AiWorkspaceKey.StatusEnum toKeyStatus(String status) {
+        return status == null ? null : io.gravitee.rest.api.portal.rest.model.AiWorkspaceKey.StatusEnum.fromValue(status);
+    }
+}

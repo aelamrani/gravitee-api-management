@@ -50,6 +50,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
@@ -82,18 +83,25 @@ import io.gravitee.plugin.endpoint.http.proxy.configuration.HttpProxyEndpointCon
 import io.gravitee.plugin.endpoint.http.proxy.configuration.HttpProxyEndpointConnectorSharedConfiguration;
 import io.gravitee.plugin.endpoint.http.proxy.failure.ConnectionFailureClassifier;
 import io.gravitee.reporter.api.v4.metric.Metrics;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import io.vertx.core.Context;
 import io.vertx.core.http.HttpClosedException;
 import io.vertx.core.http.impl.headers.HeadersMultiMap;
+import io.vertx.core.internal.VertxInternal;
 import io.vertx.rxjava3.core.Vertx;
+import io.vertx.rxjava3.core.http.HttpClientRequest;
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
 import java.time.Instant;
+import java.util.ConcurrentModificationException;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -112,6 +120,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.quality.Strictness;
 import org.slf4j.Logger;
 
 /**
@@ -137,6 +146,9 @@ class HttpConnectorTest {
     private static final String UPSTREAM_TARGET = "http://backend:8080/team";
     /** Silence unknown: keeps the message free of any timing claim, for the cases that do not test the timing. */
     private static final long NO_SILENCE_MEASURED = -1;
+    /** No Content-Length on the response: the body is framed by the stream, so its expected size is unknown. */
+    private static final long NO_CONTENT_LENGTH_ANNOUNCED = -1;
+    private static final long NO_BYTES_COUNTED = 0;
     /**
      * Path of the stubs that answer late. Their serve outlives the test that started it and re-enters the request
      * journal after the class-level reset, so it is kept off the path every other test counts requests on.
@@ -262,7 +274,14 @@ class HttpConnectorTest {
     void should_record_backend_connection_reset_on_metrics_when_response_stream_fails() {
         when(metrics.getErrorKey()).thenReturn(null);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, NO_SILENCE_MEASURED, new IOException("Connection reset by peer"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new IOException("Connection reset by peer")
+        );
 
         // A reset is a genuine backend fault, so it keeps its own key: only a clean close mid-body is re-keyed.
         verify(metrics).setErrorKey("GATEWAY_CLIENT_CONNECTION_RESET");
@@ -276,7 +295,14 @@ class HttpConnectorTest {
     void should_not_overwrite_an_already_recorded_error_on_response_stream_failure() {
         when(metrics.getErrorKey()).thenReturn("CLIENT_ABORTED_DURING_RESPONSE_ERROR");
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, NO_SILENCE_MEASURED, new IOException("Connection reset by peer"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new IOException("Connection reset by peer")
+        );
 
         verify(metrics, never()).setErrorKey(anyString());
         verify(metrics, never()).setErrorMessage(anyString());
@@ -290,7 +316,14 @@ class HttpConnectorTest {
     void should_report_a_stream_cut_short_under_its_own_key_rather_than_as_a_connection_failure() {
         when(metrics.getErrorKey()).thenReturn(null);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, NO_SILENCE_MEASURED, new HttpClosedException("Connection was closed"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
 
         // The caller already received status and headers, so this is a truncated response, not a failed request:
         // reporting it as GATEWAY_CLIENT_CONNECTION_CLOSED is what makes streaming APIs look like they are failing.
@@ -302,7 +335,14 @@ class HttpConnectorTest {
     void should_report_a_stream_cut_short_through_metrics_only_and_not_as_a_second_diagnostic() {
         when(metrics.getErrorKey()).thenReturn(null);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, NO_SILENCE_MEASURED, new HttpClosedException("Connection was closed"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
 
         // The reporter already turns errorKey/errorMessage into the Diagnostic carried by the metrics, attributed to
         // the ENDPOINT component. Raising an ExecutionWarn on top would emit a duplicate for the very same event —
@@ -317,7 +357,14 @@ class HttpConnectorTest {
         sharedConfiguration.getHttpOptions().setIdleTimeout(12_200);
         sharedConfiguration.getHttpOptions().setReadTimeout(24_000);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, 12_000, new HttpClosedException("Connection was closed"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            12_000,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
 
         assertThat(errorMessageRecorded())
             .contains("having received nothing from it for the last 12000 ms")
@@ -336,7 +383,14 @@ class HttpConnectorTest {
         // the trailing silence can be compared to it. Matching on the total elapsed time would never fire here.
         when(metrics.timestamp()).thenReturn(Instant.now().minusMillis(600_000));
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, 12_000, new HttpClosedException("Connection was closed"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            12_000,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
 
         assertThat(errorMessageRecorded()).contains("This matches the endpoint idleTimeout (12200 ms, applied as 12000 ms)");
     }
@@ -347,7 +401,14 @@ class HttpConnectorTest {
         sharedConfiguration.getHttpOptions().setIdleTimeout(12_200);
         sharedConfiguration.getHttpOptions().setReadTimeout(24_000);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, 3_000, new HttpClosedException("Connection was closed"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            3_000,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
 
         // Scattered durations point at the backend: claiming a timeout match here would send operators the wrong way.
         assertThat(errorMessageRecorded()).doesNotContain("idleTimeout").contains("having received nothing from it for the last 3000 ms");
@@ -359,16 +420,105 @@ class HttpConnectorTest {
         sharedConfiguration.getHttpOptions().setIdleTimeout(12_200);
         sharedConfiguration.getHttpOptions().setReadTimeout(8_000);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, 12_000, new HttpClosedException("Connection was closed"));
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            12_000,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
 
         assertThat(errorMessageRecorded()).contains("This matches the endpoint idleTimeout").doesNotContain("readTimeout");
+    }
+
+    @Test
+    void should_not_report_a_failure_when_the_backend_delivered_every_announced_byte() {
+        // No stubbing of getErrorKey: the early return fires before the metrics are ever consulted.
+
+        // The backend wrote all 2048 bytes it announced, then closed abruptly instead of cleanly. The caller holds a
+        // complete response, so raising an error here would flag an exchange that lost nothing.
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            2_048,
+            2_048,
+            new HttpClosedException("Connection was closed")
+        );
+
+        verify(metrics, never()).setErrorKey(anyString());
+        verify(metrics, never()).setErrorMessage(anyString());
+        verify(ctx, never()).warnWith(any());
+        verify(response, never()).status(anyInt());
+    }
+
+    @Test
+    void should_not_report_a_failure_when_more_bytes_arrived_than_announced() {
+        // Same as above: nothing is read from the metrics on this path.
+
+        // A body longer than advertised is a backend framing bug, but nothing was lost on the way to the caller.
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            4_096,
+            2_048,
+            new HttpClosedException("Connection was closed")
+        );
+
+        verify(metrics, never()).setErrorKey(anyString());
+    }
+
+    @Test
+    void should_name_the_missing_bytes_when_the_body_was_actually_truncated() {
+        when(metrics.getErrorKey()).thenReturn(null);
+
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            1_500,
+            4_000,
+            new HttpClosedException("Connection was closed")
+        );
+
+        verify(metrics).setErrorKey("GATEWAY_CLIENT_STREAM_ENDED_EARLY");
+        // The shortfall makes the data loss measurable instead of merely asserted.
+        assertThat(errorMessageRecorded()).contains("1500 of the 4000 announced bytes were received, so 2500 are missing");
+    }
+
+    @Test
+    void should_still_report_a_truncation_when_the_backend_announced_no_content_length() {
+        when(metrics.getErrorKey()).thenReturn(null);
+
+        // A chunked response carries no Content-Length, so nothing can be compared. It loses nothing by it: the
+        // stream only breaks because the terminal chunk never came, which is the truncation itself.
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            1_500,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new HttpClosedException("Connection was closed")
+        );
+
+        verify(metrics).setErrorKey("GATEWAY_CLIENT_STREAM_ENDED_EARLY");
+        assertThat(errorMessageRecorded()).doesNotContain("announced bytes");
     }
 
     @Test
     void should_describe_the_failure_by_type_when_the_cause_carries_no_message() {
         when(metrics.getErrorKey()).thenReturn(null);
 
-        cut.recordBackendResponseStreamFailure(ctx, UPSTREAM_TARGET, NO_SILENCE_MEASURED, new ClosedChannelException());
+        cut.recordBackendResponseStreamFailure(
+            ctx,
+            UPSTREAM_TARGET,
+            NO_SILENCE_MEASURED,
+            NO_BYTES_COUNTED,
+            NO_CONTENT_LENGTH_ANNOUNCED,
+            new ClosedChannelException()
+        );
 
         assertThat(errorMessageRecorded()).isEqualTo("The backend ended the response body before it was complete (ClosedChannelException)");
     }
@@ -1482,6 +1632,134 @@ class HttpConnectorTest {
         assertRequestCountStaysAt(slowRequests, 1);
     }
 
+    @Test
+    void should_not_reuse_the_connection_when_the_request_head_could_not_be_written() throws InterruptedException {
+        when(request.method()).thenReturn(HttpMethod.GET);
+        wiremock.stubFor(get("/team").willReturn(ok(BACKEND_RESPONSE_BODY)));
+        cut = connectorWhoseFirstRequestHeadCannotBeWritten(new UnwritableHeaderValue());
+
+        final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        final TestObserver<Void> first = connectFromWorkerContext(cut.connect(ctx).doOnError(firstFailure::set));
+        assertNoTimeout(first);
+        first.assertNotComplete();
+        assertThat(ConnectionFailureClassifier.classify(firstFailure.get()).key()).isEqualTo("GATEWAY_CLIENT_READ_TIMEOUT");
+
+        final TestObserver<Void> second = cut.connect(ctx).test();
+        assertNoTimeout(second);
+
+        second.assertComplete();
+        wiremock.verify(1, getRequestedFor(urlPathEqualTo("/team")));
+    }
+
+    @Test
+    void should_not_reuse_the_connection_when_the_request_is_disposed_after_its_head_could_not_be_written() throws InterruptedException {
+        when(request.method()).thenReturn(HttpMethod.GET);
+        wiremock.stubFor(get("/team").willReturn(ok(BACKEND_RESPONSE_BODY)));
+        final UnwritableHeaderValue unwritableHeaderValue = new UnwritableHeaderValue();
+        cut = connectorWhoseFirstRequestHeadCannotBeWritten(unwritableHeaderValue);
+
+        final TestObserver<Void> first = connectFromWorkerContext(cut.connect(ctx));
+        assertThat(unwritableHeaderValue.awaitWriteAttempt()).as("Head write should have been attempted").isTrue();
+        first.dispose();
+
+        final TestObserver<Void> second = cut.connect(ctx).test();
+        assertNoTimeout(second);
+
+        second.assertComplete();
+        wiremock.verify(1, getRequestedFor(urlPathEqualTo("/team")));
+    }
+
+    @Test
+    void should_send_the_next_queued_request_when_a_request_queued_for_the_pooled_connection_is_aborted() throws InterruptedException {
+        sharedConfiguration.getHttpOptions().setKeepAlive(true);
+        sharedConfiguration.getHttpOptions().setMaxConcurrentConnections(1);
+        configuration.setTarget("http://localhost:" + wiremock.port() + SLOW_ENDPOINT);
+        cut = new HttpConnector(configuration, sharedConfiguration, new HttpClientFactory());
+
+        wiremock.stubFor(get(SLOW_ENDPOINT).willReturn(ok(BACKEND_RESPONSE_BODY).withFixedDelay(BACKEND_FIXED_DELAY_MS)));
+        wiremock.stubFor(post(urlPathEqualTo(SLOW_ENDPOINT)).willReturn(ok(BACKEND_RESPONSE_BODY)));
+
+        final HttpResponse holderResponse = mock(HttpResponse.class, withSettings().strictness(Strictness.LENIENT));
+        final HttpResponse abortedResponse = mock(HttpResponse.class, withSettings().strictness(Strictness.LENIENT));
+        final HttpResponse postResponse = mock(HttpResponse.class, withSettings().strictness(Strictness.LENIENT));
+        final HttpExecutionContext holderCtx = exchangeContext(HttpMethod.GET, holderResponse);
+        final HttpExecutionContext abortedCtx = exchangeContext(HttpMethod.GET, abortedResponse);
+        final HttpExecutionContext postCtx = exchangeContext(HttpMethod.POST, postResponse);
+        // A single event loop makes the pool grant the released connection to the next waiter inline, which is the
+        // ordering that lets a close issued after the release hit a connection another request already holds.
+        final Context eventLoop = ((VertxInternal) vertx.getDelegate()).createEventLoopContext();
+
+        final TestObserver<Void> holder = connectOn(eventLoop, cut.connect(holderCtx));
+        awaitRequestReceived(getRequestedFor(urlPathEqualTo(SLOW_ENDPOINT)));
+
+        final TestObserver<Void> aborted = connectOn(eventLoop, cut.connect(abortedCtx));
+        eventLoop.runOnContext(v -> aborted.dispose());
+        final TestObserver<Void> postObs = connectOn(eventLoop, cut.connect(postCtx));
+
+        assertNoTimeout(holder);
+        holder.assertComplete();
+        drainChunks(holderResponse);
+
+        assertNoTimeout(postObs);
+        postObs.assertComplete();
+        verify(postResponse).status(HttpStatusCode.OK_200);
+        wiremock.verify(1, postRequestedFor(urlPathEqualTo(SLOW_ENDPOINT)));
+        wiremock.verify(1, getRequestedFor(urlPathEqualTo(SLOW_ENDPOINT)));
+    }
+
+    private HttpExecutionContext exchangeContext(final HttpMethod method, final HttpResponse response) {
+        final HttpExecutionContext exchangeCtx = mock(HttpExecutionContext.class, withSettings().strictness(Strictness.LENIENT));
+        final HttpRequest exchangeRequest = mock(HttpRequest.class, withSettings().strictness(Strictness.LENIENT));
+
+        when(exchangeCtx.request()).thenReturn(exchangeRequest);
+        when(exchangeCtx.response()).thenReturn(response);
+        when(exchangeCtx.metrics()).thenReturn(mock(Metrics.class));
+        when(exchangeCtx.getTracer()).thenReturn(new Tracer(null, new NoOpTracer()));
+        when(exchangeCtx.getComponent(Vertx.class)).thenReturn(vertx);
+        when(exchangeCtx.getComponent(Configuration.class)).thenReturn(mock(Configuration.class));
+        when(exchangeCtx.withLogger(any(Logger.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(exchangeRequest.method()).thenReturn(method);
+        when(exchangeRequest.parameters()).thenReturn(new LinkedMultiValueMap<>());
+        when(exchangeRequest.pathInfo()).thenReturn("");
+        when(exchangeRequest.headers()).thenReturn(HttpHeaders.create());
+        when(exchangeRequest.chunks()).thenReturn(Flowable.empty());
+        when(response.headers()).thenReturn(HttpHeaders.create());
+        return exchangeCtx;
+    }
+
+    private TestObserver<Void> connectOn(final Context context, final Completable connect) {
+        final TestObserver<Void> observer = new TestObserver<>();
+        context.runOnContext(v -> connect.subscribe(observer));
+        return observer;
+    }
+
+    private HttpConnector connectorWhoseFirstRequestHeadCannotBeWritten(final UnwritableHeaderValue unwritableHeaderValue) {
+        sharedConfiguration.getHttpOptions().setKeepAlive(true);
+        sharedConfiguration.getHttpOptions().setMaxConcurrentConnections(1);
+        sharedConfiguration.getHttpOptions().setReadTimeout(READ_TIMEOUT_MS);
+        final AtomicBoolean firstRequest = new AtomicBoolean(true);
+        return new HttpConnector(configuration, sharedConfiguration, new HttpClientFactory()) {
+            @Override
+            protected HttpClientRequest customizeHttpClientRequest(final HttpClientRequest httpClientRequest) {
+                if (firstRequest.getAndSet(false)) {
+                    httpClientRequest.getDelegate().headers().add("X-Unwritable", unwritableHeaderValue);
+                }
+                return httpClientRequest;
+            }
+        };
+    }
+
+    /**
+     * Subscribes from a worker context so the request head is handed to the connection's event loop as a queued task,
+     * as it is when the gateway serves a request from another event loop. Written from the connection's own event
+     * loop, the head would be written inline and fail the caller at once instead of leaving the request waiting.
+     */
+    private TestObserver<Void> connectFromWorkerContext(final Completable connect) {
+        final TestObserver<Void> observer = new TestObserver<>();
+        ((VertxInternal) vertx.getDelegate()).createWorkerContext().runOnContext(v -> connect.subscribe(observer));
+        return observer;
+    }
+
     private void awaitRequestReceived(final RequestPatternBuilder pattern) throws InterruptedException {
         final long deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
         while (wiremock.findAll(pattern).isEmpty() && System.nanoTime() - deadlineNs < 0) {
@@ -1542,5 +1820,40 @@ class HttpConnectorTest {
 
     private void assertNoTimeout(TestObserver<Void> obs) throws InterruptedException {
         assertThat(obs.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)).as("Should complete before timeout").isTrue();
+    }
+
+    /**
+     * Passes Vert.x's header validation, then throws when the connection writes the request head, from inside the
+     * task queued on its event loop: the same place a concurrent header write surfaces as a
+     * ConcurrentModificationException.
+     */
+    private static final class UnwritableHeaderValue implements CharSequence {
+
+        private final CountDownLatch writeAttempted = new CountDownLatch(1);
+
+        boolean awaitWriteAttempt() throws InterruptedException {
+            return writeAttempted.await(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }
+
+        @Override
+        public int length() {
+            return 1;
+        }
+
+        @Override
+        public char charAt(final int index) {
+            return 'x';
+        }
+
+        @Override
+        public CharSequence subSequence(final int start, final int end) {
+            return this;
+        }
+
+        @Override
+        public String toString() {
+            writeAttempted.countDown();
+            throw new ConcurrentModificationException();
+        }
     }
 }

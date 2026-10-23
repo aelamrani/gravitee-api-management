@@ -31,12 +31,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 POM_FILE="$REPO_ROOT/pom.xml"
 # The distribution carries its own <revision>/<sha1>/<changelist> since it left the product
 # reactor, and the two no longer have to agree. What it assembles is its own apim.core.version.
-#
-# These scripts do NOT touch that pin, and they need to: a branch cut from master inherits master's
-# SNAPSHOT pin and cannot release until a core is released and its pinning pull request merged,
-# while master keeps pinning a version it stops publishing as soon as <revision> moves on.
-# Until BX-383 lands, both are gestures someone has to remember.
-# https://gravitee.atlassian.net/browse/BX-383
 DISTRIBUTION_POM_FILE="$REPO_ROOT/gravitee-apim-distribution/pom.xml"
 PARENT_DIR="$(dirname "$REPO_ROOT")"
 
@@ -86,5 +80,131 @@ CLOUD_APIM_REPO="$PARENT_DIR/cloud-apim"
 
 GITHUB_REPO="gravitee-io/gravitee-api-management"
 BRANCH_LABEL="apply-on-${MAJOR}-${MINOR}-x"
+
+# Each branch pins the core it publishes itself, so the pin follows the version being written: a
+# branch that keeps master's pin cannot release — a SNAPSHOT core is refused — and master that keeps
+# the branch's pin assembles a version it no longer publishes.
+#
+# Verified after writing, because a sed that matches nothing exits 0: the pin would silently stay
+# where it was, and the freeze would report success.
+set_core_pin() {
+    local version="$1"
+
+    sed -i.bak "s|<apim.core.version>.*</apim.core.version>|<apim.core.version>${version}</apim.core.version>|" "$DISTRIBUTION_POM_FILE"
+    rm -f "$DISTRIBUTION_POM_FILE.bak"
+
+    if ! grep -q "<apim.core.version>${version}</apim.core.version>" "$DISTRIBUTION_POM_FILE"; then
+        echo "ERROR: apim.core.version was not set to ${version} in $DISTRIBUTION_POM_FILE." >&2
+        echo "       It currently reads: $(grep -o '<apim.core.version>[^<]*</apim.core.version>' "$DISTRIBUTION_POM_FILE" || echo 'nothing')" >&2
+        exit 1
+    fi
+    echo "Pinned core ${version}"
+}
+
+# The chart names the version twice: `version` is the chart's own, `appVersion` the APIM it deploys,
+# and a freeze moves both. Writing only the first is what the first freeze did, and the branch could
+# not release until it was fixed by hand: `assertChartMatchesVersion` compares the release against
+# both fields before it triggers anything.
+#
+# Anchored on the line start, because both names occur again under the chart's dependencies, and read
+# back afterwards, because a sed that matches nothing exits 0.
+set_chart_version() {
+    local version="$1"
+
+    sed -i.bak -E -e "s|^version: .*|version: ${version}|" -e "s|^appVersion: .*|appVersion: ${version}|" "$HELM_CHART"
+    rm -f "$HELM_CHART.bak"
+
+    local written
+    written=$(grep -cE "^(version|appVersion): ${version}\$" "$HELM_CHART")
+    if [ "$written" != "2" ]; then
+        echo "ERROR: version and appVersion were not both set to ${version} in $HELM_CHART." >&2
+        echo "       They currently read:" >&2
+        grep -nE "^(version|appVersion):" "$HELM_CHART" >&2
+        exit 1
+    fi
+    echo "Chart version and appVersion set to ${version}"
+}
+
+# A line keeps its backports until the first release of the new minor ships — opening 4.13 does not
+# retire 4.9, releasing 4.13.0 does. So the freeze only adds; the removal belongs to the end-of-life
+# runbook, which that release triggers.
+add_mergify_rule() {
+    local branch="$1"
+    local label="$2"
+
+    if grep -q "label=${label}" "$MERGIFY_FILE"; then
+        echo "Mergify already backports to ${branch}."
+        return
+    fi
+
+    # The rule is appended at the end of the file, which puts it inside `pull_request_rules` only
+    # while that is the last root key. Checked before writing, because greping afterwards for the
+    # text just written passes whatever the rule ended up under.
+    local last_key
+    last_key=$(grep -E '^[A-Za-z_][A-Za-z0-9_-]*:' "$MERGIFY_FILE" | tail -1)
+    if [ "$last_key" != "pull_request_rules:" ]; then
+        echo "ERROR: the last root key of $MERGIFY_FILE is '${last_key}', not 'pull_request_rules:'." >&2
+        echo "       Appending the rule would file it under that key. Add it by hand." >&2
+        exit 1
+    fi
+
+    cat >> "$MERGIFY_FILE" <<EOF
+    - name: Apply commits on \`${branch}\`
+      conditions:
+          - label=${label}
+      actions:
+          backport:
+              branches:
+                  - ${branch}
+              assignees:
+                  - "{{ author }}"
+              body: |
+                  This is an automatic copy of pull request #{{number}} done by [Mergify](https://mergify.com).
+
+                  ----
+
+                  {{ body }}
+
+                  ----
+                  {{ cherry_pick_error }}
+              title: "[${branch}] {{ title }}"
+EOF
+
+    if ! grep -q "label=${label}" "$MERGIFY_FILE" || ! grep -q "title: \"\[${branch}\]" "$MERGIFY_FILE"; then
+        echo "ERROR: the Mergify rule for ${branch} was not appended to $MERGIFY_FILE." >&2
+        exit 1
+    fi
+    echo "Mergify: backporting to ${branch} on ${label}"
+}
+
+# Asks before anything that leaves the machine or deletes local work. `y` runs it, `s` skips it and
+# carries on, anything else aborts the freeze — resume later with the step number.
+# Reads from /dev/tty so it still asks when called inside a command substitution.
+# `-f` on a step, or on code-freeze.sh through CODE_FREEZE_FORCE, answers yes to all of them.
+if [ "${1:-}" = "-f" ]; then
+    CODE_FREEZE_FORCE=true
+fi
+confirm() {
+    local answer
+    echo "" >&2
+    echo ">>> About to run: $*" >&2
+    if [ "${CODE_FREEZE_FORCE:-false}" = "true" ]; then
+        echo ">>> Forced (-f)." >&2
+        return 0
+    fi
+    read -r -p ">>> Proceed? [y]es / [s]kip / [N]o (abort): " answer < /dev/tty
+    case "$answer" in
+        y|Y) return 0 ;;
+        s|S) echo ">>> Skipped." >&2; return 1 ;;
+        *) echo ">>> Aborted." >&2; exit 1 ;;
+    esac
+}
+
+# Runs the command only once confirmed.
+run_confirmed() {
+    if confirm "$*"; then
+        "$@"
+    fi
+}
 
 echo "Code freeze context: version=${FULL_VERSION} branch=${BRANCH_NAME}"

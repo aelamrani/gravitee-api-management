@@ -15,19 +15,22 @@
  */
 import '@gravitee/gamma-lib-observability/styles';
 import '@gravitee/graphene-charts/lineage/styles.css';
-import { CapabilityProvider, type DashboardCapabilities } from '@gravitee/gamma-lib-observability';
+import { CapabilityProvider } from '@gravitee/gamma-lib-observability';
 import { useEnvironment, useHasFeature } from '@gravitee/gamma-modules-sdk';
-import { buildModuleNavPath, resolveModulePath } from '@gravitee/gamma-modules-sdk/routing';
-import { buildLinearBreadcrumbs, SidebarNavigation, useLayoutConfig, type NavGroup } from '@gravitee/graphene-core';
+import { useModuleRouting } from '@gravitee/gamma-modules-sdk/routing';
+import { SidebarNavigation, useLayoutConfig, type NavGroup } from '@gravitee/graphene-core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useCallback, useMemo } from 'react';
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { useMemo } from 'react';
+import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 
 import { ApimToaster } from './ApimToaster';
+import { detailPageOwnsBreadcrumbs, moduleShellLayout } from './detailPageOwnsBreadcrumbs';
 import { OnboardingProvider, OnboardingTourHost } from './onboarding';
+import { useModuleBreadcrumbs } from './useModuleBreadcrumbs';
+import { useModuleNavigation } from './useModuleNavigation';
 import { NAV_GROUPS } from '../config/navigation';
-import { observability } from '../config/observability';
-import { APIM_ROUTE_CONFIG, getActiveNavKey, ROUTES, type RouteKey } from '../config/routes';
+import { PERMISSIVE_CAPABILITIES, observability } from '../config/observability';
+import { APIM_ROUTE_CONFIG, getActiveNavKey } from '../config/routes';
 import { ApiProductDetailLayout, ApiProductIndexRedirect } from '../features/api-products/components';
 import { ApiProductsPage } from '../features/api-products/pages/ApiProductsPage';
 import { CreateApiProductPage } from '../features/api-products/pages/CreateApiProductPage';
@@ -48,7 +51,8 @@ import { AlertFormPage } from '../features/apis/pages/detail/alerts/AlertFormPag
 import { ApiAlertsPage } from '../features/apis/pages/detail/alerts/ApiAlertsPage';
 import { ApiScoringPage } from '../features/apis/pages/detail/api-score/ApiScoringPage';
 import { ApiDetailOverviewPage } from '../features/apis/pages/detail/ApiDetailOverviewPage';
-import { ApiDetailPlaceholderPage } from '../features/apis/pages/detail/ApiDetailPlaceholderPage';
+import { ApiDocumentationEditPage } from '../features/apis/pages/detail/ApiDocumentationEditPage';
+import { ApiDocumentationPage } from '../features/apis/pages/detail/ApiDocumentationPage';
 import { AuditLogsPage } from '../features/apis/pages/detail/audit-logs/AuditLogsPage';
 import { ApiBroadcastsPage } from '../features/apis/pages/detail/broadcasts/ApiBroadcastsPage';
 import { ApiConsumerDetailPage } from '../features/apis/pages/detail/consumers/ApiConsumerDetailPage';
@@ -71,6 +75,8 @@ import { ApiDynamicPropertiesPage } from '../features/apis/pages/detail/properti
 import { ApiReporterSettingsPage } from '../features/apis/pages/detail/reporter-settings/ApiReporterSettingsPage';
 import { ApiResourcesPage } from '../features/apis/pages/detail/resources/ApiResourcesPage';
 import { ApiResourceWizardPage } from '../features/apis/pages/detail/resources/ApiResourceWizardPage';
+import { ApiResponseTemplateFormPage } from '../features/apis/pages/detail/response-templates/ApiResponseTemplateFormPage';
+import { ApiResponseTemplatesPage } from '../features/apis/pages/detail/response-templates/ApiResponseTemplatesPage';
 import { UserPermissionsPage } from '../features/apis/pages/detail/user-permissions/UserPermissionsPage';
 import { ImportApiPage } from '../features/apis/pages/ImportApiPage';
 import { PolicyStudioPage } from '../features/apis/pages/policy-studio/PolicyStudioPage';
@@ -86,22 +92,11 @@ import { gammaConsoleHttpOptions } from '../shared/api/apimClient';
 
 const queryClient = new QueryClient();
 
-const PERMISSIVE_CAPABILITIES: DashboardCapabilities = {
-    'observability.dashboards.read': true,
-    'observability.logs.read': true,
-    'observability.traces.read': true,
-};
-
 /** Host console env root (`/environments/:hrid`) — used to deep-link log rows to APIs. */
 const HOST_ENV_ROOT_RE = /\/environments\/[^/]+/;
 
 /** Host routes mount this module under `/environments/:envHrid/apim/...`. */
 const HOST_ENV_PATH_RE = /\/environments\/[^/]+\//;
-
-function buildObserveBreadcrumbItem(segment: { label: string; routeKey?: string }, modulePrefix: string, pathname: string) {
-    const to = segment.routeKey ? buildModuleNavPath(modulePrefix, segment.routeKey, pathname) : undefined;
-    return { label: segment.label, to };
-}
 
 function useLicenseAwareNavGroups(): NavGroup[] {
     const hasApiProducts = useHasFeature(ApimLicenseFeature.API_PRODUCTS);
@@ -120,52 +115,31 @@ function useLicenseAwareNavGroups(): NavGroup[] {
 
 function ModuleLayout() {
     const location = useLocation();
-    const navigate = useNavigate();
-    const { modulePrefix } = useMemo(() => resolveModulePath(location.pathname, APIM_ROUTE_CONFIG), [location.pathname]);
-    const activeNavKey = useMemo(() => getActiveNavKey(location.pathname, modulePrefix), [location.pathname, modulePrefix]);
-    const navGroups = useLicenseAwareNavGroups();
+    const routing = useModuleRouting(APIM_ROUTE_CONFIG);
+    const activeNavKey = useMemo(() => getActiveNavKey(location.pathname, routing.modulePrefix), [location.pathname, routing.modulePrefix]);
+    const licenseAwareNavGroups = useLicenseAwareNavGroups();
+    const { navGroups, handleNavSelect } = useModuleNavigation(licenseAwareNavGroups, routing);
 
-    const handleNavSelect = useCallback(
-        (key: string) => {
-            navigate(buildModuleNavPath(modulePrefix, ROUTES[key as RouteKey].path, location.pathname));
-        },
-        [navigate, modulePrefix, location.pathname],
-    );
+    const detailOwnsBreadcrumbs = detailPageOwnsBreadcrumbs(location.pathname);
+    const breadcrumbs = useModuleBreadcrumbs(activeNavKey, routing);
 
-    const breadcrumbs = useMemo(() => {
-        const observeSegments = observability.breadcrumbSegments(activeNavKey);
-        if (observeSegments) {
-            return buildLinearBreadcrumbs(navigate, [
-                ...observeSegments.map(segment => buildObserveBreadcrumbItem(segment, modulePrefix, location.pathname)),
-            ]);
-        }
-        return buildLinearBreadcrumbs(navigate, [{ label: ROUTES[activeNavKey].label }]);
-    }, [activeNavKey, navigate, modulePrefix, location.pathname]);
+    const layoutBreadcrumbs = detailOwnsBreadcrumbs ? null : breadcrumbs;
+    const navigation = <SidebarNavigation groups={navGroups} activeItemKey={activeNavKey} onItemSelect={handleNavSelect} />;
 
-    useLayoutConfig(
-        {
-            navigation: <SidebarNavigation groups={navGroups} activeItemKey={activeNavKey} onItemSelect={handleNavSelect} />,
-            breadcrumbs,
-        },
-        [activeNavKey, breadcrumbs, handleNavSelect, navGroups],
-    );
+    useLayoutConfig(moduleShellLayout(detailOwnsBreadcrumbs, navigation, breadcrumbs), [
+        activeNavKey,
+        layoutBreadcrumbs,
+        handleNavSelect,
+        navGroups,
+    ]);
 
     return <Outlet />;
 }
 
 function OnboardingTourHostConnected() {
-    const location = useLocation();
-    const navigate = useNavigate();
-    const { modulePrefix } = useMemo(() => resolveModulePath(location.pathname, APIM_ROUTE_CONFIG), [location.pathname]);
+    const { navigateToKey } = useModuleRouting(APIM_ROUTE_CONFIG);
 
-    const handleNavigate = useCallback(
-        (navKey: RouteKey) => {
-            navigate(buildModuleNavPath(modulePrefix, ROUTES[navKey].path, location.pathname));
-        },
-        [navigate, modulePrefix, location.pathname],
-    );
-
-    return <OnboardingTourHost onNavigate={handleNavigate} />;
+    return <OnboardingTourHost onNavigate={navigateToKey} />;
 }
 
 function ObservabilitySection() {
@@ -235,6 +209,11 @@ export function AppRoutes() {
                                 <Route path="entrypoints" element={<ApiEntrypointsPage />} />
                                 <Route path="cors" element={<ApiCorsPage />} />
                                 <Route path="metadata" element={<ApiMetadataPage />} />
+                                <Route path="response-templates">
+                                    <Route index element={<ApiResponseTemplatesPage />} />
+                                    <Route path="new" element={<ApiResponseTemplateFormPage />} />
+                                    <Route path=":templateKey/:contentType" element={<ApiResponseTemplateFormPage />} />
+                                </Route>
                                 <Route path="endpoints">
                                     <Route index element={<Navigate to="list" replace />} />
                                     <Route path="list" element={<ApiEndpointsPage />} />
@@ -243,7 +222,10 @@ export function AppRoutes() {
                                 </Route>
                                 <Route path="reporter-settings" element={<ApiReporterSettingsPage />} />
                                 <Route path="policy-studio" element={<PolicyStudioPage />} />
-                                <Route path="documentation" element={<ApiDetailPlaceholderPage title="Documentation" />} />
+                                <Route path="documentation">
+                                    <Route index element={<ApiDocumentationPage />} />
+                                    <Route path=":pageId/edit" element={<ApiDocumentationEditPage />} />
+                                </Route>
                                 <Route path="plans">
                                     <Route index element={<ApiPlansPage />} />
                                     <Route path="new/:securityType" element={<ApiPlanFormPage />} />

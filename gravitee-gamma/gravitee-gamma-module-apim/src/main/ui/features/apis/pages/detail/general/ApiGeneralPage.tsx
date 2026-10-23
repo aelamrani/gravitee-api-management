@@ -31,8 +31,9 @@ import {
     Trash2Icon,
     UserIcon,
 } from '@gravitee/graphene-core/icons';
+import { useQuery } from '@tanstack/react-query';
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { CategorySelectInput } from './CategorySelectInput';
 import { ChipInput } from './ChipInput';
@@ -40,17 +41,27 @@ import { DuplicateApi } from './DuplicateApi';
 import { ExportApi } from './ExportApi';
 import { ImagePicker } from './ImagePicker';
 import { ImportApiSheet } from './ImportApiSheet';
-import { PromoteDialog } from './PromoteDialog';
+import { PromoteDialog, type PromoteState } from './PromoteDialog';
+import { ApimApiError } from '../../../../../shared/api/apimClient';
 import { downloadBlob } from '../../../../../shared/browser';
 import { ConfirmDialog } from '../../../../../shared/components';
 import { notify } from '../../../../../shared/notify';
 import { useApiDetailContext } from '../../../context/ApiDetailContext';
+import { useApiDeployVerify } from '../../../hooks/useApiDeployVerify';
 import { useApiGeneralMutations } from '../../../hooks/useApiGeneralMutations';
+import { useApiReviewEnabled } from '../../../hooks/useApiReviewEnabled';
+import { useAskForReviewDialog } from '../../../hooks/useAskForReviewDialog';
 import { useEnvCategories } from '../../../hooks/useEnvCategories';
 import { exportApiCrd, exportApiDefinition } from '../../../services/apis';
+import { getIntegration } from '../../../services/integrations';
 import type { ApiDetailDto } from '../../../types';
 import { extractContextPathPlaceholder, extractHostPlaceholder, getDuplicateEntryMode } from '../../../utils/apiGeneralDuplicate';
 import { buildExcludeAdditionalData, buildExportFileName, type ExportIncludeKey } from '../../../utils/apiGeneralExport';
+import { canAskForReview, isReviewClearedForLifecycle } from '../../../utils/apiReview';
+import { getSourceIntegration, isFederatedApi } from '../../../utils/federatedApi';
+import { readableImportError } from '../../../utils/importFileValidation';
+import { buildIntegrationOverviewPath } from '../../../utils/integrationOverviewPath';
+import { integrationKeys } from '../../../utils/queryKeys';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -81,20 +92,31 @@ function formatDate(iso?: string): string {
     return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-/** Promote flow is still stubbed — keep disabled until it ships. */
-const PROMOTE_UNAVAILABLE = true;
+function resolvePromoteState(input: { cockpitNotAccepted: boolean; hasLoadError: boolean; isLoading: boolean }): PromoteState {
+    if (input.cockpitNotAccepted) return 'cloudNotConnected';
+    if (input.hasLoadError) return 'error';
+    if (input.isLoading) return 'loading';
+    return 'ready';
+}
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
+
+function lifecycleActionLabel(lifecycleState: 'PUBLISHED' | 'UNPUBLISHED' | 'DEPRECATED'): string {
+    if (lifecycleState === 'PUBLISHED') return 'Publish';
+    if (lifecycleState === 'UNPUBLISHED') return 'Unpublish';
+    return 'Deprecate';
+}
 
 export function ApiGeneralPage() {
     const { apiId } = useParams<{ apiId: string }>();
     const env = useEnvironment();
     const navigate = useNavigate();
+    const location = useLocation();
     const { api, isLoading, permissionsReady } = useApiDetailContext();
 
     // ── Permissions (mirrors legacy api-general-info.component.ts) ────────────
     // api-definition-r : read form / see export / see allow-in-products toggle
-    // api-definition-u : edit form / save / start / stop / promote
+    // api-definition-u : edit form / save; start / stop / promote also require a non-federated API
     // api-definition-c : import / duplicate
     // api-definition-d : delete
     const canReadDefinition = useHasPermission({ anyOf: ['api-definition-r'] });
@@ -103,6 +125,17 @@ export function ApiGeneralPage() {
     const canDeleteDefinition = useHasPermission({ anyOf: ['api-definition-d'] });
 
     const isKubernetesManaged = api?.definitionContext?.origin === 'KUBERNETES';
+    const isFederated = isFederatedApi(api);
+    const sourceIntegration = getSourceIntegration(api);
+
+    const { data: sourceIntegrationDetail } = useQuery({
+        queryKey: integrationKeys.detail(env?.id ?? '', sourceIntegration?.integrationId ?? ''),
+        queryFn: () => getIntegration(env!.id, sourceIntegration!.integrationId),
+        enabled: Boolean(env?.id && sourceIntegration?.integrationId),
+        staleTime: 5 * 60_000,
+    });
+    const sourceIntegrationDisplayName =
+        sourceIntegrationDetail?.name || sourceIntegration?.integrationName || sourceIntegration?.integrationId || '';
 
     // Form is read-only until permissions are resolved, if user lacks update rights,
     // or if the API is managed by the Kubernetes operator.
@@ -110,6 +143,18 @@ export function ApiGeneralPage() {
 
     // Delete is blocked while the API is running or published (matches legacy canDelete logic).
     const cannotDelete = api?.state === 'STARTED' || api?.lifecycleState === 'PUBLISHED';
+
+    // With API Review on, start/stop waits for a reviewer; the author asks for that review from here.
+    const { enabled: apiReviewEnabled } = useApiReviewEnabled();
+    const reviewClearsLifecycle = isReviewClearedForLifecycle(apiReviewEnabled, api?.workflowState);
+    const showAskForReview = canEditDefinition && !isFederated && canAskForReview(apiReviewEnabled, api?.workflowState);
+    const showStartStop = canEditDefinition && reviewClearsLifecycle && !isFederated;
+    const showApiEvents = showAskForReview || showStartStop || canDeleteDefinition || canEditDefinition;
+    const apiStarted = api?.state === 'STARTED';
+    const needsLicenseCheck = showStartStop && !apiStarted && api?.definitionVersion === 'V4' && api?.type !== 'PROXY';
+    const deployVerify = useApiDeployVerify(apiId, needsLicenseCheck);
+    const startBlockedByLicense = needsLicenseCheck && deployVerify.data?.ok === false;
+    const askForReview = useAskForReviewDialog(apiId);
 
     const { data: envCategories = [], isLoading: categoriesLoading } = useEnvCategories();
 
@@ -125,6 +170,12 @@ export function ApiGeneralPage() {
     const [duplicateOpen, setDuplicateOpen] = useState(false);
     const [promoteOpen, setPromoteOpen] = useState(false);
     const [deleteOpen, setDeleteOpen] = useState(false);
+    const [lifecycleConfirm, setLifecycleConfirm] = useState<{
+        title: string;
+        description: string;
+        confirmLabel: string;
+        run: () => void;
+    } | null>(null);
 
     // Seed form once per API identity. Render-phase setState (not inside an effect) is
     // batched atomically by React 18 — the three calls below are a single update, so
@@ -150,6 +201,7 @@ export function ApiGeneralPage() {
 
     const {
         saveMutation,
+        lifecycleMutation,
         startMutation,
         stopMutation,
         deleteMutation,
@@ -159,24 +211,81 @@ export function ApiGeneralPage() {
         removePictureMutation,
         backgroundMutation,
         removeBackgroundMutation,
-    } = useApiGeneralMutations(api, {
-        onDeleteSuccess: () => {
-            setDeleteOpen(false);
-            notify.success('API deleted');
-            navigate('../..');
+        promotionTargetsQuery,
+        pendingPromotionsQuery,
+        promoteMutation,
+    } = useApiGeneralMutations(
+        api,
+        {
+            onDeleteSuccess: () => {
+                setDeleteOpen(false);
+                notify.success('API deleted');
+                navigate('../..');
+            },
+            onDuplicateSuccess: newApi => {
+                setDuplicateOpen(false);
+                navigate(`../../${newApi.id}/general`);
+            },
+            onImportSuccess: updatedApi => {
+                setImportOpen(false);
+                notify.success('API updated');
+                const seed = formFromApi(updatedApi);
+                setSavedForm(seed);
+                setForm(seed);
+            },
+            onPromoteSuccess: () => {
+                setPromoteOpen(false);
+                notify.success('Promotion requested');
+            },
         },
-        onDuplicateSuccess: newApi => {
-            setDuplicateOpen(false);
-            navigate(`../../${newApi.id}/general`);
-        },
-        onImportSuccess: updatedApi => {
-            setImportOpen(false);
-            notify.success('API updated');
-            const seed = formFromApi(updatedApi);
-            setSavedForm(seed);
-            setForm(seed);
-        },
+        promoteOpen,
+    );
+
+    // ── Promote dialog derived state (mirrors api-general-info-promote-dialog.component.ts, which
+    // treats either the targets or the pending-promotions call failing with installation.notAccepted
+    // the same way via a single combineLatest catchError) ──
+    let cockpitNotAccepted = false;
+    let cockpitURL: string | undefined;
+    for (const error of [promotionTargetsQuery.error, pendingPromotionsQuery.error]) {
+        if (error instanceof ApimApiError) {
+            const body = error.body as { technicalCode?: string; parameters?: { cockpitURL?: string } } | undefined;
+            if (body?.technicalCode === 'installation.notAccepted') {
+                cockpitNotAccepted = true;
+                cockpitURL = body.parameters?.cockpitURL;
+                break;
+            }
+        }
+    }
+
+    // Any other failure (either query) is a real error, not "zero eligible targets" — and since
+    // pending-promotion flags come from a separate query, letting that one fail silently would let
+    // a user re-promote to a destination that already has a request in flight.
+    const promoteLoadError = !cockpitNotAccepted ? (promotionTargetsQuery.error ?? pendingPromotionsQuery.error) : null;
+    const promoteState = resolvePromoteState({
+        cockpitNotAccepted,
+        hasLoadError: promoteLoadError !== null,
+        // isFetching, not isLoading: reopening the dialog serves the cached lists first, which would
+        // offer a destination that was promoted to moments ago as if it were still free.
+        isLoading: promotionTargetsQuery.isFetching || pendingPromotionsQuery.isFetching,
     });
+
+    const pendingPromotions = pendingPromotionsQuery.data ?? [];
+    const promoteTargets = (promotionTargetsQuery.data ?? [])
+        .map(target => ({
+            id: target.id,
+            name: target.name,
+            promotionInProgress: pendingPromotions.some(promotion => promotion.targetEnvCockpitId === target.id),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+    const promoteLoadErrorMessage =
+        promoteLoadError instanceof Error ? promoteLoadError.message : 'An error occurred while loading promotion targets.';
+
+    const promoteError = promoteMutation.isError
+        ? promoteMutation.error instanceof Error
+            ? promoteMutation.error.message
+            : 'An error occurred while requesting promotion.'
+        : null;
 
     const handleSave = useCallback(() => {
         if (!form) return;
@@ -224,22 +333,72 @@ export function ApiGeneralPage() {
 
     const duplicateEntryMode = getDuplicateEntryMode(api);
 
-    const apiStarted = api?.state === 'STARTED';
-
     const handleToggleApiState = useCallback(() => {
-        if (isReadOnly) return;
-        if (apiStarted) {
-            stopMutation.mutate(undefined, {
-                onSuccess: () => notify.success('API stopped'),
-                onError: e => notify.error(e, 'Failed to stop API.'),
+        if (isReadOnly || startBlockedByLicense) return;
+        setLifecycleConfirm(
+            apiStarted
+                ? {
+                      title: 'Stop API',
+                      description: 'Are you sure you want to stop the API?',
+                      confirmLabel: 'Stop',
+                      run: () =>
+                          stopMutation.mutate(undefined, {
+                              onSuccess: () => notify.success('API stopped'),
+                              onError: e => notify.error(e, 'Failed to stop API.'),
+                          }),
+                  }
+                : {
+                      title: 'Start API',
+                      description: 'Are you sure you want to start the API?',
+                      confirmLabel: 'Start',
+                      run: () =>
+                          startMutation.mutate(undefined, {
+                              onSuccess: () => notify.success('API started'),
+                              onError: e => notify.error(e, 'Failed to start API.'),
+                          }),
+                  },
+        );
+    }, [apiStarted, isReadOnly, startBlockedByLicense, startMutation, stopMutation]);
+
+    const confirmLifecycle = useCallback(
+        (lifecycleState: 'PUBLISHED' | 'UNPUBLISHED' | 'DEPRECATED') => {
+            const label = lifecycleActionLabel(lifecycleState);
+            setLifecycleConfirm({
+                title: `${label} API`,
+                description: `Are you sure you want to ${label.toLowerCase()} the API?`,
+                confirmLabel: label,
+                run: () =>
+                    lifecycleMutation.mutate(
+                        { lifecycleState },
+                        {
+                            onSuccess: () => notify.success(`The API has been ${lifecycleState.toLowerCase()} with success.`),
+                            onError: e => notify.error(e, `Failed to ${label.toLowerCase()} the API.`),
+                        },
+                    ),
             });
-        } else {
-            startMutation.mutate(undefined, {
-                onSuccess: () => notify.success('API started'),
-                onError: e => notify.error(e, 'Failed to start API.'),
+        },
+        [lifecycleMutation],
+    );
+
+    const confirmVisibility = useCallback(
+        (visibility: 'PUBLIC' | 'PRIVATE') => {
+            const label = visibility === 'PUBLIC' ? 'Make Public' : 'Make Private';
+            setLifecycleConfirm({
+                title: 'Change visibility',
+                description: `Are you sure you want to make the API ${visibility.toLowerCase()}?`,
+                confirmLabel: label,
+                run: () =>
+                    lifecycleMutation.mutate(
+                        { visibility },
+                        {
+                            onSuccess: () => notify.success(`The API has been made ${visibility.toLowerCase()} with success.`),
+                            onError: e => notify.error(e, 'Failed to change API visibility.'),
+                        },
+                    ),
             });
-        }
-    }, [apiStarted, isReadOnly, startMutation, stopMutation]);
+        },
+        [lifecycleMutation],
+    );
 
     const duplicateError = duplicateMutation.isError
         ? duplicateMutation.error instanceof Error
@@ -247,11 +406,7 @@ export function ApiGeneralPage() {
             : 'Failed to duplicate API.'
         : null;
 
-    const importError = importMutation.isError
-        ? importMutation.error instanceof Error
-            ? importMutation.error.message
-            : 'Failed to import API definition.'
-        : null;
+    const importError = importMutation.isError ? (readableImportError(importMutation.error) ?? 'Failed to import API definition.') : null;
 
     // ── Loading ───────────────────────────────────────────────────────────────
 
@@ -274,7 +429,7 @@ export function ApiGeneralPage() {
             {/* ── Page Header ─────────────────────────────────────────────── */}
             <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1">
-                    <h1 className="text-2xl font-semibold tracking-tight">General</h1>
+                    <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
                     <p className="text-sm text-muted-foreground">Manage name, version, metadata, and lifecycle for this API.</p>
                 </div>
                 {isDirty && !isReadOnly && (
@@ -373,7 +528,7 @@ export function ApiGeneralPage() {
                                 />
                             </div>
 
-                            {canReadDefinition && (
+                            {canReadDefinition && !isFederated && (
                                 <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/40 px-4 py-3">
                                     <div className="flex items-start gap-3">
                                         <BoxesIcon className="size-4 text-primary mt-0.5 shrink-0" />
@@ -466,12 +621,25 @@ export function ApiGeneralPage() {
                                         }
                                         value={formatDate(api?.updatedAt)}
                                     />
+                                    {sourceIntegration && (
+                                        <div className="flex items-center justify-between gap-2">
+                                            <dt className="text-muted-foreground shrink-0 text-xs">From integration</dt>
+                                            <dd className="text-right text-xs font-medium truncate">
+                                                <Link
+                                                    to={buildIntegrationOverviewPath(location.pathname, sourceIntegration.integrationId)}
+                                                    className="underline"
+                                                >
+                                                    {sourceIntegrationDisplayName || '—'}
+                                                </Link>
+                                            </dd>
+                                        </div>
+                                    )}
                                     <div className="flex items-center justify-between gap-2">
                                         <dt className="text-muted-foreground flex items-center gap-1.5 shrink-0 text-xs">
                                             <GlobeIcon className="size-3" /> Visibility
                                         </dt>
                                         <dd>
-                                            <Badge variant="outline" className="gap-1" style={{ fontSize: '10px' }}>
+                                            <Badge variant="outline" className="gap-1">
                                                 {api?.visibility === 'PUBLIC' ? (
                                                     <EyeIcon className="size-2.5" />
                                                 ) : (
@@ -484,9 +652,7 @@ export function ApiGeneralPage() {
                                     <div className="flex items-center justify-between gap-2">
                                         <dt className="text-muted-foreground shrink-0 text-xs">Lifecycle</dt>
                                         <dd>
-                                            <Badge variant="secondary" style={{ fontSize: '10px' }}>
-                                                {api?.lifecycleState ?? '—'}
-                                            </Badge>
+                                            <Badge variant="secondary">{api?.lifecycleState ?? '—'}</Badge>
                                         </dd>
                                     </div>
                                     <div className="flex items-center justify-between gap-2">
@@ -501,52 +667,59 @@ export function ApiGeneralPage() {
                     </div>
 
                     {/* ─ Action strip ─ */}
-                    <Separator className="my-5" />
-                    <div className="flex flex-wrap items-center gap-2">
-                        {canReadDefinition && (
-                            <Button type="button" variant="outline" size="sm" onClick={() => setExportOpen(true)}>
-                                <DownloadIcon className="size-3.5" /> Export
-                            </Button>
-                        )}
-                        {canCreateDefinition && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setImportOpen(true)}
-                                disabled={isKubernetesManaged}
-                            >
-                                <FileUpIcon className="size-3.5" /> Import
-                            </Button>
-                        )}
-                        {canCreateDefinition && api?.type !== 'NATIVE' && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setDuplicateOpen(true)}
-                                disabled={isKubernetesManaged}
-                            >
-                                <CopyIcon className="size-3.5" /> Duplicate
-                            </Button>
-                        )}
-                        {canEditDefinition && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setPromoteOpen(true)}
-                                disabled={PROMOTE_UNAVAILABLE || isKubernetesManaged || api?.lifecycleState === 'DEPRECATED'}
-                            >
-                                <ExternalLinkIcon className="size-3.5" /> Promote
-                            </Button>
-                        )}
-                    </div>
+                    {!isFederated && (
+                        <>
+                            <Separator className="my-5" />
+                            <div className="flex flex-wrap items-center gap-2">
+                                {canReadDefinition && (
+                                    <Button type="button" variant="outline" size="sm" onClick={() => setExportOpen(true)}>
+                                        <DownloadIcon className="size-3.5" /> Export
+                                    </Button>
+                                )}
+                                {canCreateDefinition && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setImportOpen(true)}
+                                        disabled={isKubernetesManaged}
+                                    >
+                                        <FileUpIcon className="size-3.5" /> Import
+                                    </Button>
+                                )}
+                                {canCreateDefinition && api?.type !== 'NATIVE' && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setDuplicateOpen(true)}
+                                        disabled={isKubernetesManaged}
+                                    >
+                                        <CopyIcon className="size-3.5" /> Duplicate
+                                    </Button>
+                                )}
+                                {canEditDefinition && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            promoteMutation.reset();
+                                            setPromoteOpen(true);
+                                        }}
+                                        disabled={isKubernetesManaged || api?.lifecycleState === 'DEPRECATED' || !reviewClearsLifecycle}
+                                    >
+                                        <ExternalLinkIcon className="size-3.5" /> Promote
+                                    </Button>
+                                )}
+                            </div>
+                        </>
+                    )}
                 </CardContent>
             </Card>
 
             {/* ── API Events ──────────────────────────────────────────────── */}
-            {(canEditDefinition || canDeleteDefinition) && (
+            {showApiEvents && (
                 <Card>
                     <CardContent className="pt-5 pb-5">
                         <div className="space-y-4">
@@ -557,17 +730,40 @@ export function ApiGeneralPage() {
                                 </p>
                             </div>
                             <div className="grid grid-cols-2 gap-3">
-                                {canEditDefinition && (
+                                {showAskForReview && (
                                     <button
                                         type="button"
                                         className={cn(
                                             'flex items-center gap-3 rounded-lg border p-4 text-left transition-colors',
-                                            isReadOnly || startMutation.isPending || stopMutation.isPending
+                                            isReadOnly || askForReview.isPending
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-muted/50',
+                                        )}
+                                        onClick={askForReview.openDialog}
+                                        disabled={isReadOnly || askForReview.isPending}
+                                    >
+                                        <div className="shrink-0 rounded-lg p-2 bg-primary/10">
+                                            <EyeIcon className="size-5 text-primary" />
+                                        </div>
+                                        <div>
+                                            <p className="text-sm font-medium">Ask for a review</p>
+                                            <p className="text-xs text-muted-foreground">
+                                                Ask for a review before you can publish or start this API.
+                                            </p>
+                                        </div>
+                                    </button>
+                                )}
+                                {showStartStop && (
+                                    <button
+                                        type="button"
+                                        className={cn(
+                                            'flex items-center gap-3 rounded-lg border p-4 text-left transition-colors',
+                                            isReadOnly || startBlockedByLicense || startMutation.isPending || stopMutation.isPending
                                                 ? 'cursor-not-allowed opacity-50'
                                                 : 'cursor-pointer hover:bg-muted/50',
                                         )}
                                         onClick={handleToggleApiState}
-                                        disabled={isReadOnly || startMutation.isPending || stopMutation.isPending}
+                                        disabled={isReadOnly || startBlockedByLicense || startMutation.isPending || stopMutation.isPending}
                                     >
                                         <div className={cn('shrink-0 rounded-lg p-2', apiStarted ? 'bg-warning/10' : 'bg-success/10')}>
                                             {apiStarted ? (
@@ -589,11 +785,94 @@ export function ApiGeneralPage() {
                                             <p className="text-xs text-muted-foreground">
                                                 {apiStarted
                                                     ? 'Gateway stops accepting requests. Subscriptions are preserved.'
-                                                    : 'Start the API and make it available on all connected gateways.'}
+                                                    : startBlockedByLicense
+                                                      ? 'A license upgrade is required before this API can be started.'
+                                                      : 'Start the API and make it available on all connected gateways.'}
                                             </p>
                                         </div>
                                     </button>
                                 )}
+                                {canEditDefinition &&
+                                    reviewClearsLifecycle &&
+                                    api?.definitionVersion !== 'FEDERATED_AGENT' &&
+                                    (!api?.lifecycleState || api.lifecycleState === 'CREATED' || api.lifecycleState === 'UNPUBLISHED') && (
+                                        <button
+                                            type="button"
+                                            className="flex items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50"
+                                            disabled={isReadOnly}
+                                            onClick={() => confirmLifecycle('PUBLISHED')}
+                                        >
+                                            <div>
+                                                <p className="text-sm font-medium">Publish the API</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Make this API visible in the Developer Portal.
+                                                </p>
+                                            </div>
+                                        </button>
+                                    )}
+                                {canEditDefinition && reviewClearsLifecycle && api?.lifecycleState === 'PUBLISHED' && (
+                                    <button
+                                        type="button"
+                                        className="flex items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50"
+                                        disabled={isReadOnly}
+                                        onClick={() => confirmLifecycle('UNPUBLISHED')}
+                                    >
+                                        <div>
+                                            <p className="text-sm font-medium">Unpublish the API</p>
+                                            <p className="text-xs text-muted-foreground">Remove this API from the Developer Portal.</p>
+                                        </div>
+                                    </button>
+                                )}
+                                {canEditDefinition &&
+                                    api?.lifecycleState !== 'DEPRECATED' &&
+                                    api?.visibility === 'PRIVATE' &&
+                                    api?.definitionVersion !== 'FEDERATED_AGENT' && (
+                                        <button
+                                            type="button"
+                                            className="flex items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50"
+                                            disabled={isReadOnly}
+                                            onClick={() => confirmVisibility('PUBLIC')}
+                                        >
+                                            <div>
+                                                <p className="text-sm font-medium">Make Public</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Anyone who can access the portal can see this API.
+                                                </p>
+                                            </div>
+                                        </button>
+                                    )}
+                                {canEditDefinition &&
+                                    api?.lifecycleState !== 'DEPRECATED' &&
+                                    api?.visibility === 'PUBLIC' &&
+                                    api?.definitionVersion !== 'FEDERATED_AGENT' && (
+                                        <button
+                                            type="button"
+                                            className="flex items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50"
+                                            disabled={isReadOnly}
+                                            onClick={() => confirmVisibility('PRIVATE')}
+                                        >
+                                            <div>
+                                                <p className="text-sm font-medium">Make Private</p>
+                                                <p className="text-xs text-muted-foreground">Only members of this API can see it.</p>
+                                            </div>
+                                        </button>
+                                    )}
+                                {canDeleteDefinition &&
+                                    api?.lifecycleState !== 'DEPRECATED' &&
+                                    api?.definitionVersion !== 'FEDERATED' &&
+                                    api?.definitionVersion !== 'FEDERATED_AGENT' && (
+                                        <button
+                                            type="button"
+                                            className="flex items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50"
+                                            disabled={isReadOnly}
+                                            onClick={() => confirmLifecycle('DEPRECATED')}
+                                        >
+                                            <div>
+                                                <p className="text-sm font-medium">Deprecate</p>
+                                                <p className="text-xs text-muted-foreground">Mark this API as deprecated.</p>
+                                            </div>
+                                        </button>
+                                    )}
                                 {canDeleteDefinition && (
                                     <button
                                         type="button"
@@ -624,6 +903,20 @@ export function ApiGeneralPage() {
             )}
 
             {/* ── Action sheets & dialogs ─────────────────────────────────── */}
+            <ConfirmDialog {...askForReview.dialogProps} icon={<EyeIcon className="size-4" />} />
+            <ConfirmDialog
+                open={lifecycleConfirm !== null}
+                onOpenChange={open => {
+                    if (!open) setLifecycleConfirm(null);
+                }}
+                title={lifecycleConfirm?.title ?? ''}
+                description={lifecycleConfirm?.description}
+                confirmLabel={lifecycleConfirm?.confirmLabel ?? 'Confirm'}
+                onConfirm={() => {
+                    lifecycleConfirm?.run();
+                    setLifecycleConfirm(null);
+                }}
+            />
             <ExportApi
                 open={exportOpen}
                 onOpenChange={open => {
@@ -652,7 +945,20 @@ export function ApiGeneralPage() {
                 isLoading={duplicateMutation.isPending}
                 error={duplicateError}
             />
-            <PromoteDialog open={promoteOpen} onOpenChange={setPromoteOpen} />
+            <PromoteDialog
+                open={promoteOpen}
+                onOpenChange={open => {
+                    if (!open) promoteMutation.reset();
+                    setPromoteOpen(open);
+                }}
+                state={promoteState}
+                targets={promoteTargets}
+                cockpitURL={cockpitURL}
+                loadErrorMessage={promoteLoadErrorMessage}
+                onPromote={target => promoteMutation.mutate(target)}
+                isPromoting={promoteMutation.isPending}
+                error={promoteError}
+            />
             <ConfirmDialog
                 open={deleteOpen}
                 onOpenChange={setDeleteOpen}
@@ -689,21 +995,17 @@ function DetailRow({ label, value }: Readonly<{ label: React.ReactNode; value: s
 function StatusBadge({ state }: Readonly<{ state?: string }>) {
     if (state === 'STARTED') {
         return (
-            <Badge variant="outline" className="gap-1 border-success/20 text-success" style={{ fontSize: '10px' }}>
-                <div className="size-1.5 rounded-full bg-success" /> Started
+            <Badge variant="success" className="gap-1">
+                <div className="size-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }} /> Started
             </Badge>
         );
     }
     if (state === 'STOPPED') {
         return (
-            <Badge variant="outline" className="gap-1 text-warning" style={{ fontSize: '10px', borderColor: 'var(--color-warning)' }}>
-                <div className="size-1.5 rounded-full" style={{ backgroundColor: 'var(--color-warning)' }} /> Stopped
+            <Badge variant="secondary" className="gap-1">
+                <div className="size-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }} /> Stopped
             </Badge>
         );
     }
-    return (
-        <Badge variant="secondary" style={{ fontSize: '10px' }}>
-            {state ?? '—'}
-        </Badge>
-    );
+    return <Badge variant="secondary">{state ?? '—'}</Badge>;
 }

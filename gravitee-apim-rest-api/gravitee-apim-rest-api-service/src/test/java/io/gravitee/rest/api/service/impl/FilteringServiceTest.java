@@ -26,6 +26,7 @@ import static org.mockito.Mockito.*;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.category.model.ApiCategoryOrder;
 import io.gravitee.apim.core.category.use_case.GetCategoryApisUseCase;
+import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.search.Order;
 import io.gravitee.rest.api.idp.api.authentication.UserDetails;
@@ -40,10 +41,10 @@ import io.gravitee.rest.api.service.*;
 import io.gravitee.rest.api.service.common.GraviteeContext;
 import io.gravitee.rest.api.service.filtering.FilteringService;
 import io.gravitee.rest.api.service.impl.filtering.FilteringServiceImpl;
+import io.gravitee.rest.api.service.search.query.SearchSortStrategy;
 import io.gravitee.rest.api.service.v4.ApiAuthorizationService;
 import io.gravitee.rest.api.service.v4.ApiSearchService;
 import java.util.*;
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -381,7 +382,10 @@ public class FilteringServiceTest {
                 eq(GraviteeContext.getExecutionContext()),
                 eq(aQuery),
                 argThat(map -> ((List<String>) map.get("api")).containsAll(Set.of("api-#1", "api-#2", "api-#3"))),
-                isNull()
+                isNull(),
+                eq(EnumSet.noneOf(DefinitionVersion.class)),
+                eq(false),
+                eq(SearchSortStrategy.SCORE_WITH_NAME_AND_ID_TIE_BREAKERS)
             );
 
         Collection<String> searchItems = filteringService.searchApis(GraviteeContext.getExecutionContext(), "user-#1", aQuery);
@@ -400,7 +404,7 @@ public class FilteringServiceTest {
         Collection<String> searchItems = filteringService.searchApis(GraviteeContext.getExecutionContext(), "user-#1", aQuery);
 
         assertThat(searchItems).isEmpty();
-        verify(apiSearchService, never()).searchIds(any(), any(), any(), any());
+        verifyNoInteractions(apiSearchService);
     }
 
     @Test
@@ -464,7 +468,7 @@ public class FilteringServiceTest {
         verify(apiSearchService, never()).searchIds(any(), any(), any(), any());
     }
 
-    private static GetCategoryApisUseCase.@NotNull Result resultForApi(String apiId, int order, String category) {
+    private static GetCategoryApisUseCase.Result resultForApi(String apiId, int order, String category) {
         return new GetCategoryApisUseCase.Result(
             ApiCategoryOrder.builder().apiId(apiId).categoryId(category).order(order).build(),
             Api.builder().id(apiId).categories(Set.of(category)).build()

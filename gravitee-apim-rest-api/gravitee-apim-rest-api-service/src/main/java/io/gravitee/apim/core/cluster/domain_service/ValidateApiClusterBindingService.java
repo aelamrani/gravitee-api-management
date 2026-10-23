@@ -20,18 +20,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.gravitee.apim.core.DomainService;
 import io.gravitee.apim.core.cluster.model.ClusterLifecycleState;
 import io.gravitee.apim.core.cluster.query_service.ClusterQueryService;
+import io.gravitee.definition.model.v4.Api;
 import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.definition.model.v4.nativeapi.NativeApi;
 import io.gravitee.rest.api.service.exceptions.ApiNotDeployableException;
-import java.util.Optional;
 import lombok.CustomLog;
 import lombok.RequiredArgsConstructor;
 
 /**
- * Guards start/deploy of a Kafka Native API: an API bound to a virtual cluster via a
- * {@code native-kafka-virtual-cluster} endpoint ({@code configuration.virtualClusterCrossId}) can
- * only be started or deployed while that virtual cluster is itself deployed. Otherwise the API would
- * sit at the gateway pointing at a cluster with no backends.
+ * Guards start/deploy of an API bound to a cluster, which can only be started or deployed while that cluster is itself
+ * deployed. Otherwise the API would sit at the gateway pointing at a cluster it cannot resolve:
+ * <ul>
+ *     <li>a Kafka Native API bound to a virtual cluster via a {@code native-kafka-virtual-cluster} endpoint
+ *     ({@code configuration.virtualClusterCrossId}), or to a registered cluster via a {@code native-kafka-cluster}
+ *     endpoint ({@code configuration.clusterCrossId});</li>
+ *     <li>a Message API whose {@code kafka} endpoint group is in {@code CLUSTER} mode ({@code clusterCrossId}).</li>
+ * </ul>
  */
 @CustomLog
 @DomainService
@@ -42,11 +46,14 @@ public class ValidateApiClusterBindingService {
     private final ObjectMapper objectMapper;
 
     /**
-     * Throws {@link ApiNotDeployableException} when {@code apiDefinition} is a native API bound to a
-     * virtual cluster that is not currently deployed. No-op for non-native APIs, APIs not bound to a
-     * virtual cluster, or definitions that cannot be parsed.
+     * Throws {@link ApiNotDeployableException} when {@code apiDefinition} is bound to a cluster that is not currently
+     * deployed. No-op for other API types, APIs not bound to a cluster, or definitions that cannot be parsed.
      */
     public void validateDeployable(String apiId, String environmentId, ApiType apiType, String apiDefinition) {
+        if (apiType == ApiType.MESSAGE && apiDefinition != null) {
+            validateMessageApiDeployable(apiId, environmentId, apiDefinition);
+            return;
+        }
         if (apiType != ApiType.NATIVE || apiDefinition == null) {
             return;
         }
@@ -55,21 +62,44 @@ public class ValidateApiClusterBindingService {
             nativeDefinition = objectMapper.readValue(apiDefinition, NativeApi.class);
         } catch (JsonProcessingException e) {
             // Unparseable definition: leave existing start/deploy behaviour unchanged, but trace it —
-            // a corrupted definition silently bypasses the virtual-cluster binding guard.
-            log.warn("Unable to parse native API definition of API {}; skipping virtual cluster binding validation", apiId, e);
+            // a corrupted definition silently bypasses the cluster binding guard.
+            log.warn("Unable to parse native API definition of API {}; skipping cluster binding validation", apiId, e);
             return;
         }
-        Optional<String> virtualClusterCrossId = VirtualClusterBoundApisQueryService.extractVirtualClusterCrossId(
-            nativeDefinition,
-            objectMapper
-        );
-        if (virtualClusterCrossId.isEmpty()) {
+        for (ClusterBoundApisQueryService.ClusterUse use : ClusterBoundApisQueryService.clusterUses(nativeDefinition, objectMapper)) {
+            if (!isDeployed(use.clusterCrossId(), environmentId)) {
+                throw new ApiNotDeployableException(
+                    "The API {" +
+                        apiId +
+                        "} cannot be deployed or started because its cluster {" +
+                        use.clusterCrossId() +
+                        "} is not deployed"
+                );
+            }
+        }
+    }
+
+    private void validateMessageApiDeployable(String apiId, String environmentId, String apiDefinition) {
+        Api definition;
+        try {
+            definition = objectMapper.readValue(apiDefinition, Api.class);
+        } catch (JsonProcessingException e) {
+            log.warn("Unable to parse message API definition of API {}; skipping Kafka cluster binding validation", apiId, e);
             return;
         }
-        String crossId = virtualClusterCrossId.get();
-        // PENDING means the cluster is deployed at the gateway with not-yet-redeployed edits
-        // (a cluster only reaches PENDING from DEPLOYED), so it is a valid target.
-        boolean deployed = clusterQueryService
+        for (String crossId : KafkaClusterBindings.clusterCrossIds(definition.getEndpointGroups(), objectMapper)) {
+            if (!isDeployed(crossId, environmentId)) {
+                throw new ApiNotDeployableException(
+                    "The API {" + apiId + "} cannot be deployed or started because its Kafka cluster {" + crossId + "} is not deployed"
+                );
+            }
+        }
+    }
+
+    // PENDING means the cluster is deployed at the gateway with not-yet-redeployed edits
+    // (a cluster only reaches PENDING from DEPLOYED), so it is a valid target.
+    private boolean isDeployed(String crossId, String environmentId) {
+        return clusterQueryService
             .findByCrossIdAndEnvironmentId(crossId, environmentId)
             .map(
                 cluster ->
@@ -77,10 +107,5 @@ public class ValidateApiClusterBindingService {
                     cluster.getLifecycleState() == ClusterLifecycleState.PENDING
             )
             .orElse(false);
-        if (!deployed) {
-            throw new ApiNotDeployableException(
-                "The API {" + apiId + "} cannot be deployed or started because its virtual cluster {" + crossId + "} is not deployed"
-            );
-        }
     }
 }

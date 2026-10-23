@@ -22,6 +22,7 @@ import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE
 import io.gravitee.apim.core.audit.model.AuditActor;
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.group.model.Group;
+import io.gravitee.apim.core.group.query_service.GroupQueryService;
 import io.gravitee.apim.core.group.use_case.ImportGroupCRDUseCase;
 import io.gravitee.apim.core.group.use_case.SearchGroupsUseCase;
 import io.gravitee.apim.core.group.use_case.ValidateGroupCRDUseCase;
@@ -48,6 +49,7 @@ import io.gravitee.rest.api.rest.annotation.Permissions;
 import io.gravitee.rest.api.service.GroupService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
+import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -62,6 +64,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Path("/environments/{envId}/groups")
@@ -76,6 +79,9 @@ public class GroupsResource extends AbstractResource {
     @Inject
     private ImportGroupCRDUseCase importGroupCRD;
 
+    @Inject
+    private GroupQueryService groupQueryService;
+
     private static final GroupMapper MAPPER = GroupMapper.INSTANCE;
 
     @Inject
@@ -83,9 +89,9 @@ public class GroupsResource extends AbstractResource {
 
     @GET
     @Produces(MediaType.APPLICATION_JSON)
-    @Permissions({ @Permission(value = RolePermission.ENVIRONMENT_GROUP, acls = { RolePermissionAction.READ }) })
     public GroupsResponse listGroups(@BeanParam @Valid PaginationParam paginationParam) {
-        List<GroupEntity> groups = groupService.findAll(GraviteeContext.getExecutionContext());
+        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        List<GroupEntity> groups = groupsVisibleToCaller(executionContext);
 
         List<GroupEntity> groupsSubset = computePaginationData(groups, paginationParam);
 
@@ -99,11 +105,17 @@ public class GroupsResource extends AbstractResource {
     @Path("/_search")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    @Permissions({ @Permission(value = RolePermission.ENVIRONMENT_GROUP, acls = { RolePermissionAction.READ }) })
     public GroupsResponse searchGroups(@BeanParam PaginationParam paginationParam, @Valid GroupSearchParams searchParams) {
         ExecutionContext executionContext = GraviteeContext.getExecutionContext();
 
-        Page<Group> pagedGroups = searchGroupsUseCase.execute(executionContext, searchParams.getIds(), paginationParam.toPageable());
+        Set<String> groupIds = searchParams.getIds();
+        if (!canReadEnvironmentGroups(executionContext)) {
+            Set<String> allowed = groupIdsAttachedToCaller(executionContext);
+            groupIds = groupIds == null || groupIds.isEmpty()
+                ? allowed
+                : groupIds.stream().filter(allowed::contains).collect(Collectors.toSet());
+        }
+        Page<Group> pagedGroups = searchGroupsUseCase.execute(executionContext, groupIds, paginationParam.toPageable());
 
         io.gravitee.rest.api.management.v2.rest.model.Links links = computePaginationLinks(pagedGroups.getTotalElements(), paginationParam);
 
@@ -116,14 +128,11 @@ public class GroupsResource extends AbstractResource {
     @GET
     @Path("/{groupId}/members")
     @Produces(MediaType.APPLICATION_JSON)
-    @Permissions(
-        {
-            @Permission(value = RolePermission.GROUP_MEMBER, acls = RolePermissionAction.READ),
-            @Permission(value = RolePermission.ENVIRONMENT_GROUP, acls = { RolePermissionAction.READ }),
-        }
-    )
     public MembersResponse listGroupMembers(@PathParam("groupId") String groupId, @BeanParam @Valid PaginationParam paginationParam) {
         ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        if (!canReadGroupMembers(executionContext, groupId)) {
+            throw new ForbiddenAccessException();
+        }
 
         GroupEntity groupEntity = groupService.findById(executionContext, groupId);
 
@@ -179,6 +188,14 @@ public class GroupsResource extends AbstractResource {
     public Response importGroupCRD(@Valid GroupCRDSpec spec, @QueryParam("dryRun") boolean dryRun) {
         var executionContext = GraviteeContext.getExecutionContext();
         var userDetails = getAuthenticatedUserDetails();
+        var groupCRDSpec = GroupCRDMapper.INSTANCE.toCore(spec);
+
+        var existingGroupId = groupCRDSpec
+            .canonicalId()
+            .flatMap(id -> groupQueryService.findByIdAndEnvironmentId(id, executionContext.getEnvironmentId()))
+            .map(Group::getId)
+            .orElse(null);
+        requireCreateOrUpdate(RolePermission.ENVIRONMENT_GROUP, RolePermission.ENVIRONMENT_GROUP, existingGroupId);
 
         var input = new ImportGroupCRDUseCase.Input(
             AuditInfo.builder()
@@ -192,11 +209,48 @@ public class GroupsResource extends AbstractResource {
                         .build()
                 )
                 .build(),
-            GroupCRDMapper.INSTANCE.toCore(spec)
+            groupCRDSpec
         );
 
         var output = dryRun ? validateGroupCRD.execute(input) : importGroupCRD.execute(input);
 
         return Response.ok(output.status()).build();
+    }
+
+    private List<GroupEntity> groupsVisibleToCaller(ExecutionContext executionContext) {
+        List<GroupEntity> groups = groupService.findAll(executionContext);
+        if (groups == null) {
+            return List.of();
+        }
+        if (canReadEnvironmentGroups(executionContext)) {
+            return groups;
+        }
+        Set<String> allowed = groupIdsAttachedToCaller(executionContext);
+        return groups
+            .stream()
+            .filter(group -> allowed.contains(group.getId()))
+            .toList();
+    }
+
+    private boolean canReadEnvironmentGroups(ExecutionContext executionContext) {
+        return hasPermission(
+            executionContext,
+            RolePermission.ENVIRONMENT_GROUP,
+            executionContext.getEnvironmentId(),
+            RolePermissionAction.READ
+        );
+    }
+
+    private boolean canReadGroupMembers(ExecutionContext executionContext, String groupId) {
+        return (
+            canReadEnvironmentGroups(executionContext) ||
+            hasPermission(executionContext, RolePermission.GROUP_MEMBER, groupId, RolePermissionAction.READ) ||
+            groupIdsAttachedToCaller(executionContext).contains(groupId)
+        );
+    }
+
+    private Set<String> groupIdsAttachedToCaller(ExecutionContext executionContext) {
+        Set<String> groupIds = groupService.findGroupIdsAttachedToUserResources(executionContext, getAuthenticatedUser());
+        return groupIds == null ? Set.of() : groupIds;
     }
 }

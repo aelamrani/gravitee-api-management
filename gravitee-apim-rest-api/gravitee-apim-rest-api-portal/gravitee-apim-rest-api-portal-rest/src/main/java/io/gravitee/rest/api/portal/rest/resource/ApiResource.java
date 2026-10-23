@@ -106,7 +106,8 @@ public class ApiResource extends AbstractResource {
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
         GenericApiEntity genericApiEntity = apiSearchService.findGenericById(executionContext, apiId, false, false, true);
 
-        if (PortalApiViewParam.isDocumentationView(view)) {
+        boolean isDocumentationView = PortalApiViewParam.isDocumentationView(view);
+        if (isDocumentationView) {
             var output = getApiForPortalUseCase.execute(
                 new GetApiForPortalUseCase.Input(executionContext.getEnvironmentId(), apiId, username)
             );
@@ -128,7 +129,11 @@ public class ApiResource extends AbstractResource {
                 .collect(Collectors.toList());
             api.setPages(pages);
         }
-        if (include.contains(INCLUDE_PLANS)) {
+        // The documentation view follows the visibility of the API's navigation item, not of the API itself
+        if (
+            include.contains(INCLUDE_PLANS) &&
+            (!isDocumentationView || accessControlService.canConsumeApiFromPortal(executionContext, genericApiEntity))
+        ) {
             List<Plan> plans = planSearchService
                 .findByApi(executionContext, genericApiEntity, true)
                 .stream()
@@ -200,6 +205,10 @@ public class ApiResource extends AbstractResource {
     @Produces(MediaType.APPLICATION_JSON)
     @RequirePortalAuth
     public Response getApiLinks(@HeaderParam("Accept-Language") String acceptLang, @PathParam("apiId") String apiId) {
+        if (!accessControlService.canAccessApiFromPortal(GraviteeContext.getExecutionContext(), apiId)) {
+            throw new ApiNotFoundException(apiId);
+        }
+
         final String acceptedLocale = HttpHeadersUtil.getFirstAcceptedLocaleName(acceptLang);
         Map<String, List<CategorizedLinks>> apiLinks = new HashMap<>();
         pageService

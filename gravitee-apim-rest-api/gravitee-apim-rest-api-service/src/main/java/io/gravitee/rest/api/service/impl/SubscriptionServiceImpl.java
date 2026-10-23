@@ -118,6 +118,7 @@ import io.gravitee.rest.api.service.exceptions.PlanAlreadySubscribedException;
 import io.gravitee.rest.api.service.exceptions.PlanGeneralConditionAcceptedException;
 import io.gravitee.rest.api.service.exceptions.PlanGeneralConditionRevisionException;
 import io.gravitee.rest.api.service.exceptions.PlanMtlsAlreadySubscribedException;
+import io.gravitee.rest.api.service.exceptions.PlanNotFoundException;
 import io.gravitee.rest.api.service.exceptions.PlanNotSubscribableException;
 import io.gravitee.rest.api.service.exceptions.PlanNotSubscribableWithSharedApiKeyException;
 import io.gravitee.rest.api.service.exceptions.PlanNotSubscribableWithoutClientCertificateException;
@@ -127,7 +128,6 @@ import io.gravitee.rest.api.service.exceptions.PlanRestrictedException;
 import io.gravitee.rest.api.service.exceptions.SubscriptionConsumerStatusNotUpdatableException;
 import io.gravitee.rest.api.service.exceptions.SubscriptionFailureCustomerStatusRequiredException;
 import io.gravitee.rest.api.service.exceptions.SubscriptionFailureException;
-import io.gravitee.rest.api.service.exceptions.SubscriptionMismatchEnvironmentException;
 import io.gravitee.rest.api.service.exceptions.SubscriptionNotClosedException;
 import io.gravitee.rest.api.service.exceptions.SubscriptionNotFoundException;
 import io.gravitee.rest.api.service.exceptions.SubscriptionNotPausableException;
@@ -450,7 +450,13 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
             query.setApplication(application);
         } else if (isAuthenticated()) {
             Set<ApplicationListItem> applications = applicationService.findByUser(executionContext, getAuthenticatedUsername());
+            // The repositories read an empty application filter as no filter at all
+            if (applications.isEmpty()) {
+                return List.of();
+            }
             query.setApplications(applications.stream().map(ApplicationListItem::getId).collect(toList()));
+        } else {
+            return List.of();
         }
 
         return search(executionContext, query);
@@ -504,6 +510,9 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
             log.debug("Create a new subscription for plan {} and application {}", plan, application);
 
             GenericPlanEntity genericPlanEntity = planSearchService.findById(executionContext, plan);
+            if (!executionContext.getEnvironmentId().equals(genericPlanEntity.getEnvironmentId())) {
+                throw new PlanNotFoundException(plan);
+            }
 
             subscriptionValidationService.validateAndSanitize(genericPlanEntity, newSubscriptionEntity);
 
@@ -571,12 +580,6 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
                 throw new ApplicationArchivedException(applicationEntity.getName());
             }
 
-            if (
-                !executionContext.getEnvironmentId().equals(applicationEntity.getEnvironmentId()) &&
-                !executionContext.getEnvironmentId().equals(genericPlanEntity.getEnvironmentId())
-            ) {
-                throw new SubscriptionMismatchEnvironmentException(applicationEntity.getId(), genericPlanEntity.getId());
-            }
             // Check existing subscriptions
 
             SubscriptionCriteria.SubscriptionCriteriaBuilder criteriaBuilder = SubscriptionCriteria.builder().applications(
@@ -1473,9 +1476,7 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
         try {
             log.debug("Pause subscription {}", subscriptionId);
 
-            Subscription subscription = subscriptionRepository
-                .findById(subscriptionId)
-                .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
+            Subscription subscription = findSubscriptionInEnvironment(executionContext, subscriptionId);
 
             if (subscription.getStatus() == Subscription.Status.ACCEPTED) {
                 Subscription previousSubscription = new Subscription(subscription);
@@ -1517,7 +1518,7 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
                         genericApiModel,
                         genericPlanEntity,
                         application,
-                        null,
+                        convert(subscription),
                         null,
                         ApiHook.SUBSCRIPTION_PAUSED
                     );
@@ -1586,9 +1587,7 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
         try {
             log.debug("Resume failed subscription by {} by consumer", subscriptionId);
 
-            Subscription subscription = subscriptionRepository
-                .findById(subscriptionId)
-                .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
+            Subscription subscription = findSubscriptionInEnvironment(executionContext, subscriptionId);
 
             Subscription.ConsumerStatus consumerStatus = subscription.getConsumerStatus();
 
@@ -1613,6 +1612,13 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
                 ex
             );
         }
+    }
+
+    private Subscription findSubscriptionInEnvironment(ExecutionContext executionContext, String subscriptionId) throws TechnicalException {
+        return subscriptionRepository
+            .findById(subscriptionId)
+            .filter(subscription -> executionContext.getEnvironmentId().equals(subscription.getEnvironmentId()))
+            .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
     }
 
     private SubscriptionEntity resumeSubscription(ExecutionContext executionContext, Subscription subscription, String referenceId)
@@ -1685,9 +1691,7 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
         try {
             log.debug("Resume subscription {}", subscriptionId);
 
-            Subscription subscription = subscriptionRepository
-                .findById(subscriptionId)
-                .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
+            Subscription subscription = findSubscriptionInEnvironment(executionContext, subscriptionId);
 
             if (subscription.getStatus() == Subscription.Status.PAUSED) {
                 Subscription previousSubscription = new Subscription(subscription);
@@ -1729,7 +1733,7 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
                         genericApiModel,
                         genericPlanEntity,
                         application,
-                        null,
+                        convert(subscription),
                         null,
                         ApiHook.SUBSCRIPTION_RESUMED
                     );
@@ -1914,6 +1918,7 @@ public class SubscriptionServiceImpl extends AbstractService implements Subscrip
                     .filter(
                         subscription ->
                             query.matchesApi(subscription.getReferenceId()) &&
+                            query.matchesReference(subscription.getReferenceId(), subscription.getReferenceType()) &&
                             query.matchesApplication(subscription.getApplication()) &&
                             query.matchesPlan(subscription.getPlan()) &&
                             query.matchesStatus(subscription.getStatus())

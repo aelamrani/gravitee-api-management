@@ -17,7 +17,6 @@ package io.gravitee.repository.mongodb.management.internal.application;
 
 import static org.springframework.data.domain.Sort.Direction.ASC;
 import static org.springframework.data.mongodb.core.query.Criteria.where;
-import static org.springframework.util.CollectionUtils.isEmpty;
 
 import io.gravitee.common.data.domain.Page;
 import io.gravitee.repository.management.api.search.ApplicationCriteria;
@@ -68,7 +67,8 @@ public class ApplicationMongoRepositoryImpl implements ApplicationMongoRepositor
             order = new Sort.Order(direction, FieldUtils.toCamelCase(sortable.field()));
         }
 
-        query.with(Sort.by(order));
+        // _id tie-breaker keeps pages stable when sort values collide (e.g. same name)
+        query.with(Sort.by(order, new Sort.Order(direction, "_id")));
 
         long total = mongoQueries.countOrTimeout(mongoTemplate, query, ApplicationMongo.class);
 
@@ -98,7 +98,7 @@ public class ApplicationMongoRepositoryImpl implements ApplicationMongoRepositor
                 );
             }
 
-            if (!isEmpty(criteria.getRestrictedToIds())) {
+            if (criteria.getRestrictedToIds() != null) {
                 query.addCriteria(where("id").in(criteria.getRestrictedToIds()));
             }
 

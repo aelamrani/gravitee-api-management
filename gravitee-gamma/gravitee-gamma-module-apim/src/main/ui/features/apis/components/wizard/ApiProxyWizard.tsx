@@ -25,17 +25,26 @@ import {
     ZapIcon,
 } from '@gravitee/graphene-core/icons';
 import type { ComponentType } from 'react';
-import { useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { ProxyFlowVisualization } from './ProxyFlowVisualization';
 import type { StepConfig } from './StepProgress';
 import { StepProgress } from './StepProgress';
+import { ConfirmDialog } from '../../../../shared/components/ConfirmDialog';
 import { notify } from '../../../../shared/notify';
+import { useApiReviewEnabled } from '../../hooks/useApiReviewEnabled';
 import { useCreateApiProxy } from '../../hooks/useCreateApiProxy';
 import { useApiCreation } from '../../store/apiCreationStore';
 import type { ApiProxyDraft, ValidationErrors } from '../../types/apiCreation';
-import { validateDetails, validateEntrypoints, validateEssentials, validateSecurity } from '../../utils/apiCreationValidation';
+import { creationButtonLabel, resolveCreationOutcome } from '../../utils/apiCreationOutcome';
+import {
+    isCreationDraftDirty,
+    validateDetails,
+    validateEntrypoints,
+    validateEssentials,
+    validateSecurity,
+} from '../../utils/apiCreationValidation';
 import { DetailsStep } from '../steps/DetailsStep';
 import { EntrypointsStep } from '../steps/EntrypointsStep';
 import { EssentialsStep } from '../steps/EssentialsStep';
@@ -87,8 +96,11 @@ interface ApiProxyWizardProps {
 export function ApiProxyWizard({ mode }: ApiProxyWizardProps) {
     const navigate = useNavigate();
     const { state, dispatch } = useApiCreation();
-    const { mutate, isPending, error: createError, isSuccess, data } = useCreateApiProxy();
+    const { mutate, reset, isPending, error: createError } = useCreateApiProxy();
+    const { enabled: apiReviewEnabled } = useApiReviewEnabled();
+    const outcome = resolveCreationOutcome(state.form, apiReviewEnabled);
 
+    const [confirmCancel, setConfirmCancel] = useState(false);
     const steps = mode === 'scratch' ? SCRATCH_STEPS : TEMPLATE_STEPS;
     const contentMap = mode === 'scratch' ? SCRATCH_CONTENT : TEMPLATE_CONTENT;
     const validatorMap = mode === 'scratch' ? SCRATCH_VALIDATORS : TEMPLATE_VALIDATORS;
@@ -97,14 +109,8 @@ export function ApiProxyWizard({ mode }: ApiProxyWizardProps) {
 
     const StepContent = contentMap[activeStep];
 
-    useEffect(() => {
-        if (isSuccess && data) {
-            notify.success('API created');
-            navigate(`../../${data.id}/overview`);
-        }
-    }, [isSuccess, data, navigate]);
-
     function handleNext() {
+        reset();
         const validator = validatorMap[activeStep];
         if (validator) {
             const errors = validator(state.form);
@@ -118,7 +124,12 @@ export function ApiProxyWizard({ mode }: ApiProxyWizardProps) {
     }
 
     function handleBack() {
+        reset();
         if (activeStep === 0) {
+            if (isCreationDraftDirty(state.form)) {
+                setConfirmCancel(true);
+                return;
+            }
             navigate('..');
         } else {
             dispatch({ type: 'CLEAR_VALIDATION_ERRORS' });
@@ -127,7 +138,16 @@ export function ApiProxyWizard({ mode }: ApiProxyWizardProps) {
     }
 
     function handleCreate() {
-        mutate(state.form);
+        mutate(
+            { ...state.form, ...outcome },
+            {
+                onSuccess(data) {
+                    notify.success('API created');
+                    data.warnings.forEach(w => notify.warning(w));
+                    navigate(`../../${data.api.id}/overview`);
+                },
+            },
+        );
     }
 
     const hasErrors = Object.keys(state.validationErrors).length > 0;
@@ -172,7 +192,7 @@ export function ApiProxyWizard({ mode }: ApiProxyWizardProps) {
                         ) : (
                             <RocketIcon className="size-4" aria-hidden />
                         )}
-                        {state.form.deployImmediately ? 'Create & Deploy' : 'Create API'}
+                        {creationButtonLabel(outcome)}
                     </Button>
                 ) : (
                     <Button onClick={handleNext} disabled={isBusy || hasErrors}>
@@ -181,6 +201,16 @@ export function ApiProxyWizard({ mode }: ApiProxyWizardProps) {
                     </Button>
                 )}
             </div>
+            <ConfirmDialog
+                open={confirmCancel}
+                onOpenChange={setConfirmCancel}
+                title="Are you sure?"
+                description="You still need to create your API. If you leave this page, you will lose any info you added."
+                confirmLabel="Discard changes"
+                cancelLabel="Keep creating"
+                destructive
+                onConfirm={() => navigate('..')}
+            />
         </div>
     );
 }

@@ -30,9 +30,11 @@ import inmemory.ApiQueryServiceInMemory;
 import inmemory.ApplicationCrudServiceInMemory;
 import inmemory.CRDMembersDomainServiceInMemory;
 import inmemory.CategoryQueryServiceInMemory;
+import inmemory.EnvironmentCrudServiceInMemory;
 import inmemory.GroupCrudServiceInMemory;
 import inmemory.GroupQueryServiceInMemory;
 import inmemory.KafkaPortRangeCrudServiceInMemory;
+import inmemory.MembershipQueryServiceInMemory;
 import inmemory.NewtAIProviderInMemory;
 import inmemory.PageCrudServiceInMemory;
 import inmemory.PageSourceDomainServiceInMemory;
@@ -41,8 +43,10 @@ import inmemory.PortalNavigationItemSourceDomainServiceInMemory;
 import inmemory.PortalNavigationManifestParserInMemory;
 import inmemory.RoleQueryServiceInMemory;
 import inmemory.SharedPolicyGroupCrudServiceInMemory;
+import inmemory.UserCrudServiceInMemory;
 import inmemory.UserDomainServiceInMemory;
 import inmemory.spring.InMemoryConfiguration;
+import io.gravitee.apim.core.analytics.domain_service.AiWorkspaceAnalyticsApisDomainService;
 import io.gravitee.apim.core.analytics_engine.domain_service.AnalyticsQueryContextLoaderResolver;
 import io.gravitee.apim.core.analytics_engine.domain_service.AnalyticsQueryValidator;
 import io.gravitee.apim.core.analytics_engine.domain_service.BucketNamesPostProcessor;
@@ -75,6 +79,7 @@ import io.gravitee.apim.core.api.domain_service.ValidateHealthCheckScheduleDomai
 import io.gravitee.apim.core.api.domain_service.VerifyApiHostsDomainService;
 import io.gravitee.apim.core.api.domain_service.VerifyApiPathDomainService;
 import io.gravitee.apim.core.api.domain_service.WsdlParserDomainService;
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
 import io.gravitee.apim.core.api.query_service.ApiEventQueryService;
 import io.gravitee.apim.core.api.query_service.ApiPortalSearchQueryService;
 import io.gravitee.apim.core.api.service_provider.ApiTemplateModelProvider;
@@ -112,6 +117,7 @@ import io.gravitee.apim.core.apim.service_provider.ApimProductInfo;
 import io.gravitee.apim.core.application.domain_service.ValidateApplicationCRDDomainService;
 import io.gravitee.apim.core.application.domain_service.ValidateApplicationSettingsDomainService;
 import io.gravitee.apim.core.application.use_case.ValidateApplicationCRDUseCase;
+import io.gravitee.apim.core.application_certificate.crud_service.ClientCertificateCrudService;
 import io.gravitee.apim.core.application_certificate.domain_service.ClientCertificateDomainService;
 import io.gravitee.apim.core.application_certificate.domain_service.ClientCertificateValidationDomainService;
 import io.gravitee.apim.core.application_certificate.domain_service.MtlsSubscriptionSyncDomainService;
@@ -124,6 +130,7 @@ import io.gravitee.apim.core.cluster.use_case.CountClustersByLifecycleStateUseCa
 import io.gravitee.apim.core.cluster.use_case.CreateClusterUseCase;
 import io.gravitee.apim.core.cluster.use_case.DeleteClusterUseCase;
 import io.gravitee.apim.core.cluster.use_case.DeployClusterUseCase;
+import io.gravitee.apim.core.cluster.use_case.GetClusterStartedApisUseCase;
 import io.gravitee.apim.core.cluster.use_case.GetClusterUseCase;
 import io.gravitee.apim.core.cluster.use_case.GetDeployedClustersUseCase;
 import io.gravitee.apim.core.cluster.use_case.SearchClusterUseCase;
@@ -142,6 +149,7 @@ import io.gravitee.apim.core.documentation.domain_service.DocumentationValidatio
 import io.gravitee.apim.core.documentation.domain_service.ValidatePageAccessControlsDomainService;
 import io.gravitee.apim.core.documentation.domain_service.ValidatePageSourceDomainService;
 import io.gravitee.apim.core.documentation.domain_service.ValidatePagesDomainService;
+import io.gravitee.apim.core.environment.domain_service.ValidateEnvironmentInOrganizationDomainService;
 import io.gravitee.apim.core.environment.service_provider.EnvironmentTemplateModelProvider;
 import io.gravitee.apim.core.gravitee_markdown.GraviteeMarkdownValidator;
 import io.gravitee.apim.core.group.crud_service.GroupCrudService;
@@ -173,6 +181,7 @@ import io.gravitee.apim.core.notification.domain_service.ValidatePortalNotificat
 import io.gravitee.apim.core.open_api.OpenApiValidator;
 import io.gravitee.apim.core.parameters.query_service.ParametersQueryService;
 import io.gravitee.apim.core.permission.domain_service.PermissionDomainService;
+import io.gravitee.apim.core.plan.crud_service.PlanCrudService;
 import io.gravitee.apim.core.plan.domain_service.CreatePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.PlanSynchronizationService;
 import io.gravitee.apim.core.plan.domain_service.PlanValidatorDomainService;
@@ -196,14 +205,18 @@ import io.gravitee.apim.core.portal.domain_service.ValidatePortalDomainService;
 import io.gravitee.apim.core.portal_listing.domain_service.ValidatePortalListingDomainService;
 import io.gravitee.apim.core.portal_page.crud_service.PortalNavigationItemCrudService;
 import io.gravitee.apim.core.portal_page.crud_service.PortalPageContentCrudService;
+import io.gravitee.apim.core.portal_page.domain_service.ApiOwnedNavigationDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.GraviteePortalPageContentValidatorService;
 import io.gravitee.apim.core.portal_page.domain_service.OpenApiContentTransformer;
 import io.gravitee.apim.core.portal_page.domain_service.OpenApiPortalPageContentValidatorService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationApiProductVisibilityDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationApiVisibilityDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationBulkImportDomainService;
+import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationDefaultPageDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationEnclosingApiDomainService;
+import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationItemCreationExpansionDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationItemDomainService;
+import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationItemRenderingDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationItemSourceDomainService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationItemValidatorService;
 import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationSourcedItemsDomainService;
@@ -216,10 +229,15 @@ import io.gravitee.apim.core.portal_page.use_case.CreateDefaultPortalNavigationI
 import io.gravitee.apim.core.portal_page.use_case.CreatePortalNavigationItemUseCase;
 import io.gravitee.apim.core.portal_page.use_case.DeletePortalNavigationItemUseCase;
 import io.gravitee.apim.core.portal_page.use_case.FetchPortalNavigationItemUseCase;
+import io.gravitee.apim.core.portal_page.use_case.GetApiPortalNavigationItemUseCase;
 import io.gravitee.apim.core.portal_page.use_case.GetPortalPageContentUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ImportPortalNavigationUseCase;
+import io.gravitee.apim.core.portal_page.use_case.ListApiDocumentationUseCase;
+import io.gravitee.apim.core.portal_page.use_case.ListApiPublishLocationsUseCase;
 import io.gravitee.apim.core.portal_page.use_case.ListPortalNavigationItemsUseCase;
+import io.gravitee.apim.core.portal_page.use_case.PublishApiToPortalUseCase;
 import io.gravitee.apim.core.portal_page.use_case.SeedDefaultPagesForPortalNavigationItemsUseCase;
+import io.gravitee.apim.core.portal_page.use_case.UnpublishApiFromPortalUseCase;
 import io.gravitee.apim.core.portal_page.use_case.UpdatePortalNavigationItemUseCase;
 import io.gravitee.apim.core.portal_page.use_case.UpdatePortalPageContentConfigurationUseCase;
 import io.gravitee.apim.core.portal_page.use_case.UpdatePortalPageContentUseCase;
@@ -259,6 +277,7 @@ import io.gravitee.apim.core.subscription_form.domain_service.SubscriptionFormSc
 import io.gravitee.apim.core.user.domain_service.CreateUserDomainService;
 import io.gravitee.apim.core.user.domain_service.UserContextLoader;
 import io.gravitee.apim.core.user.domain_service.UserDomainService;
+import io.gravitee.apim.core.user.domain_service.ValidateUserInOrganizationDomainService;
 import io.gravitee.apim.core.user.service_provider.UserPasswordService;
 import io.gravitee.apim.core.user.service_provider.UserPortalNotificationService;
 import io.gravitee.apim.core.user.service_provider.UserRegistrationEnabledService;
@@ -297,6 +316,7 @@ import io.gravitee.repository.management.api.CustomDashboardRepository;
 import io.gravitee.rest.api.management.v2.rest.adapter.PatchPlanFlowsDeserializer;
 import io.gravitee.rest.api.management.v2.rest.mapper.ApiMapper;
 import io.gravitee.rest.api.management.v2.rest.model.ApiV4;
+import io.gravitee.rest.api.management.v2.rest.resource.environment.NewtAIRateLimiter;
 import io.gravitee.rest.api.management.v2.rest.utils.SubscriptionExpandHelper;
 import io.gravitee.rest.api.service.ApiDuplicatorService;
 import io.gravitee.rest.api.service.ApiKeyService;
@@ -359,6 +379,11 @@ public class ResourceContextConfiguration {
     @Bean
     public PlanFlowsConverter planFlowsDeserializer(ObjectMapper objectMapper) {
         return new PatchPlanFlowsDeserializer(objectMapper);
+    }
+
+    @Bean
+    public io.gravitee.rest.api.management.v2.rest.resource.kafka_console.KafkaConsoleClient kafkaConsoleClient() {
+        return mock(io.gravitee.rest.api.management.v2.rest.resource.kafka_console.KafkaConsoleClient.class);
     }
 
     @Bean
@@ -869,7 +894,9 @@ public class ResourceContextConfiguration {
         ParametersQueryService parametersQueryService,
         PolicyValidationDomainService policyValidationDomainService,
         PageCrudService pageCrudService,
-        KafkaPortRangeCrudServiceInMemory kafkaPortRangeCrudService
+        KafkaPortRangeCrudServiceInMemory kafkaPortRangeCrudService,
+        DataEncryptor dataEncryptor,
+        CRDMembersDomainServiceInMemory crdMembersDomainService
     ) {
         ValidateGroupsDomainService groupsValidator = new ValidateGroupsDomainService(groupQueryService);
         return new ValidateApiCRDUseCase(
@@ -883,14 +910,18 @@ public class ResourceContextConfiguration {
                 new ValidatePagesDomainService(
                     validatePageSourceDomainService,
                     validatePageAccessControlsDomainService,
-                    validationDomainService
+                    validationDomainService,
+                    pageCrudService
                 ),
                 new ValidatePlanDomainService(
                     new PlanValidatorDomainService(parametersQueryService, policyValidationDomainService, pageCrudService),
                     new VerifyPlanPortRangesDomainService(kafkaPortRangeCrudService)
                 ),
                 new ValidatePortalNotificationDomainService(groupsValidator),
-                new ValidateHealthCheckScheduleDomainService(new ObjectMapper())
+                new ValidateHealthCheckScheduleDomainService(new ObjectMapper()),
+                apiQueryService,
+                new PropertyDomainService(dataEncryptor),
+                crdMembersDomainService
             )
         );
     }
@@ -900,13 +931,17 @@ public class ResourceContextConfiguration {
         GroupQueryService groupQueryService,
         UserDomainService userDomainService,
         RoleQueryServiceInMemory roleQueryService,
-        ValidateApplicationSettingsDomainService validateApplicationSettingsDomainService
+        ValidateApplicationSettingsDomainService validateApplicationSettingsDomainService,
+        ApplicationCrudServiceInMemory applicationCrudService,
+        CRDMembersDomainServiceInMemory crdMembersDomainService
     ) {
         return new ValidateApplicationCRDUseCase(
             new ValidateApplicationCRDDomainService(
                 new ValidateGroupsDomainService(groupQueryService),
                 new ValidateCRDMembersDomainService(userDomainService, roleQueryService),
-                validateApplicationSettingsDomainService
+                validateApplicationSettingsDomainService,
+                applicationCrudService,
+                crdMembersDomainService
             )
         );
     }
@@ -915,9 +950,17 @@ public class ResourceContextConfiguration {
     public ValidateApplicationSettingsDomainService validateApplicationSettingsDomainService(
         ApplicationRepository applicationRepository,
         ApplicationTypeService applicationTypeService,
-        ParameterService parameterService
+        ParameterService parameterService,
+        ClientCertificateValidationDomainService clientCertificateValidationDomainService,
+        ClientCertificateCrudService clientCertificateCrudService
     ) {
-        return new ValidateApplicationSettingsDomainServiceImpl(applicationRepository, applicationTypeService, parameterService);
+        return new ValidateApplicationSettingsDomainServiceImpl(
+            applicationRepository,
+            applicationTypeService,
+            parameterService,
+            clientCertificateValidationDomainService,
+            clientCertificateCrudService
+        );
     }
 
     @Bean
@@ -1027,7 +1070,9 @@ public class ResourceContextConfiguration {
         AcceptSubscriptionDomainService acceptSubscriptionDomainService,
         CloseSubscriptionDomainService closeSubscriptionDomainService,
         ReconcileApiKeysDomainService reconcileApiKeysDomainService,
-        SubscriptionCrudService subscriptionCrudService
+        SubscriptionCrudService subscriptionCrudService,
+        ApiCrudService apiCrudService,
+        PlanCrudService planCrudService
     ) {
         return new SubscriptionCRDDomainServiceImpl(
             subscriptionService,
@@ -1035,7 +1080,9 @@ public class ResourceContextConfiguration {
             acceptSubscriptionDomainService,
             closeSubscriptionDomainService,
             reconcileApiKeysDomainService,
-            subscriptionCrudService
+            subscriptionCrudService,
+            apiCrudService,
+            planCrudService
         );
     }
 
@@ -1166,6 +1213,11 @@ public class ResourceContextConfiguration {
     }
 
     @Bean
+    public GetClusterStartedApisUseCase getClusterStartedApisUseCase() {
+        return mock(GetClusterStartedApisUseCase.class);
+    }
+
+    @Bean
     public SearchClusterUseCase searchClusterUseCase() {
         return mock(SearchClusterUseCase.class);
     }
@@ -1183,6 +1235,11 @@ public class ResourceContextConfiguration {
     @Bean
     public NewtAIProvider newtAIProvider() {
         return new NewtAIProviderInMemory();
+    }
+
+    @Bean
+    public NewtAIRateLimiter newtAIRateLimiter() {
+        return new NewtAIRateLimiter();
     }
 
     @Bean
@@ -1396,6 +1453,66 @@ public class ResourceContextConfiguration {
     }
 
     @Bean
+    public ApiOwnedNavigationDomainService apiOwnedNavigationDomainService(
+        PortalNavigationItemsQueryService portalNavigationItemsQueryService,
+        PortalNavigationItemCrudService portalNavigationItemCrudService
+    ) {
+        return new ApiOwnedNavigationDomainService(portalNavigationItemsQueryService, portalNavigationItemCrudService);
+    }
+
+    @Bean
+    public UnpublishApiFromPortalUseCase unpublishApiFromPortalUseCase(
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService,
+        PortalNavigationItemValidatorService portalNavigationItemValidatorService,
+        PortalNavigationItemDomainService portalNavigationItemDomainService
+    ) {
+        return new UnpublishApiFromPortalUseCase(
+            apiOwnedNavigationDomainService,
+            portalNavigationItemValidatorService,
+            portalNavigationItemDomainService
+        );
+    }
+
+    @Bean
+    public PublishApiToPortalUseCase publishApiToPortalUseCase(
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService,
+        PortalNavigationItemValidatorService portalNavigationItemValidatorService,
+        PortalNavigationItemDomainService portalNavigationItemDomainService
+    ) {
+        return new PublishApiToPortalUseCase(
+            apiOwnedNavigationDomainService,
+            portalNavigationItemValidatorService,
+            portalNavigationItemDomainService
+        );
+    }
+
+    @Bean
+    public ListApiPublishLocationsUseCase listApiPublishLocationsUseCase(ApiOwnedNavigationDomainService apiOwnedNavigationDomainService) {
+        return new ListApiPublishLocationsUseCase(apiOwnedNavigationDomainService);
+    }
+
+    @Bean
+    public GetApiPortalNavigationItemUseCase getApiPortalNavigationItemUseCase(
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService,
+        PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService
+    ) {
+        return new GetApiPortalNavigationItemUseCase(apiOwnedNavigationDomainService, portalNavigationItemSourceDomainService);
+    }
+
+    @Bean
+    public ListApiDocumentationUseCase listApiDocumentationUseCase(
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService,
+        PortalNavigationItemsQueryService portalNavigationItemsQueryService,
+        PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService
+    ) {
+        return new ListApiDocumentationUseCase(
+            apiOwnedNavigationDomainService,
+            portalNavigationItemsQueryService,
+            portalNavigationItemSourceDomainService
+        );
+    }
+
+    @Bean
     public PortalNavigationSourcedItemsDomainService portalNavigationSourcedItemsDomainService(
         PortalNavigationItemsQueryService portalNavigationItemsQueryService
     ) {
@@ -1407,13 +1524,15 @@ public class ResourceContextConfiguration {
         PortalNavigationItemsQueryService portalNavigationItemsQueryService,
         PortalPageContentQueryService portalPageContentQueryService,
         io.gravitee.apim.core.api_product.query_service.ApiProductQueryService apiProductQueryService,
-        PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService
+        PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService,
+        ApiCrudServiceInMemory apiCrudServiceInMemory
     ) {
         return new PortalNavigationItemValidatorService(
             portalNavigationItemsQueryService,
             portalPageContentQueryService,
             apiProductQueryService,
-            portalNavigationItemSourceDomainService
+            portalNavigationItemSourceDomainService,
+            apiCrudServiceInMemory
         );
     }
 
@@ -1475,14 +1594,18 @@ public class ResourceContextConfiguration {
         PortalNavigationItemDomainService domainService,
         PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService,
         PortalNavigationBulkImportDomainService portalNavigationBulkImportDomainService,
-        PortalNavigationItemsQueryService portalNavigationItemsQueryService
+        PortalNavigationItemsQueryService portalNavigationItemsQueryService,
+        PortalNavigationItemCreationExpansionDomainService portalNavigationItemCreationExpansionDomainService,
+        PortalNavigationItemRenderingDomainService portalNavigationItemRenderingDomainService
     ) {
         return new ImportPortalNavigationUseCase(
             portalNavigationItemValidatorService,
             domainService,
             portalNavigationItemSourceDomainService,
             portalNavigationBulkImportDomainService,
-            portalNavigationItemsQueryService
+            portalNavigationItemsQueryService,
+            portalNavigationItemCreationExpansionDomainService,
+            portalNavigationItemRenderingDomainService
         );
     }
 
@@ -1493,7 +1616,8 @@ public class ResourceContextConfiguration {
         PortalPageContentCrudService portalPageContentCrudService,
         PortalPageContentQueryService portalPageContentQueryService,
         ApiCrudService apiCrudService,
-        PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService
+        PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService,
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService
     ) {
         return new PortalNavigationItemDomainService(
             portalNavigationItemCrudService,
@@ -1501,7 +1625,29 @@ public class ResourceContextConfiguration {
             portalPageContentCrudService,
             portalPageContentQueryService,
             apiCrudService,
-            portalNavigationItemSourceDomainService
+            portalNavigationItemSourceDomainService,
+            apiOwnedNavigationDomainService
+        );
+    }
+
+    @Bean
+    public PortalNavigationDefaultPageDomainService portalNavigationDefaultPageDomainService(
+        PortalNavigationItemsQueryService portalNavigationItemsQueryService,
+        PortalNavigationItemDomainService portalNavigationItemDomainService,
+        PortalPageContentCrudService portalPageContentCrudService,
+        ApiCrudService apiCrudService,
+        PortalNavigationItemCreationExpansionDomainService portalNavigationItemCreationExpansionDomainService,
+        PortalNavigationItemValidatorService portalNavigationItemValidatorService,
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService
+    ) {
+        return new PortalNavigationDefaultPageDomainService(
+            portalNavigationItemsQueryService,
+            portalNavigationItemDomainService,
+            portalPageContentCrudService,
+            apiCrudService,
+            portalNavigationItemCreationExpansionDomainService,
+            portalNavigationItemValidatorService,
+            apiOwnedNavigationDomainService
         );
     }
 
@@ -1559,13 +1705,16 @@ public class ResourceContextConfiguration {
         PortalNavigationApiVisibilityDomainService portalNavigationApiVisibilityDomainService,
         PortalNavigationApiProductVisibilityDomainService portalNavigationApiProductVisibilityDomainService,
         PortalNavigationItemSourceDomainService portalNavigationItemSourceDomainService,
-        ApiPortalSearchQueryService apiPortalSearchQueryService
+        ApiPortalSearchQueryService apiPortalSearchQueryService,
+        ApiOwnedNavigationDomainService apiOwnedNavigationDomainService
     ) {
         return new ListPortalNavigationItemsUseCase(
             portalNavigationItemsQueryService,
             List.of(portalNavigationApiVisibilityDomainService, portalNavigationApiProductVisibilityDomainService),
             portalNavigationItemSourceDomainService,
-            apiPortalSearchQueryService
+            apiPortalSearchQueryService,
+            apiOwnedNavigationDomainService,
+            new PortalNavigationItemRenderingDomainService(portalNavigationItemsQueryService)
         );
     }
 
@@ -1653,13 +1802,23 @@ public class ResourceContextConfiguration {
             analyticsQueryContextLoader,
             applicationQueryService,
             planQueryService,
-            apiProductQueryService
+            apiProductQueryService,
+            mock(AiWorkspaceAnalyticsApisDomainService.class)
         );
     }
 
     @Bean
-    public ResolveFilterLabelsUseCase resolveFilterLabelsUseCase(FilterValueNameResolver filterValueNameResolver) {
-        return new ResolveFilterLabelsUseCase(filterValueNameResolver);
+    public ResolveFilterLabelsUseCase resolveFilterLabelsUseCase(
+        FilterValueNameResolver filterValueNameResolver,
+        AnalyticsQueryContextLoaderResolver analyticsQueryContextLoader,
+        FilterValuesQueryService filterValuesQueryService
+    ) {
+        return new ResolveFilterLabelsUseCase(
+            filterValueNameResolver,
+            analyticsQueryContextLoader,
+            filterValuesQueryService,
+            mock(AiWorkspaceAnalyticsApisDomainService.class)
+        );
     }
 
     @Bean
@@ -1743,6 +1902,11 @@ public class ResourceContextConfiguration {
     }
 
     @Bean
+    public ClientCertificateCrudService clientCertificateCrudService() {
+        return mock(ClientCertificateCrudService.class);
+    }
+
+    @Bean
     public ClientCertificateValidationDomainService clientCertificateValidationDomainService() {
         return mock(ClientCertificateValidationDomainService.class);
     }
@@ -1753,8 +1917,19 @@ public class ResourceContextConfiguration {
     }
 
     @Bean
-    public GetUserApisUseCase getUserApisUseCase() {
-        return mock(GetUserApisUseCase.class);
+    public GetUserApisUseCase getUserApisUseCase(
+        UserCrudServiceInMemory userCrudService,
+        EnvironmentCrudServiceInMemory environmentCrudService,
+        MembershipQueryServiceInMemory membershipQueryService,
+        ApiQueryServiceInMemory apiQueryService
+    ) {
+        return new GetUserApisUseCase(
+            new ValidateUserInOrganizationDomainService(userCrudService),
+            new ValidateEnvironmentInOrganizationDomainService(environmentCrudService),
+            membershipQueryService,
+            apiQueryService,
+            environmentCrudService
+        );
     }
 
     @Bean

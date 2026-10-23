@@ -1,0 +1,57 @@
+/*
+ * Copyright © 2015 The Gravitee team (http://gravitee.io)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import type { ApiDetailDto, ApiListItem } from '../types';
+
+export function isFederatedApi(api: ApiDetailDto | null | undefined): boolean {
+    return api?.definitionVersion === 'FEDERATED';
+}
+
+export function isFederatedAgentApi(api: ApiDetailDto | null | undefined): boolean {
+    return api?.definitionVersion === 'FEDERATED_AGENT';
+}
+
+export interface SourceIntegration {
+    integrationId: string;
+    integrationName: string | undefined;
+}
+
+/** Source integration for a federated / federated-agent API with INTEGRATION origin. */
+export function getSourceIntegration(api: ApiDetailDto | null | undefined): SourceIntegration | null {
+    const origin = api?.originContext;
+    const isFederatedFamily = isFederatedApi(api) || isFederatedAgentApi(api);
+    if (!isFederatedFamily || origin?.origin !== 'INTEGRATION' || !origin.integrationId) {
+        return null;
+    }
+    return { integrationId: origin.integrationId, integrationName: origin.integrationName };
+}
+
+// Keyed on the row's own `definitionVersion` rather than on `originContext.origin`, which a
+// FEDERATED_AGENT row also carries as INTEGRATION and which therefore cannot tell the two apart.
+export function isFederatedApiListItem(api: ApiListItem): boolean {
+    switch (api.definitionVersion) {
+        case 'FEDERATED':
+            return true;
+        case 'FEDERATED_AGENT':
+        case 'V4':
+        case 'V2':
+            return false;
+        default: {
+            const unhandled: never = api.definitionVersion;
+            console.warn('[ApiList] Unrecognized API definition version, treating the row as non-federated:', unhandled);
+            return false;
+        }
+    }
+}

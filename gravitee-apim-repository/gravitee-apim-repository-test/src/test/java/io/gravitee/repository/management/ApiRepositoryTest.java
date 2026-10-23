@@ -26,6 +26,7 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.junit.jupiter.api.Assertions.*;
 
 import io.gravitee.common.data.domain.Page;
@@ -42,13 +43,22 @@ import io.gravitee.repository.management.model.ApiLifecycleState;
 import io.gravitee.repository.management.model.LifecycleState;
 import io.gravitee.repository.management.model.Visibility;
 import java.util.*;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * @author Azize ELAMRANI (azize.elamrani at graviteesource.com)
  * @author GraviteeSource Team
  */
 public class ApiRepositoryTest extends AbstractManagementRepositoryTest {
+
+    private static final String FEDERATED_API_DEFINITION = """
+        {"id":"federated-api","providerId":"provider-id","name":"Task Management","apiVersion":"v1","definitionVersion":"FEDERATED","server":{"url":"https://testurl.com/Test"}}""";
+    private static final String FEDERATED_API_PICTURE = "data:image/png;base64,federated-api-picture";
+    private static final String FEDERATED_API_BACKGROUND = "data:image/png;base64,federated-api-background";
 
     @Override
     protected String getTestCasesPath() {
@@ -563,6 +573,86 @@ public class ApiRepositoryTest extends AbstractManagementRepositoryTest {
     }
 
     @Test
+    public void should_return_the_integration_id_of_apis_found_by_search() {
+        List<Api> apis = apiRepository.search(
+            new ApiCriteria.Builder().integrationId("integration-id").build(),
+            ApiFieldFilter.allFields()
+        );
+
+        assertThat(apis).extracting(Api::getId, Api::getIntegrationId).containsExactly(tuple("federated-api", "integration-id"));
+    }
+
+    @Test
+    public void should_return_no_integration_id_for_a_non_federated_api_found_by_search() {
+        List<Api> apis = apiRepository.search(new ApiCriteria.Builder().ids("api-to-findById").build(), ApiFieldFilter.allFields());
+
+        assertThat(apis).extracting(Api::getId, Api::getIntegrationId).containsExactly(tuple("api-to-findById", null));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("paginatedSearchFieldFilters")
+    public void should_project_the_payload_columns_of_a_paginated_search_as_the_field_filter_asks(
+        String caseName,
+        ApiFieldFilter fieldFilter,
+        String expectedDefinition,
+        String expectedPicture,
+        String expectedBackground
+    ) {
+        Page<Api> page = apiRepository.search(
+            new ApiCriteria.Builder().integrationId("integration-id").build(),
+            null,
+            new PageableBuilder().pageNumber(0).pageSize(10).build(),
+            fieldFilter
+        );
+
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(page.getContent().get(0).getId()).isEqualTo("federated-api");
+        assertThat(page.getContent().get(0).getDefinition()).isEqualTo(expectedDefinition);
+        assertThat(page.getContent().get(0).getPicture()).isEqualTo(expectedPicture);
+        assertThat(page.getContent().get(0).getBackground()).isEqualTo(expectedBackground);
+    }
+
+    private static Stream<Arguments> paginatedSearchFieldFilters() {
+        return Stream.of(
+            Arguments.of(
+                "an excluded definition is left unread while the images stay readable",
+                new ApiFieldFilter.Builder().excludeDefinition().build(),
+                null,
+                FEDERATED_API_PICTURE,
+                FEDERATED_API_BACKGROUND
+            ),
+            Arguments.of(
+                "an excluded picture takes the background with it while the definition stays readable",
+                new ApiFieldFilter.Builder().excludePicture().build(),
+                FEDERATED_API_DEFINITION,
+                null,
+                null
+            ),
+            Arguments.of(
+                "the exclusions this listing asks for are honored together",
+                new ApiFieldFilter.Builder().excludeDefinition().excludePicture().build(),
+                null,
+                null,
+                null
+            ),
+            Arguments.of(
+                "a caller asking for no filter at all is handed every column",
+                null,
+                FEDERATED_API_DEFINITION,
+                FEDERATED_API_PICTURE,
+                FEDERATED_API_BACKGROUND
+            ),
+            Arguments.of(
+                "an unexcluded column is read whole",
+                ApiFieldFilter.allFields(),
+                FEDERATED_API_DEFINITION,
+                FEDERATED_API_PICTURE,
+                FEDERATED_API_BACKGROUND
+            )
+        );
+    }
+
+    @Test
     public void shouldReturnUniqueApiWhenSearchApisWithCategories() {
         List<Api> apis = apiRepository.search(
             new ApiCriteria.Builder().ids(List.of("api-with-many-categories")).build(),
@@ -722,6 +812,158 @@ public class ApiRepositoryTest extends AbstractManagementRepositoryTest {
 
             assertThat(streamedIds).doesNotHaveDuplicates();
             assertThat(streamedIds).containsExactlyInAnyOrderElementsOf(ids);
+        } finally {
+            for (String id : ids) {
+                apiRepository.delete(id);
+            }
+        }
+    }
+
+    /**
+     * Fixture for the unsorted searches (null {@code Sortable}): the streamed search used by {@code PromotionContextDomainService} and {@code GetCategoryApisUseCase},
+     * and {@code searchIds}. Names are deliberately shared so that the id tie-break decides the default order (name, then id).
+     */
+    private static final String DEFAULT_ORDER_ENV = "ENV-DEFAULT-ORDER";
+
+    private List<String> createDefaultOrderApis() throws TechnicalException {
+        // id, name, definition version, category
+        String[][] rows = {
+            { "order-3", "beta", "V4", "cat-order" },
+            { "order-1", "beta", null, "cat-order" },
+            { "order-2", "beta", "V2", null },
+            { "order-5", "alpha", "V4", "cat-order" },
+            { "order-4", "gamma", null, null },
+            { "order-6", "alpha", "FEDERATED", "cat-order" },
+        };
+        List<String> ids = new ArrayList<>();
+        for (String[] row : rows) {
+            Api api = new Api();
+            api.setId(row[0]);
+            api.setEnvironmentId(DEFAULT_ORDER_ENV);
+            api.setName(row[1]);
+            api.setVersion("1");
+            api.setDefinitionVersion(row[2] == null ? null : DefinitionVersion.valueOf(row[2]));
+            api.setCategories(row[3] == null ? null : Set.of(row[3]));
+            api.setLifecycleState(STOPPED);
+            api.setVisibility(PRIVATE);
+            api.setDefinition("{}");
+            api.setCreatedAt(new Date());
+            api.setUpdatedAt(new Date());
+            apiRepository.create(api);
+            ids.add(row[0]);
+        }
+        return ids;
+    }
+
+    private void deleteApis(List<String> ids) throws TechnicalException {
+        for (String id : ids) {
+            apiRepository.delete(id);
+        }
+    }
+
+    @Test
+    public void shouldStreamSearchByEnvironmentAndDefinitionVersions_orderedByNameThenId() throws TechnicalException {
+        List<String> ids = createDefaultOrderApis();
+        try {
+            // PromotionContextDomainService.searchPathBearingApis: environment + V2/V4, no sort, picture excluded
+            ApiCriteria criteria = new ApiCriteria.Builder()
+                .environmentId(DEFAULT_ORDER_ENV)
+                .definitionVersion(List.of(DefinitionVersion.V2, DefinitionVersion.V4))
+                .build();
+
+            // batch size 2 forces several offset pages over the shared names
+            List<String> streamed = apiRepository
+                .search(criteria, null, new ApiFieldFilter.Builder().excludePicture().build(), 2)
+                .map(Api::getId)
+                .toList();
+
+            // FEDERATED excluded; legacy documents without definitionVersion count as V2
+            assertThat(streamed).containsExactly("order-5", "order-1", "order-2", "order-3", "order-4");
+        } finally {
+            deleteApis(ids);
+        }
+    }
+
+    @Test
+    public void shouldStreamSearchByEnvironmentAndCategory_orderedByNameThenId() throws TechnicalException {
+        List<String> ids = createDefaultOrderApis();
+        try {
+            // GetCategoryApisUseCase: category (+ environment), no sort, picture excluded
+            ApiCriteria criteria = new ApiCriteria.Builder().environmentId(DEFAULT_ORDER_ENV).category("cat-order").build();
+
+            List<String> streamed = apiRepository
+                .search(criteria, null, new ApiFieldFilter.Builder().excludePicture().build(), 2)
+                .map(Api::getId)
+                .toList();
+
+            assertThat(streamed).containsExactly("order-5", "order-6", "order-1", "order-3");
+        } finally {
+            deleteApis(ids);
+        }
+    }
+
+    @Test
+    public void shouldSearchIdsWithoutSortable_orderedByNameThenIdAcrossPages() throws TechnicalException {
+        List<String> ids = createDefaultOrderApis();
+        try {
+            List<ApiCriteria> criteria = List.of(new ApiCriteria.Builder().environmentId(DEFAULT_ORDER_ENV).build());
+
+            List<String> collected = new ArrayList<>();
+            for (int pageNumber = 0; pageNumber < 3; pageNumber++) {
+                Page<String> page = apiRepository.searchIds(
+                    criteria,
+                    new PageableBuilder().pageNumber(pageNumber).pageSize(2).build(),
+                    null
+                );
+                assertThat(page.getTotalElements()).isEqualTo(6);
+                collected.addAll(page.getContent());
+            }
+
+            assertThat(collected).containsExactly("order-5", "order-6", "order-1", "order-2", "order-3", "order-4");
+        } finally {
+            deleteApis(ids);
+        }
+    }
+
+    @Test
+    public void shouldStreamSearchInNameThenIdOrderAcrossBatches() throws TechnicalException {
+        // 200 APIs over 7 names: every page boundary falls inside a group of equal names, so the id tie-break
+        // decides what each page starts with. Names and ids are plain lowercase to sort the same on every backend.
+        List<String> ids = new ArrayList<>();
+        Map<String, String> nameById = new HashMap<>();
+        for (int i = 0; i < 200; i++) {
+            Api api = new Api();
+            String id = String.format("keyset%03d", i);
+            api.setId(id);
+            api.setEnvironmentId("DEFAULT");
+            api.setName("keysetname" + ((i * 3) % 7));
+            api.setVersion("1");
+            api.setLifecycleState(STOPPED);
+            api.setVisibility(PRIVATE);
+            api.setDefinition("{}");
+            api.setCreatedAt(new Date());
+            api.setUpdatedAt(new Date());
+            apiRepository.create(api);
+            ids.add(id);
+            nameById.put(id, api.getName());
+        }
+
+        try {
+            List<String> expected = ids
+                .stream()
+                .sorted(Comparator.comparing((String id) -> nameById.get(id)).thenComparing(Comparator.naturalOrder()))
+                .toList();
+            ApiCriteria criteria = new ApiCriteria.Builder().ids(ids).environmentId("DEFAULT").build();
+
+            // exact multiple of the batch size, batch size that does not divide the total, and a single page
+            for (int batchSize : new int[] { 100, 70, 1000 }) {
+                List<String> streamedIds = apiRepository
+                    .search(criteria, null, ApiFieldFilter.defaultFields(), batchSize)
+                    .map(Api::getId)
+                    .toList();
+
+                assertThat(streamedIds).as("batch size %d", batchSize).containsExactlyElementsOf(expected);
+            }
         } finally {
             for (String id : ids) {
                 apiRepository.delete(id);

@@ -37,42 +37,86 @@ tags:
           entity ids as values; use the `resolve` endpoint to hydrate them into display labels.
           `ENTRYPOINT` lists the entrypoint ids present in the store, followed by the synthetic
           `(none)` value for requests recorded without an entrypoint.
+
+          An explicit `ENTRYPOINT` condition is exact on every signal: only the given values match,
+          `(none)` selecting the requests recorded without an entrypoint. Without one, each signal
+          applies its default scope, described on the *Logs* and *Analytics* tags.
     - name: Logs
       description: |
           Environment-wide log search returning light rows from the `v4-metrics` index. Results
-          are RBAC-scoped: the caller only sees logs for APIs they have read access to.
+          only hold the logs of the APIs where the caller holds `API_LOG[READ]`.
 
           Filter conditions reference the shared filter catalog narrowed to the `LOGS` signal.
           Entrypoint scope: rows are returned unless their entrypoint is declared outside the logs
           scope; an entrypoint the registry does not know and a request refused before an entrypoint
-          was selected are both kept. An explicit `ENTRYPOINT` condition is exact, `(none)` selecting
-          the requests recorded without an entrypoint. Query
-          `GET /observability/filters/ENTRYPOINT/values` for the values present in your own data.
+          was selected are both kept. An explicit `ENTRYPOINT` condition is exact (see *Filters*).
+          Query `GET /observability/filters/ENTRYPOINT/values` for the values present in your own
+          data.
+
+          API kind scope: an `API_TYPE` condition selects every call of the readable APIs of those
+          kinds and, on any other readable API, the calls made through an entrypoint that belongs to
+          one of those kinds whatever the API's type: `mcp` for `MCP`, `agent-to-agent` for `A2A`. An
+          MCP tool server, an `HTTP_PROXY` API exposing `mcp`, thus counts under `MCP` with its MCP
+          calls only and under `HTTP_PROXY` with all its calls. Such a call reported without an
+          entrypoint id (a request refused by a gateway older than 4.13) does not count under the
+          added kind.
     - name: Analytics
       description: |
           Environment-wide analytics computation: aggregate measures, faceted breakdowns, and
           time-series histograms. Backed by the Elasticsearch analytics engine.
 
           Filter conditions reference the shared filter catalog narrowed to the `ANALYTICS` signal.
-          RBAC scoping ensures the caller only sees metrics for APIs they have read access to.
+          Rows: the APIs where the caller holds `API_ANALYTICS[READ]`, or every API of the environment
+          with `ENVIRONMENT_PLATFORM[READ]`. A query identifying callers — a condition or a facet on
+          `CONSUMER_IP`, `NATIVE_CLIENT_ID` or `AUTHZ_SUBJECT_ID`, or a `RECORD_TYPE` selecting
+          `AUTHZ_DECISION` — counts only the APIs where the caller holds `API_LOG[READ]`, which the
+          platform permission never widens. A query narrowed to one AI workspace (a single `API_PRODUCT`
+          condition, `EQ` that workspace or `IN` it alone) also counts that workspace's calls for a holder of
+          `AI_WORKSPACE_USER[READ]` on it, whatever their API memberships; the condition keeps out the calls
+          of any other workspace sharing an API, and it never opens per-request data. A caller who reads no
+          API gets zero-valued answers, not 403.
           Entrypoint scope, on the request metrics: a request is counted unless its entrypoint is
           declared outside the HTTP scope; an entrypoint the registry does not know and a request
           refused before an entrypoint was selected are both counted. An explicit `ENTRYPOINT`
-          condition is exact, `(none)` selecting the requests recorded without an entrypoint. Message
+          condition is exact (see *Filters*). Message
           metrics count the messages of every connection of the API, whatever the entrypoint carried
           them, unless the query names one.
+
+          Every condition is ANDed, the same filter included: a widget's own conditions are appended
+          to the dashboard's, and `HTTP_STATUS = 200` with `HTTP_STATUS = 500` counts nothing.
+          Conditions that cannot overlap answer an empty result, not a 400: a measure is then zero.
+          Several `API` conditions narrow the readable APIs to their intersection, and several
+          `API_TYPE` conditions narrow the API kinds to theirs; neither ever widens what the caller
+          can read.
+
+          API kind scope: as described under *Logs*.
+
+          A filter condition the queried metric does not carry, such as a Kafka filter on an HTTP
+          metric, is not applied to that metric: its result is not narrowed by that condition. Each
+          metric of the response names such conditions in `ignoredFilters`.
 
           All three endpoints return opaque JSON produced by the APIM analytics engine — the
           response schemas below document the stable structure but additional fields may appear.
     - name: Dashboards
       description: |
-          Read access to dashboards saved by Gamma Observability users, so a dashboard opens from
-          any machine instead of being tied to one browser's local storage. Write endpoints land in
-          a later increment.
+          Dashboards saved by Gamma Observability users, so a dashboard opens from any machine
+          instead of being tied to one browser's local storage. Their definitions need the
+          `ENVIRONMENT_DASHBOARD` permissions; their widgets read the caller's rows like every
+          analytics query.
 
           `widgets` is opaque JSON, returned verbatim — the shape belongs to the frontend. `version`
           is an optimistic-locking counter: nothing enforces it yet, but it must round-trip so a
           future write can submit it back.
+
+          A dashboard belongs to a Gamma module (`module`, required and set once at creation), so each
+          module lists its own dashboards. This scoping is not an access-control boundary: every dashboard
+          of the environment stays readable and writable by anyone holding the
+          `ENVIRONMENT_DASHBOARD` permissions, whatever its module.
+    - name: Capabilities
+      description: |
+          What the caller may open in the observability UIs, keyed like the capabilities of
+          gamma-lib-observability so a UI hands the answer over as is, instead of probing each
+          endpoint for a 403.
 
 paths:
     /organizations/{orgId}/environments/{envId}/observability/filters/definition:
@@ -86,7 +130,8 @@ paths:
             description: |
                 Returns the filter catalog, optionally narrowed by signal and/or API type. Both axes
                 are optional and multi-valued; omitting an axis means no constraint on it. A filter is
-                included when its declared signals/apiTypes intersect the requested values.
+                included when its declared signals/apiTypes intersect the requested values. No
+                permission is required: the catalog holds no traffic data.
             operationId: getObservabilityFilterDefinitions
             parameters:
                 - name: signal
@@ -170,15 +215,6 @@ paths:
                             example:
                                 http_status: 400
                                 message: "Unknown signal value 'INVALID'"
-                "403":
-                    description: The caller cannot read observability metadata in this environment.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability metadata."
 
     /organizations/{orgId}/environments/{envId}/observability/filters/{filterName}/values:
         parameters:
@@ -191,8 +227,15 @@ paths:
             description: |
                 Paginated selectable values for one filter. ENUM filters return their static labelled
                 values (optionally filtered by a case-insensitive substring `query`). KEYWORD filters
-                return distinct values from the data store, except `NATIVE_TOPIC` and `NATIVE_OPERATION`,
-                whose values live in a stream the store does not aggregate over and which return 400.
+                return the distinct values found in the calls of the APIs whose aggregates the caller
+                reads, or whose logs they read for a field identifying callers (`CONSUMER_IP`,
+                `NATIVE_CLIENT_ID`, `AUTHZ_SUBJECT_ID`) or one the logs only show; empty when they
+                read none. Searching `API` by name offers the APIs the caller reads. With `apiProduct`, only
+                the calls made through that API product count; a holder of `AI_WORKSPACE_USER[READ]` on that
+                workspace also gets the values of its calls, as the workspace rule of *Analytics* counts them,
+                except for the fields read from the logs. `NATIVE_TOPIC` and
+                `NATIVE_OPERATION` are the exception: their values live in a stream the store does not
+                aggregate over, and they return 400.
                 NUMBER and STRING filters have no enumerable values and return 400. `page` is capped at
                 10000; a larger page returns 400.
             operationId: getObservabilityFilterValues
@@ -250,13 +293,25 @@ paths:
                   description: |
                       API kind(s) to restrict returned values to. Repeat for multiple values.
                       When present, ENUM filters only return values matching the requested kinds,
-                      and KEYWORD filters only return entities associated with APIs of the requested kinds.
+                      and KEYWORD filters only return values of the calls those kinds select: every call
+                      of the APIs of those kinds, plus the calls an entrypoint adds to one of them on any
+                      other API (see the API kind scope under *Logs*).
                       When absent, no API-type constraint is applied (backward compatible).
                   example: MCP
                   schema:
                       type: array
                       items:
                           $ref: "#/components/schemas/ApiType"
+                - name: apiProduct
+                  in: query
+                  required: false
+                  description: |
+                      The single API product the request is scoped to, as an `API_PRODUCT` `EQ` condition
+                      scopes a query. KEYWORD filters then return the values of the calls made through it only.
+                      When absent or blank, no API-product constraint is applied (backward compatible).
+                  example: 3f5c2a8e-1b7d-4c9e-a6f0-2d8b4e1c7a95
+                  schema:
+                      type: string
             responses:
                 "200":
                     description: A page of selectable values.
@@ -316,15 +371,6 @@ paths:
                                 http_status: 400
                                 message: "Filter type NUMBER does not support value listing."
                                 technicalCode: "filter.values.unsupported"
-                "403":
-                    description: The caller cannot read observability metadata in this environment.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability metadata."
                 "404":
                     description: No filter with the given name exists in the catalog.
                     content:
@@ -346,8 +392,23 @@ paths:
             description: |
                 Resolves entity ids into display labels in bulk. Only id-based filters (API,
                 APPLICATION, PLAN, API_PRODUCT) produce labels; other filters return an empty label
-                map. Limits: at most 10 entries, at most 100 ids per entry.
+                map. Only ids the caller's rows hold are labelled: an `API` id the caller reads
+                aggregates of, or an APPLICATION, PLAN or API_PRODUCT id found in the calls of those
+                APIs. With `apiProduct`, a holder of `AI_WORKSPACE_USER[READ]` on that workspace also gets
+                the labels of the ids found in the calls made through it: the workspace, its APIs, their
+                applications and plans.
+                Other ids are left out of `labels`. Limits: at most 10 entries, at most 100 ids per entry.
             operationId: resolveObservabilityFilterLabels
+            parameters:
+                - name: apiProduct
+                  in: query
+                  required: false
+                  description: |
+                      The single API product the labelled request is scoped to, as on the values endpoint. A blank
+                      value is read as absent.
+                  example: 3f5c2a8e-1b7d-4c9e-a6f0-2d8b4e1c7a95
+                  schema:
+                      type: string
             requestBody:
                 required: true
                 content:
@@ -386,7 +447,9 @@ paths:
                                               labels:
                                                   "b5c6d7e8-9999-aaaa-bbbb-ccccddddeeee": "Mobile App"
                 "400":
-                    description: The request exceeds the entry / id limits.
+                    description: |
+                        The request exceeds the entry / id limits, or carries a key the schema does not
+                        declare (the message names it).
                     content:
                         application/json:
                             schema:
@@ -394,15 +457,6 @@ paths:
                             example:
                                 http_status: 400
                                 message: "Request exceeds the maximum of 10 entries."
-                "403":
-                    description: The caller cannot read observability metadata in this environment.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability metadata."
 
     /organizations/{orgId}/environments/{envId}/observability/logs/{requestId}/messages:
         parameters:
@@ -615,6 +669,8 @@ paths:
                                     value:
                                         requestId: "req-abc-123"
                                         apiId: "67e246cb-ab02-4da4-8f47-f9fa3e061d6b"
+                                        apiName: "Petstore API"
+                                        apiType: "HTTP_PROXY"
                                         transactionId: "txn-xyz-789"
                                         timestamp: "2026-06-10T14:32:01Z"
                                         requestEnded: true
@@ -622,7 +678,9 @@ paths:
                                         uri: "/pets/42"
                                         status: 200
                                         endpoint: "https://backend.example.com/pets/42"
+                                        entrypointId: "http-proxy"
                                         host: "api.example.com"
+                                        apiProductName: "Standalone API"
                                         planId: "plan-001"
                                         planName: "Gold"
                                         applicationId: "app-001"
@@ -693,10 +751,10 @@ paths:
                 environment. Returns light rows from the `v4-metrics` Elasticsearch index — no
                 HTTP bodies or headers (those live in the detail endpoint, planned in GMA-424).
 
-                **RBAC scoping**: the response only contains logs for APIs the caller has `READ`
-                access to. When the caller requests specific APIs via an `API` filter, the server
-                intersects that set with the caller's accessible APIs. If the intersection is
-                empty, the response is an empty page (not 403).
+                **RBAC scoping**: the response only contains logs of the APIs where the caller holds
+                `API_LOG[READ]`; `ENVIRONMENT_PLATFORM[READ]` does not widen it. When the caller
+                requests specific APIs via an `API` filter, the server intersects that set with those
+                APIs. If the intersection is empty, the response is an empty page (not 403).
 
                 **Filter validation**: every `FilterCondition` in the request body is validated
                 against the shared filter catalog (see the *Filters* tag) narrowed to the `LOGS`
@@ -714,17 +772,29 @@ paths:
                 The decision search accepts `API`, `API_TYPE`, the time range, and the decision
                 vocabulary, every entry of which carries the `AUTHZ_` prefix: `AUTHZ_DECISION`,
                 `AUTHZ_SUBJECT_ID`, `AUTHZ_ACTION`, `AUTHZ_RESOURCE_ID`, `AUTHZ_CALLER`,
-                `AUTHZ_STATUS`, `AUTHZ_OPERATION`, `AUTHZ_PDP`, `AUTHZ_MATCHED_POLICY`,
-                `AUTHZ_REASON`, `AUTHZ_POLICY_VERSION`, plus the shared `REQUEST_ID`.
-                `AUTHZ_REASON` takes `CONTAINS` (a reason is a sentence, so equality is unusable);
-                the rest take `EQ`/`IN`. Any other condition sent alongside `RECORD_TYPE=AUTHZ_DECISION` is
-                rejected with 400 rather than accepted and ignored, so an applied filter is never
-                indistinguishable from an unfiltered result.
+                `AUTHZ_STATUS`, `AUTHZ_INDETERMINATE_CAUSE`, `AUTHZ_ERROR_TYPE`, `AUTHZ_PDP`,
+                `AUTHZ_MATCHED_POLICY`, `AUTHZ_REASON`, `AUTHZ_POLICY_VERSION`, plus the shared
+                `REQUEST_ID`. `AUTHZ_REASON` takes `CONTAINS` (a reason is a sentence, so equality is
+                unusable); the rest take `EQ`/`IN`. `AUTHZ_MATCHED_POLICY` matches a rule name
+                (`QA default#2`). A policy name (`QA default`) matches every rule of that policy named
+                `<policy>#<n>`; a rule with its own `@id` is matched by that id. Any other condition
+                sent alongside `RECORD_TYPE=AUTHZ_DECISION` is rejected with 400 rather than accepted
+                and ignored, so an applied filter is never indistinguishable from an unfiltered result.
+                `AUTHZ_SUBJECT_ID` and `AUTHZ_RESOURCE_ID` accept a bare id or a typed entity
+                reference. A bare id (`alice`) matches that id under any type. A typed reference
+                restricts the match to one type: `User::"alice"` (escape `"` and `\` inside the quotes
+                with a backslash) or `User::alice`; namespaced types work the same way
+                (`docs::User::"alice"`). `User::*` matches every decision whose type is `User`,
+                including those recorded without an id; write a literal `*` id as `User::"*"`. Each
+                value is also matched as a bare id, so an id containing `::` is still found. One query
+                uses at most 128 typed readings: a quoted reference or a `User::*` one is a single
+                reading, an unquoted one is read once for each place it could split at `::`. Values
+                past that budget match as bare ids only. The analytics endpoints apply the same rules.
 
                 **Entrypoint scope**: without an explicit `ENTRYPOINT` condition, rows are returned
                 unless their entrypoint is declared outside the logs scope, which keeps unknown
-                entrypoints and requests refused before an entrypoint was selected; with one, only the
-                given values match, `(none)` standing for requests recorded without an entrypoint.
+                entrypoints and requests refused before an entrypoint was selected; with one, the scope
+                is exact (see the *Filters* tag).
                 The logs scope is wider than the analytics one — it serves connections the dashboards
                 leave out — so an unfiltered logs total can exceed the dashboard total on a mixed
                 environment. Not applied to decision rows, which carry no entrypoint.
@@ -738,7 +808,8 @@ paths:
 
                 **Supported API types**: `HTTP_PROXY`, `LLM`, `MCP`, `A2A`, `MESSAGE`, `NATIVE`
                 and `AUTHZ`. Which requests of a `MESSAGE` API appear is the entrypoint scope's
-                decision, not the API kind's.
+                decision, not the API kind's, except that `A2A` also selects the `agent-to-agent`
+                calls of any API (see the API kind scope under the *Logs* tag).
             operationId: searchObservabilityLogs
             parameters:
                 - name: page
@@ -759,7 +830,7 @@ paths:
                       minimum: 1
                       maximum: 100
             requestBody:
-                required: false
+                required: true
                 content:
                     application/json:
                         schema:
@@ -887,13 +958,14 @@ paths:
                                             pageItemsCount: 0
                 "400":
                     description: |
-                        A filter condition is invalid. Possible causes:
-                        - Unknown filter name (`observability.filter.unknown_name`)
-                        - Filter does not apply to the LOGS signal (`observability.filter.signal_mismatch`)
-                        - Operator not usable for this filter on log search (`observability.filter.unsupported_operator`).
+                        The query is refused. Possible causes:
+                        - A filter condition breaks a rule of the `FilterCondition` schema (`observability.filter.*`)
                         - Filter is valid for LOGS but not yet supported by log search (`observability.filter.search_translation_not_supported`)
-                        - A filter value is malformed or out of range (e.g. an `HTTP_STATUS` outside 100–599)
-                        - `from` is after `to` in the time range
+                        - A decision filter (`AUTHZ_*`) sent without `RECORD_TYPE = AUTHZ_DECISION` (`observability.filter.requires_decision_record_type`)
+                        - `RECORD_TYPE` with several values, or a filter the decision search cannot apply (`observability.filter.multiple_record_types`, `observability.filter.not_applicable_to_decisions`)
+                        - A time-range bound is missing, or `from` is after `to` (`observability.query.time_range_required`, `observability.query.invalid_time_range`)
+                        - An array of the body holds a null entry (`observability.query.null_entry`)
+                        - A key the schema does not declare, at any depth: the message names it (no technical code)
                     content:
                         application/json:
                             schema:
@@ -924,24 +996,35 @@ paths:
                                         message: "Filter 'API_TYPE' is not yet supported for log search"
                                         technicalCode: "observability.filter.search_translation_not_supported"
                                 invalid-filter-value:
-                                    summary: Malformed or out-of-range filter value
+                                    summary: Out-of-range filter value
                                     value:
                                         http_status: 400
-                                        message: "Invalid HTTP status code: 1000. Must be between 100 and 599."
+                                        message: "Value '1000' is outside the range [100, 599] of filter 'HTTP_STATUS'"
+                                        technicalCode: "observability.filter.value_out_of_range"
+                                invalid-arity:
+                                    summary: Several values on a single-value operator
+                                    value:
+                                        http_status: 400
+                                        message: "Operator 'EQ' on filter 'HTTP_METHOD' takes exactly one value, got 2 values [GET, POST]. Use IN to match several values."
+                                        technicalCode: "observability.filter.invalid_arity"
+                                decision-filter-without-record-type:
+                                    summary: Decision filter on a request search
+                                    value:
+                                        http_status: 400
+                                        message: "Filter 'AUTHZ_DECISION' applies to authorization decision records only: add the condition RECORD_TYPE = AUTHZ_DECISION"
+                                        technicalCode: "observability.filter.requires_decision_record_type"
+                                missing-time-range-bound:
+                                    summary: Missing time-range bound
+                                    value:
+                                        http_status: 400
+                                        message: "Time range bound 'from' is required"
+                                        technicalCode: "observability.query.time_range_required"
                                 invalid-time-range:
                                     summary: Invalid time range (from > to)
                                     value:
                                         http_status: 400
                                         message: "Invalid time range: 'from' must be before 'to'."
-                "403":
-                    description: The caller cannot read observability data in this environment (missing `ENVIRONMENT_DASHBOARD:READ` or `ENVIRONMENT_API:READ` permission).
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability data."
+                                        technicalCode: "observability.query.invalid_time_range"
 
     /organizations/{orgId}/environments/{envId}/observability/analytics/measures:
         parameters:
@@ -956,9 +1039,25 @@ paths:
                 given time range and filter set. Use this endpoint to populate summary cards and KPI
                 panels in the dashboard.
 
-                **RBAC scoping**: only metrics from APIs the caller can read are included.
+                **RBAC scoping**: only metrics of the APIs whose aggregates the caller reads are
+                included (see the *Analytics* tag); with none, every measure is zero.
 
                 **Filter validation**: conditions are validated against the `ANALYTICS` signal catalog.
+
+                **Metric conditions**: a metric's own `filters` are ANDed with the request's. Metrics
+                carrying the same set of conditions share one query; each distinct set is one more
+                query, run one after the other. With ids, at most 10 distinct non-empty sets are
+                accepted.
+
+                **Response identity**: when every metric carries an `id`, the response holds one entry
+                per metric, in request order, each echoing its `id` with its own measures and
+                `ignoredFilters`. Without ids, it holds one entry per metric name, measures merged; a
+                metric named twice then keeps its own conditions not applied and listed in
+                `ignoredFilters`, and so does every metric when they carry more than 10 sets.
+
+                **Empty result**: when the caller can read none of the APIs the conditions select, each
+                metric still answers an entry, its measures at zero. No query runs, so its
+                `ignoredFilters` lists only the conditions Gamma did not apply.
             operationId: computeObservabilityMeasures
             requestBody:
                 required: true
@@ -1005,6 +1104,27 @@ paths:
                                           measures: ["COUNT"]
                                         - name: "HTTP_GATEWAY_RESPONSE_TIME"
                                           measures: ["AVG", "P99"]
+                            metric-ids:
+                                summary: A total tile and a 5xx tile on the same metric
+                                value:
+                                    timeRange:
+                                        from: "2026-06-10T00:00:00Z"
+                                        to: "2026-06-11T00:00:00Z"
+                                    filters:
+                                        - name: "API"
+                                          operator: "IN"
+                                          value: ["api-1"]
+                                    metrics:
+                                        - id: "total"
+                                          name: "HTTP_REQUESTS"
+                                          measures: ["COUNT"]
+                                        - id: "server-errors"
+                                          name: "HTTP_REQUESTS"
+                                          measures: ["COUNT"]
+                                          filters:
+                                              - name: "HTTP_STATUS_CODE_GROUP"
+                                                operator: "EQ"
+                                                value: "5XX"
             responses:
                 "200":
                     description: Aggregated metric measures.
@@ -1022,21 +1142,24 @@ paths:
                                               measures:
                                                   - name: "COUNT"
                                                     value: 42
+                                metric-ids:
+                                    summary: One entry per metric id, in request order
+                                    value:
+                                        metrics:
+                                            - id: "total"
+                                              name: "HTTP_REQUESTS"
+                                              unit: "NUMBER"
+                                              measures:
+                                                  - name: "COUNT"
+                                                    value: 216162
+                                            - id: "server-errors"
+                                              name: "HTTP_REQUESTS"
+                                              unit: "NUMBER"
+                                              measures:
+                                                  - name: "COUNT"
+                                                    value: 3756
                 "400":
-                    description: Invalid filter condition or time range.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                "403":
-                    description: Insufficient permissions.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability data."
+                    $ref: "#/components/responses/AnalyticsQueryRefused"
 
     /organizations/{orgId}/environments/{envId}/observability/analytics/facets:
         parameters:
@@ -1053,6 +1176,10 @@ paths:
 
                 Use `limit` to cap the number of buckets per facet. Use `ranges` for numeric
                 range bucketing (e.g. status code groups 1xx/2xx/3xx/4xx/5xx).
+
+                **Metric conditions**: the request runs as one query, so every metric must carry the
+                same `filters` (in any order, `IN` values in any order); they are ANDed with the
+                request's. Different sets are refused (`observability.query.differing_metric_conditions`).
             operationId: computeObservabilityFacets
             requestBody:
                 required: true
@@ -1123,20 +1250,7 @@ paths:
                                                         - name: "COUNT"
                                                           value: 12
                 "400":
-                    description: Invalid filter condition, facet name, or time range.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                "403":
-                    description: Insufficient permissions.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability data."
+                    $ref: "#/components/responses/AnalyticsQueryRefused"
 
     /organizations/{orgId}/environments/{envId}/observability/analytics/time-series:
         parameters:
@@ -1153,7 +1267,21 @@ paths:
                 Each time bucket may optionally contain nested facet buckets when `by` is
                 provided, enabling per-API or per-status time-series breakdowns.
 
+                With `by`, `limit` keeps the same top values in every time bucket: the values
+                of the innermost facet are ranked over the whole time range by the first measure
+                of each metric, descending (ties go to the smaller key, compared as text), within
+                each value of the outer facet. The outer facet keeps its 10 most frequent values
+                over the range. A status group or ranged facet keeps its top `limit` buckets too.
+                A metric's `sorts` do not change which values `limit` keeps: they only order the
+                buckets. Ranking takes one extra engine query, run before the time-series. Without
+                `limit`, each time bucket holds its own 10 values of the innermost facet: the most
+                frequent ones, or the first ones by the metric's `sorts`.
+
                 `interval` is in milliseconds (e.g. `60000` for 1 minute, `3600000` for 1 hour).
+
+                **Metric conditions**: the request runs as one query, so every metric must carry the
+                same `filters` (in any order, `IN` values in any order); they are ANDed with the
+                request's. Different sets are refused (`observability.query.differing_metric_conditions`).
             operationId: computeObservabilityTimeSeries
             requestBody:
                 required: true
@@ -1184,7 +1312,7 @@ paths:
                                         - name: "HTTP_REQUESTS"
                                           measures: ["COUNT"]
                                     by: ["API"]
-                                    facetSize: 5
+                                    limit: 5
             responses:
                 "200":
                     description: Time-series metric results.
@@ -1211,20 +1339,40 @@ paths:
                                                         - name: "COUNT"
                                                           value: 12
                 "400":
-                    description: Invalid filter condition, interval, or time range.
+                    $ref: "#/components/responses/AnalyticsQueryRefused"
+
+    /organizations/{orgId}/environments/{envId}/observability/capabilities:
+        parameters:
+            - $ref: "#/components/parameters/orgIdParam"
+            - $ref: "#/components/parameters/envIdParam"
+        get:
+            tags:
+                - Capabilities
+            summary: Get the caller's observability capabilities
+            description: |
+                - `observability.logs.read` and `observability.traces.read`: the caller reads the requests
+                  of at least one API (`API_LOG[READ]`).
+                - `observability.dashboards.read`: the caller reads the aggregates of at least one API
+                  (`API_ANALYTICS[READ]`, or `ENVIRONMENT_PLATFORM[READ]`), or holds
+                  `ENVIRONMENT_DASHBOARD[READ]`. It opens the built-in dashboards, whose widgets read
+                  the caller's rows; the saved dashboards still need `ENVIRONMENT_DASHBOARD[READ]`.
+                - `observability.dashboards.write`: the caller holds `ENVIRONMENT_DASHBOARD[CREATE]` or
+                  `[UPDATE]`.
+
+                No permission is required: the answer describes the caller's own access.
+            operationId: getObservabilityCapabilities
+            responses:
+                "200":
+                    description: The caller's capabilities in the environment.
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/Error"
-                "403":
-                    description: Insufficient permissions.
-                    content:
-                        application/json:
-                            schema:
-                                $ref: "#/components/schemas/Error"
+                                $ref: "#/components/schemas/ObservabilityCapabilities"
                             example:
-                                http_status: 403
-                                message: "Insufficient permissions to access observability data."
+                                observability.logs.read: true
+                                observability.traces.read: true
+                                observability.dashboards.read: true
+                                observability.dashboards.write: false
 
     /organizations/{orgId}/environments/{envId}/observability/dashboards:
         parameters:
@@ -1237,11 +1385,16 @@ paths:
             description: |
                 Returns the dashboards saved in this environment, oldest first, in pages.
 
+                With `module`, only the dashboards of that module are returned; repeat it to list
+                several modules in one call (`?module=aim&module=apim`). Without it, every dashboard
+                of the environment is, including those that belong to no module.
+
                 Walk the collection with `page` and `perPage`; `pagination.totalCount` in the
                 response tells you how many dashboards exist in total. Each entry is a complete
                 dashboard — no extra call is needed to render one from this list.
             operationId: listObservabilityDashboards
             parameters:
+                - $ref: "#/components/parameters/dashboardModulesParam"
                 - name: page
                   in: query
                   required: false
@@ -1272,6 +1425,7 @@ paths:
                                     value:
                                         data:
                                             - id: "d7e246cb-ab02-4da4-8f47-f9fa3e061d6b"
+                                              module: "aim"
                                               title: "Performance overview"
                                               description: "MCP traffic health"
                                               filters:
@@ -1351,6 +1505,7 @@ paths:
                             $ref: "#/components/schemas/CreateDashboardRequest"
                         example:
                             id: "d7e246cb-ab02-4da4-8f47-f9fa3e061d6b"
+                            module: "aim"
                             title: "Performance overview"
                             description: "MCP traffic health"
                             filters:
@@ -1382,16 +1537,33 @@ paths:
                 "400":
                     description: |
                         The dashboard could not be saved. The message names the problem: a missing
-                        title, more than 50 widgets, a widgets payload above 1 MB, a widget with a
-                        missing or duplicated `id`, a time range without the fields its `type`
-                        requires, or an unknown filter operator.
+                        or invalid module, a missing title, more than 50 widgets, a widgets payload
+                        above 1 MB, a widget with a missing or duplicated `id`, a time range without
+                        the fields its `type` requires, or a dashboard filter the catalog refuses (see
+                        `SaveDashboardFilter`)
+                        or that carries a key `SaveDashboardFilter` does not declare.
                     content:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/Error"
-                            example:
-                                http_status: 400
-                                message: "Dashboard cannot hold more than 50 widgets"
+                            examples:
+                                module-missing:
+                                    summary: No module
+                                    value:
+                                        http_status: 400
+                                        message: "Dashboard field 'module' is required"
+                                        technicalCode: "observability.dashboard.module_required"
+                                too-many-widgets:
+                                    summary: Too many widgets
+                                    value:
+                                        http_status: 400
+                                        message: "Dashboard cannot hold more than 50 widgets"
+                                filter-outside-analytics:
+                                    summary: A dashboard filter no analytics query accepts
+                                    value:
+                                        http_status: 400
+                                        message: "Filter 'REQUEST_ID' does not apply to signal ANALYTICS"
+                                        technicalCode: "observability.filter.signal_mismatch"
                 "403":
                     description: The caller cannot create dashboards in this environment.
                     content:
@@ -1412,7 +1584,8 @@ paths:
             summary: Get a single saved dashboard
             description: |
                 Returns one dashboard with its filters, time range and widgets exactly as they were
-                saved — enough to render it without any further call.
+                saved — enough to render it without any further call. With `module`, a dashboard of
+                another module, or of none, is reported as not found.
             operationId: getObservabilityDashboard
             parameters:
                 - name: dashboardId
@@ -1422,6 +1595,7 @@ paths:
                   example: d7e246cb-ab02-4da4-8f47-f9fa3e061d6b
                   schema:
                       type: string
+                - $ref: "#/components/parameters/dashboardModuleParam"
             responses:
                 "200":
                     description: The saved dashboard.
@@ -1442,6 +1616,7 @@ paths:
                                     summary: Dashboard with filters and a relative time range
                                     value:
                                         id: "d7e246cb-ab02-4da4-8f47-f9fa3e061d6b"
+                                        module: "aim"
                                         title: "Performance overview"
                                         description: "MCP traffic health"
                                         filters:
@@ -1562,8 +1737,9 @@ paths:
                         The dashboard could not be saved. The message names the problem: an
                         `If-Match` that is not an ETag this API issued, a missing title, more than 50
                         widgets, a widgets payload above 1 MB, a widget with a missing or duplicated
-                        `id`, a time range without the fields its `type` requires, or an unknown
-                        filter operator.
+                        `id`, a time range without the fields its `type` requires, or a dashboard
+                        filter the catalog refuses (see `SaveDashboardFilter`)
+                        or that carries a key `SaveDashboardFilter` does not declare.
                     content:
                         application/json:
                             schema:
@@ -1669,6 +1845,46 @@ paths:
                                 message: "Dashboard 'd7e246cb-ab02-4da4-8f47-f9fa3e061d6b' not found"
 
 components:
+    responses:
+        AnalyticsQueryRefused:
+            description: |
+                The query is refused, whatever APIs the caller can read. Possible causes:
+                - A filter condition breaks a rule of the `FilterCondition` schema (`observability.filter.*`)
+                - A metric carries a `RECORD_TYPE` condition: a metric already fixes the kind of record it counts (`observability.filter.record_type_on_metric`)
+                - Some metrics carry an `id` and others do not, or an `id` is used twice, on measures (`observability.query.partial_metric_ids`, `observability.query.duplicate_metric_id`)
+                - The metrics carry more than 10 distinct sets of conditions with ids, on measures (`observability.query.too_many_metric_condition_sets`)
+                - The metrics carry different conditions, on facets and time-series (`observability.query.differing_metric_conditions`)
+                - A time-range bound is missing, or `from` is after `to` (`observability.query.time_range_required`, `observability.query.invalid_time_range`)
+                - `metrics` is empty (`observability.query.metrics_required`)
+                - `interval` is missing or not positive, on time-series (`observability.query.invalid_interval`)
+                - `limit` is above 100, on time-series (`observability.query.invalid_limit`)
+                - A metric, measure, facet or sort order the engine does not know (`observability.query.unknown_metric`, `unknown_measure`, `unknown_facet`, `unknown_sort_order`)
+                - An array of the body holds a null entry (`observability.query.null_entry`)
+                - A combination the engine refuses, such as a facet a metric does not support (no technical code)
+                - A key the schema does not declare, at any depth: the message names it (no technical code)
+            content:
+                application/json:
+                    schema:
+                        $ref: "#/components/schemas/Error"
+                    examples:
+                        partial-metric-ids:
+                            summary: Ids on some metrics only
+                            value:
+                                http_status: 400
+                                message: "Either every metric carries an 'id' or none does"
+                                technicalCode: "observability.query.partial_metric_ids"
+                        missing-interval:
+                            summary: Time-series without an interval
+                            value:
+                                http_status: 400
+                                message: "'interval' must be a positive number of milliseconds, was null"
+                                technicalCode: "observability.query.invalid_interval"
+                        unknown-metric:
+                            summary: Unknown metric name
+                            value:
+                                http_status: 400
+                                message: "Metric 'HTTP_REQUEST' is not supported"
+                                technicalCode: "observability.query.unknown_metric"
     securitySchemes:
         CookieAuth:
             type: apiKey
@@ -1690,6 +1906,30 @@ components:
             description: Environment id or hrid.
             schema:
                 type: string
+        dashboardModulesParam:
+            name: module
+            in: query
+            required: false
+            description: |
+                Only list dashboards of these Gamma modules. Repeat for several modules. Absent:
+                every dashboard of the environment. A value that is not a module id is refused with
+                `400`.
+            style: form
+            explode: true
+            schema:
+                type: array
+                items:
+                    $ref: "#/components/schemas/DashboardModule"
+            example: [aim, apim]
+        dashboardModuleParam:
+            name: module
+            in: query
+            required: false
+            description: |
+                Only consider the dashboard if it belongs to this Gamma module. A value that is not a
+                module id is refused with `400`.
+            schema:
+                $ref: "#/components/schemas/DashboardModule"
 
     schemas:
         MessageLog:
@@ -1766,8 +2006,10 @@ components:
 
         FilterOperator:
             type: string
-            description: Comparison operator supported by a filter.
-            enum: [EQ, IN, NOT_IN, GTE, LTE]
+            description: |
+                Comparison operator. Each filter advertises the ones it supports in the `operators` of
+                its catalog entry; any other is refused. Read case-insensitively on input.
+            enum: [EQ, IN, GTE, LTE, CONTAINS, STARTS_WITH]
 
         EnumValue:
             type: object
@@ -1847,6 +2089,23 @@ components:
                     items:
                         $ref: "#/components/schemas/FilterSpec"
 
+        ObservabilityCapabilities:
+            type: object
+            required:
+                - observability.logs.read
+                - observability.traces.read
+                - observability.dashboards.read
+                - observability.dashboards.write
+            properties:
+                observability.logs.read:
+                    type: boolean
+                observability.traces.read:
+                    type: boolean
+                observability.dashboards.read:
+                    type: boolean
+                observability.dashboards.write:
+                    type: boolean
+
         FilterValue:
             type: object
             description: A selectable value for a filter.
@@ -1896,6 +2155,7 @@ components:
 
         ResolveFilterLabelsRequestEntry:
             type: object
+            additionalProperties: false
             description: A group of entity ids to resolve for one filter.
             required: [filterName, ids]
             properties:
@@ -1913,6 +2173,7 @@ components:
 
         ResolveFilterLabelsRequest:
             type: object
+            additionalProperties: false
             required: [entries]
             properties:
                 entries:
@@ -1950,7 +2211,9 @@ components:
 
         SearchLogsRequest:
             type: object
+            additionalProperties: false
             description: Request body for the logs search endpoint.
+            required: [timeRange]
             properties:
                 timeRange:
                     $ref: "#/components/schemas/TimeRange"
@@ -1962,10 +2225,12 @@ components:
 
         TimeRange:
             type: object
+            additionalProperties: false
             description: |
-                ISO-8601 time window. Both bounds are optional; omitting either defers to server
-                defaults (no constraint on that side). When both are provided, `from` must be
-                before `to` — otherwise the server returns 400.
+                ISO-8601 time window. Both bounds are required, and `from` must be before `to`:
+                otherwise the server answers 400 (`observability.query.time_range_required`,
+                `observability.query.invalid_time_range`).
+            required: [from, to]
             properties:
                 from:
                     type: string
@@ -1980,9 +2245,23 @@ components:
 
         FilterCondition:
             type: object
+            additionalProperties: false
             description: |
-                A single filter condition. `operator` is uppercase (`EQ`, `IN`, `GTE`, `LTE`).
-                `value` is a scalar string for `EQ`/`GTE`/`LTE`, or an array of strings for `IN`.
+                A single filter condition, checked against the filter catalog of the endpoint's signal.
+                A condition breaking one of these rules is refused with a 400:
+
+                - `name` is in the catalog and applies to the signal (`unknown_name`, `signal_mismatch`);
+                - `operator` is one the filter advertises (`unsupported_operator`);
+                - `value` is a scalar or an array of scalars, with no null element (`invalid_value_shape`);
+                - `EQ`, `GTE`, `LTE` and `CONTAINS` take exactly one value, `IN` one or more
+                  (`invalid_arity`, `blank_value`);
+                - an ENUM value is one the filter advertises; a NUMBER value is a whole number within the
+                  filter's range (`unknown_enum_value`, `invalid_number`, `value_out_of_range`);
+                - on logs, a filter appears once per request; the only repetition is one `GTE` and one
+                  `LTE` on the same NUMBER filter, a closed range whose lower bound is not above its upper
+                  bound (`repeated`, `inverted_range`). Analytics ANDs a repeated filter instead.
+
+                Technical codes are prefixed with `observability.filter.`.
             required: [name, operator, value]
             properties:
                 name:
@@ -1992,12 +2271,17 @@ components:
                 operator:
                     $ref: "#/components/schemas/FilterOperator"
                 value:
-                    description: Scalar for EQ/GTE/LTE, array of strings for IN/NOT_IN.
+                    description: A scalar for `EQ`, `GTE`, `LTE` and `CONTAINS`; an array for `IN`.
                     oneOf:
                         - type: string
+                        - type: number
+                        - type: boolean
                         - type: array
                           items:
-                              type: string
+                              oneOf:
+                                  - type: string
+                                  - type: number
+                                  - type: boolean
                     example: "200"
 
         LogDetail:
@@ -2015,6 +2299,10 @@ components:
                     type: string
                     description: Identifier of the API that handled the request.
                     example: "67e246cb-ab02-4da4-8f47-f9fa3e061d6b"
+                apiName:
+                    type: string
+                    description: Display name of the API, read from the same API definition as `apiType`.
+                    example: "Petstore API"
                 apiType:
                     type: string
                     description: |
@@ -2022,7 +2310,9 @@ components:
                         Read by id from the API definition, scoped to the environment, rather than off
                         the connection document, which does not carry it: a direct link to a detail has
                         no list row to inherit it from, and the client needs it to pick the right
-                        detail view.
+                        detail view. A call that belongs to another kind through its entrypoint keeps the
+                        stored type: an MCP call on an `HTTP_PROXY` API reads `HTTP_PROXY`, and its
+                        `entrypointId` (`mcp`) tells it apart.
                     example: "MESSAGE"
                 transactionId:
                     type: string
@@ -2054,9 +2344,24 @@ components:
                 endpoint:
                     type: string
                     description: Backend endpoint the request was proxied to.
+                entrypointId:
+                    type: string
+                    description: Entrypoint plugin id that served the request, as on the log search rows.
+                    example: "http-proxy"
                 host:
                     type: string
                     description: Host header value from the client request.
+                mcpMethod:
+                    type: string
+                    description: MCP method name (present only for `MCP` API type requests), as on the log search rows.
+                    example: "tools/list"
+                apiProductId:
+                    type: string
+                    description: Identifier of the API product the request went through (absent for standalone APIs).
+                apiProductName:
+                    type: string
+                    description: Display name of the API product (enriched server-side). Returns `"Standalone API"` when the request did not go through a product.
+                    example: "Standalone API"
                 planId:
                     type: string
                     description: Identifier of the plan the request was matched to.
@@ -2221,7 +2526,10 @@ components:
                     example: "Petstore API"
                 apiType:
                     type: string
-                    description: API kind as stored in the definition (e.g. `HTTP_PROXY`, `LLM`, `MCP`).
+                    description: |
+                        API kind as stored in the definition (e.g. `HTTP_PROXY`, `LLM`, `MCP`), also on a row
+                        that belongs to another kind through its entrypoint: an MCP call on an `HTTP_PROXY`
+                        API reads `HTTP_PROXY`.
                     example: "HTTP_PROXY"
                 timestamp:
                     type: string
@@ -2378,32 +2686,40 @@ components:
                     description: Identifier of the decision event, unique per evaluated decision.
                 decision:
                     type: string
-                    description: The authorization outcome the PDP returned.
+                    description: The verdict the PDP returned, verbatim. Absent when the PDP gave none.
                     example: "PERMIT"
+                outcome:
+                    type: string
+                    description: What the decision concluded, on the axis every decision point shares.
+                    example: "ALLOW"
+                enforced:
+                    type: string
+                    description: What was done with the call once the decision was taken.
+                    example: "ALLOW"
+                indeterminateCause:
+                    type: string
+                    description: Why no conclusion was reached, present only when the outcome is indeterminate.
+                    example: "NOT_APPLICABLE"
                 status:
                     type: string
-                    description: Whether the evaluation itself completed, independently of its outcome.
+                    description: Whether the evaluation itself completed (`success`) or failed (`error`), independently of its outcome.
                     example: "success"
                 caller:
                     type: string
                     description: Which component asked for the decision.
                     example: "pep"
-                operation:
-                    type: string
-                    description: The kind of call made to the PDP.
-                    example: "evaluate"
                 targetPdpId:
                     type: string
                     description: Identifier of the PDP that evaluated the request.
                 policyGeneration:
-                    type: integer
-                    format: int64
-                    description: Generation of the policy set the decision was evaluated against.
-                matchedPolicyNames:
+                    type: string
+                    description: Generation of the PDP engine the decision was evaluated against. A counter local to the node, not a policy version.
+                    example: "42"
+                matchedRules:
                     type: array
-                    description: Names of the policies that matched during evaluation.
+                    description: The policies that matched during evaluation.
                     items:
-                        type: string
+                        $ref: "#/components/schemas/AuthzMatchedRule"
                 reasons:
                     type: array
                     description: Diagnostics explaining the outcome.
@@ -2433,17 +2749,35 @@ components:
                 batchSize:
                     type: integer
                     description: Number of decisions in the batch.
-                searchType:
-                    type: string
-                    description: Which search the PDP ran, for search records rather than evaluations.
-                resultCount:
-                    type: integer
-                    description: Number of results a search record returned.
                 durationNanos:
                     type: integer
                     format: int64
                     description: Time the PDP spent evaluating, in nanoseconds.
                     example: 431000
+                errorType:
+                    type: string
+                    description: Type of the error that prevented the evaluation, present only when it failed.
+                    example: "evaluation_timeout"
+
+        AuthzMatchedRule:
+            type: object
+            description: A policy that matched during the evaluation of a decision.
+            properties:
+                id:
+                    type: string
+                    description: Identifier of the policy.
+                name:
+                    type: string
+                    description: Name of the policy.
+                    example: "orders"
+                version:
+                    type: string
+                    description: Revision of the policy text that was evaluated.
+                    example: "2026-09-23T10:00:00Z"
+                effect:
+                    type: string
+                    description: Effect of the policy.
+                    example: "FORBID"
 
         LogEntryWarning:
             type: object
@@ -2482,9 +2816,17 @@ components:
 
         MetricQuery:
             type: object
+            additionalProperties: false
             description: A metric to compute with its requested measures. Used by the measures endpoint.
             required: [name, measures]
             properties:
+                id:
+                    type: string
+                    nullable: true
+                    description: |
+                        The caller's name for this metric, echoed on its response entry. Every metric of
+                        the request carries one, each different, or none does.
+                    example: "server-errors"
                 name:
                     type: string
                     description: |
@@ -2499,9 +2841,19 @@ components:
                     items:
                         type: string
                     example: ["COUNT"]
+                filters:
+                    type: array
+                    nullable: true
+                    description: |
+                        Conditions on this metric alone, ANDed with the top-level `filters` and validated
+                        on their own. `RECORD_TYPE` is refused here. Without ids, the conditions of a
+                        metric named twice are not applied and listed in its `ignoredFilters`.
+                    items:
+                        $ref: "#/components/schemas/FilterCondition"
 
         SortSpec:
             type: object
+            additionalProperties: false
             description: Sort directive for facet metric buckets.
             required: [measure, order]
             properties:
@@ -2511,12 +2863,13 @@ components:
                     example: "COUNT"
                 order:
                     type: string
-                    description: Sort direction.
+                    description: Sort direction, read case-insensitively.
                     enum: [ASC, DESC]
                     example: "DESC"
 
         FacetMetricQuery:
             type: object
+            additionalProperties: false
             description: |
                 A metric to compute with its measures and optional sort directives. Used by the
                 facets and time-series endpoints.
@@ -2534,12 +2887,25 @@ components:
                 sorts:
                     type: array
                     nullable: true
-                    description: Sort directives for bucket ordering. Only applies to facets.
+                    description: |
+                        Sort directives for bucket ordering. On facets, they also decide which buckets
+                        `limit` keeps. On a time-series, they order the buckets of each time bucket but
+                        never choose the values a `limit` keeps.
                     items:
                         $ref: "#/components/schemas/SortSpec"
+                filters:
+                    type: array
+                    nullable: true
+                    description: |
+                        Conditions on this metric, ANDed with the top-level `filters` and validated on
+                        their own. Every metric of the request must carry the same set; `RECORD_TYPE` is
+                        refused here.
+                    items:
+                        $ref: "#/components/schemas/FilterCondition"
 
         NumberRange:
             type: object
+            additionalProperties: false
             description: Numeric range for bucket-based aggregations (e.g. status code groups).
             properties:
                 from:
@@ -2553,8 +2919,9 @@ components:
 
         AnalyticsMeasuresRequest:
             type: object
+            additionalProperties: false
             description: Request body for the measures endpoint.
-            required: [metrics]
+            required: [timeRange, metrics]
             properties:
                 timeRange:
                     $ref: "#/components/schemas/TimeRange"
@@ -2566,13 +2933,15 @@ components:
                 metrics:
                     type: array
                     description: One or more metrics to compute.
+                    minItems: 1
                     items:
                         $ref: "#/components/schemas/MetricQuery"
 
         AnalyticsFacetsRequest:
             type: object
+            additionalProperties: false
             description: Request body for the facets endpoint.
-            required: [metrics, by]
+            required: [timeRange, metrics, by]
             properties:
                 timeRange:
                     $ref: "#/components/schemas/TimeRange"
@@ -2583,6 +2952,7 @@ components:
                 metrics:
                     type: array
                     description: Metrics to compute per facet bucket.
+                    minItems: 1
                     items:
                         $ref: "#/components/schemas/FacetMetricQuery"
                 by:
@@ -2607,8 +2977,9 @@ components:
 
         AnalyticsTimeSeriesRequest:
             type: object
+            additionalProperties: false
             description: Request body for the time-series endpoint.
-            required: [metrics, interval]
+            required: [timeRange, metrics, interval]
             properties:
                 timeRange:
                     $ref: "#/components/schemas/TimeRange"
@@ -2620,23 +2991,35 @@ components:
                     type: integer
                     format: int64
                     description: Time bucket size in milliseconds (e.g. `60000` for 1 minute, `3600000` for 1 hour).
+                    minimum: 1
                     example: 3600000
                 metrics:
                     type: array
                     description: Metrics to compute per time bucket.
+                    minItems: 1
                     items:
                         $ref: "#/components/schemas/FacetMetricQuery"
                 by:
                     type: array
                     nullable: true
-                    description: Optional facet dimensions for nested breakdown within each time bucket.
+                    description: Optional facet dimensions for nested breakdown within each time bucket, outermost first.
                     items:
                         type: string
+                limit:
+                    type: integer
+                    nullable: true
+                    description: |
+                        Maximum number of innermost facet values over the time range, per value of the
+                        outer facet: the top values, the same in every time bucket. Ignored without `by`.
+                        Absent or below 1, each time bucket holds its own 10 values: the most frequent
+                        ones, or the first ones by the metric's `sorts`. At most 100.
+                    maximum: 100
+                    example: 5
                 facetSize:
                     type: integer
                     nullable: true
-                    description: Maximum facet values per time bucket.
-                    example: 5
+                    deprecated: true
+                    description: Deprecated name of `limit`, with the same meaning. `limit` wins when both are sent.
                 ranges:
                     type: array
                     nullable: true
@@ -2658,8 +3041,14 @@ components:
 
         MetricResult:
             type: object
-            description: Result for one metric in a measures response.
+            description: |
+                Result for one metric in a measures response: one per request metric when they carry
+                ids, one per metric name otherwise.
             properties:
+                id:
+                    type: string
+                    description: The `id` of the request metric, present only when the metrics carry ids.
+                    example: "server-errors"
                 name:
                     type: string
                     description: Metric name.
@@ -2672,6 +3061,20 @@ components:
                     type: array
                     items:
                         $ref: "#/components/schemas/MeasureValue"
+                ignoredFilters:
+                    type: array
+                    description: |
+                        Conditions of the request or of this metric it was not filtered by, by filter
+                        name. The engine skips a condition the metric's search cannot carry (a Kafka
+                        client filter on an HTTP metric) instead of failing, so the values are not
+                        filtered on these fields. Also lists a `RECORD_TYPE` that does not select the
+                        metric's records and, without ids, the conditions of a metric named twice or of
+                        metrics carrying more than 10 sets, whatever their name. An `API` or `API_TYPE`
+                        condition that scopes the query is never listed, nor is a condition that empties
+                        the result. Absent when every condition applied.
+                    items:
+                        type: string
+                    example: ["NATIVE_CLIENT_ID"]
 
         MeasuresResponse:
             type: object
@@ -2734,6 +3137,18 @@ components:
                     type: array
                     items:
                         $ref: "#/components/schemas/FacetBucket"
+                ignoredFilters:
+                    type: array
+                    description: |
+                        Conditions of the request or of the metrics this metric was not filtered by, by
+                        filter name. The engine skips a condition the metric's search cannot carry (a
+                        Kafka client filter on an HTTP metric) instead of failing, so the values are not
+                        filtered on these fields. Also lists a `RECORD_TYPE` that does not select the
+                        metric's records. `API` and `API_TYPE` scope every query and are never listed,
+                        nor is a condition that empties the result. Absent when every condition applied.
+                    items:
+                        type: string
+                    example: ["NATIVE_CLIENT_ID"]
 
         FacetsResponse:
             type: object
@@ -2793,6 +3208,18 @@ components:
                     type: array
                     items:
                         $ref: "#/components/schemas/TimeSeriesBucket"
+                ignoredFilters:
+                    type: array
+                    description: |
+                        Conditions of the request or of the metrics this metric was not filtered by, by
+                        filter name. The engine skips a condition the metric's search cannot carry (a
+                        Kafka client filter on an HTTP metric) instead of failing, so the values are not
+                        filtered on these fields. Also lists a `RECORD_TYPE` that does not select the
+                        metric's records. `API` and `API_TYPE` scope every query and are never listed,
+                        nor is a condition that empties the result. Absent when every condition applied.
+                    items:
+                        type: string
+                    example: ["NATIVE_CLIENT_ID"]
 
         TimeSeriesResponse:
             type: object
@@ -2868,6 +3295,13 @@ components:
                 id:
                     type: string
                     example: d7e246cb-ab02-4da4-8f47-f9fa3e061d6b
+                module:
+                    allOf:
+                        - $ref: "#/components/schemas/DashboardModule"
+                    readOnly: true
+                    description: |
+                        Gamma module the dashboard belongs to, set at creation and never changed.
+                        Absent only for a dashboard created before `module` was required.
                 title:
                     type: string
                     example: Performance overview
@@ -2900,6 +3334,15 @@ components:
                     readOnly: true
                     description: Epoch milliseconds.
 
+        DashboardModule:
+            type: string
+            pattern: "^[a-z0-9-]{1,64}$"
+            description: |
+                Identifier of a Gamma module, e.g. `aim` or `apim`. Only its shape is checked, not
+                whether the module is installed. Scopes which dashboards a module shows; it is not an
+                access-control boundary.
+            example: aim
+
         DashboardsResponse:
             type: object
             required: [data, pagination]
@@ -2913,12 +3356,22 @@ components:
 
         SaveDashboardFilter:
             type: object
+            additionalProperties: false
             description: |
                 One filter applied to every widget of the dashboard.
 
-                Filter names are accepted as given, so a dashboard can be moved between
-                environments where the available filters differ; a name that no environment
-                recognises is reported when the dashboard is queried, not when it is saved.
+                Checked against the filter catalog when the dashboard is saved, so a filter every
+                widget query would refuse is refused up front, with a 400 naming it:
+
+                - `name` is in the catalog and applies to the `ANALYTICS` signal, since a dashboard
+                  renders analytics widgets;
+                - `operator` is one the filter advertises;
+                - a non-empty `value` follows the same rules as a `FilterCondition`;
+                - a field is filtered once per dashboard, with no `GTE` + `LTE` exception
+                  (`observability.filter.repeated_on_dashboard`).
+
+                An empty `value` is the open "Any" slot a reader fills, accepted whatever `editable`
+                says. Widget filters are not checked here; each widget query checks its own.
             required: [name, operator]
             properties:
                 name:
@@ -2942,7 +3395,9 @@ components:
                 editable:
                     type: boolean
                     default: false
-                    description: Whether the viewer may change the value. Absent means `false` (locked).
+                    description: |
+                        Whether the viewer may change the value. Absent means `false`, which locks a
+                        valued filter; a filter with no value stays an open slot either way.
 
         SaveDashboardRequest:
             type: object
@@ -2952,6 +3407,9 @@ components:
 
                 `id` is only meaningful on one of the two verbs — see `CreateDashboardRequest`
                 and `UpdateDashboardRequest`, which state which.
+
+                Keys this object does not declare are ignored, so a dashboard read with `GET` can be
+                sent back as is. A filter object is stricter: an unknown key in it is refused with a 400.
             required: [title]
             properties:
                 id:
@@ -2989,7 +3447,15 @@ components:
                   description: |
                       A dashboard being created. You supply the `id`. The new dashboard starts at
                       version 1, returned in the response `ETag`.
-                  required: [id]
+                  required: [id, module]
+                  properties:
+                      module:
+                          allOf:
+                              - $ref: "#/components/schemas/DashboardModule"
+                          description: |
+                              Gamma module the dashboard belongs to. A missing or blank value is
+                              refused with `400` and the technical code
+                              `observability.dashboard.module_required`. It cannot be changed afterwards.
 
         UpdateDashboardRequest:
             allOf:
@@ -2998,7 +3464,7 @@ components:
                   description: |
                       A dashboard being replaced. The revision your edit was based on travels in the
                       required `If-Match` header, not in this body. The `id` comes from the URL and
-                      is ignored here.
+                      is ignored here, and so is a `module`: it is set at creation only.
 
         DashboardConflict:
             type: object

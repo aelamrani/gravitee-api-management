@@ -17,7 +17,9 @@ package io.gravitee.apim.core.member.domain_service;
 
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.group.model.crd.GroupCRDSpec;
+import io.gravitee.apim.core.member.model.RoleScope;
 import io.gravitee.apim.core.member.model.crd.MemberCRD;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -25,9 +27,41 @@ import java.util.Set;
  * @author GraviteeSource Team
  */
 public interface CRDMembersDomainService {
+    /**
+     * Sets the members of an API the caller has just created and makes the caller its primary owner.
+     */
+    void createApiMembers(AuditInfo auditInfo, String apiId, Set<MemberCRD> members);
+
+    /**
+     * Without the member permission on the API, nothing is written and the primary owner is kept: call
+     * {@link #checkApiMembersUpdate} first to reject a member change.
+     */
     void updateApiMembers(AuditInfo auditInfo, String apiId, Set<MemberCRD> members);
+
+    /**
+     * Rejects, before anything is written, an import that would change the API's members without the member permission
+     * on it.
+     */
+    void checkApiMembersUpdate(AuditInfo auditInfo, String apiId, Set<MemberCRD> members);
+
+    /**
+     * Without the member permission on the application, nothing is written and the primary owner is kept: call
+     * {@link #checkApplicationMembersUpdate} first to reject a member change.
+     */
     void updateApplicationMembers(AuditInfo auditInfo, String applicationId, Set<MemberCRD> members);
+
+    /**
+     * Rejects, before anything is written, an import that would change the application's members without the member
+     * permission on it.
+     */
+    void checkApplicationMembersUpdate(AuditInfo auditInfo, String applicationId, Set<MemberCRD> members);
     void updateGroupMembers(AuditInfo auditInfo, String groupId, Set<GroupCRDSpec.Member> members);
 
     void updateGroupDefaultRoles(AuditInfo auditInfo, String groupId, String apiRole, String applicationRole, String apiProductRole);
+
+    /**
+     * Converge the group's default roles on the declared map: each of API, APPLICATION and API_PRODUCT is set to the
+     * declared role, or cleared when the map has no entry for it.
+     */
+    void updateGroupDefaultRoles(AuditInfo auditInfo, String groupId, Map<RoleScope, String> defaultMemberRoles);
 }

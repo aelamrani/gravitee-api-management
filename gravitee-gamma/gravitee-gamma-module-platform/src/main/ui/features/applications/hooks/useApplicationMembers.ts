@@ -13,16 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { useEnvironment } from '@gravitee/gamma-modules-sdk';
 import { useQuery } from '@tanstack/react-query';
 
-import {
-    listApplicationMembers,
-    listApplicationRoles,
-    listEnvironmentGroups,
-    searchEnvironmentGroupsByIds,
-} from '../services/applicationMembers';
-import type { EnvironmentGroup } from '../types/applicationMembers.types';
+import { useEnvironment } from '@gravitee/gamma-modules-sdk';
+
+import { searchEnvironmentGroupsByIds } from '../../shared/services/groupMembers';
+import type { EnvironmentGroup } from '../../shared/types/groupMembers';
+import { listApplicationMembers, listApplicationRoles, listEnvironmentGroups } from '../services/applicationMembers';
 import { applicationMemberKeys } from '../utils/queryKeys';
 
 export function useApplicationMembers(applicationId: string | undefined) {

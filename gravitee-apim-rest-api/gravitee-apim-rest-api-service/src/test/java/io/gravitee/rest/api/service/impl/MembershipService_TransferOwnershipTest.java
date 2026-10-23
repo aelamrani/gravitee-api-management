@@ -165,7 +165,8 @@ public class MembershipService_TransferOwnershipTest {
             commandRepository,
             apiMetadataService,
             searchEngineService,
-            apiProductGroupService
+            apiProductGroupService,
+            null
         );
 
         // Stub API_PRODUCT lookup for tests that exercise getUserMember(API_PRODUCT, ...). Returning an

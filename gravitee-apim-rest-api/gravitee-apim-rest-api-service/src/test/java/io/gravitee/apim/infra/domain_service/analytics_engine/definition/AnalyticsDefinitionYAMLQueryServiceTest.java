@@ -199,11 +199,22 @@ class AnalyticsDefinitionYAMLQueryServiceTest {
                 .toList();
 
             var undescribed = Arrays.stream(FilterSpec.Name.values())
+                .filter(name -> !name.isInternal())
                 .filter(name -> service.findFilter(name).isEmpty())
                 .map(FilterSpec.Name::name)
                 .toList();
 
             assertThat(undescribed).containsExactlyInAnyOrderElementsOf(pinnedNames);
+        }
+
+        /** The back end builds the internal names itself: in the catalog, they would be offered to callers. */
+        @Test
+        void should_never_describe_an_internal_name() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            assertThat(Arrays.stream(FilterSpec.Name.values()).filter(FilterSpec.Name::isInternal)).allSatisfy(name ->
+                assertThat(service.findFilter(name)).isEmpty()
+            );
         }
 
         private static <T> List<String> droppedDimensions(
@@ -273,6 +284,142 @@ class AnalyticsDefinitionYAMLQueryServiceTest {
             var filterNames = service.getFilters(MetricSpec.Name.AUTHZ_SEARCHES).stream().map(FilterSpec::name).toList();
 
             assertThat(filterNames).doesNotContain(FilterSpec.Name.AUTHZ_DECISION);
+        }
+
+        @Test
+        void should_not_offer_decision_as_a_facet_of_failures() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var facetNames = service.getFacets(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FacetSpec::name).toList();
+
+            assertThat(facetNames).doesNotContain(FacetSpec.Name.AUTHZ_DECISION);
+        }
+
+        @Test
+        void should_not_offer_decision_as_a_filter_of_failures() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var filterNames = service.getFilters(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FilterSpec::name).toList();
+
+            assertThat(filterNames).doesNotContain(FilterSpec.Name.AUTHZ_DECISION);
+        }
+
+        @Test
+        void should_not_offer_operation_as_a_facet_of_failures() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var facetNames = service.getFacets(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FacetSpec::name).toList();
+
+            assertThat(facetNames).doesNotContain(FacetSpec.Name.AUTHZ_OPERATION);
+        }
+
+        @Test
+        void should_not_offer_operation_as_a_filter_of_failures() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var filterNames = service.getFilters(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FilterSpec::name).toList();
+
+            assertThat(filterNames).doesNotContain(FilterSpec.Name.AUTHZ_OPERATION);
+        }
+
+        @Test
+        void should_not_offer_reason_as_a_facet_of_failures() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var facetNames = service.getFacets(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FacetSpec::name).toList();
+
+            assertThat(facetNames).doesNotContain(FacetSpec.Name.AUTHZ_REASON);
+        }
+
+        @Test
+        void should_not_offer_reason_as_a_filter_of_failures() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var filterNames = service.getFilters(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FilterSpec::name).toList();
+
+            assertThat(filterNames).doesNotContain(FilterSpec.Name.AUTHZ_REASON);
+        }
+
+        @Test
+        void should_facet_operations_by_the_dimensions_every_request_or_search_carries() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var facetNames = service.getFacets(MetricSpec.Name.AUTHZ_OPERATIONS).stream().map(FacetSpec::name).toList();
+
+            assertThat(facetNames).containsExactlyInAnyOrder(
+                FacetSpec.Name.API,
+                FacetSpec.Name.GATEWAY,
+                FacetSpec.Name.AUTHZ_OPERATION,
+                FacetSpec.Name.AUTHZ_SEARCH_TYPE
+            );
+        }
+
+        @Test
+        void should_facet_searches_by_the_search_type_and_traffic_dimensions() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var facetNames = service.getFacets(MetricSpec.Name.AUTHZ_SEARCHES).stream().map(FacetSpec::name).toList();
+
+            assertThat(facetNames).containsExactlyInAnyOrder(
+                FacetSpec.Name.API,
+                FacetSpec.Name.GATEWAY,
+                FacetSpec.Name.AUTHZ_SEARCH_TYPE,
+                FacetSpec.Name.AUTHZ_ACTION,
+                FacetSpec.Name.AUTHZ_SUBJECT_ID,
+                FacetSpec.Name.AUTHZ_RESOURCE_ID
+            );
+        }
+    }
+
+    @Nested
+    class AuthzFailures {
+
+        @Test
+        void should_label_failures_as_failed_decisions() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            assertThat(service.getMetrics(ApiSpec.Name.AUTHZ))
+                .filteredOn(metric -> metric.name() == MetricSpec.Name.AUTHZ_FAILURES)
+                .singleElement()
+                .extracting(MetricSpec::label)
+                .isEqualTo("Failed Decisions");
+        }
+
+        @Test
+        void should_not_offer_facets_a_failed_decision_never_carries() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            var facetNames = service.getFacets(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FacetSpec::name).toList();
+            var filterNames = service.getFilters(MetricSpec.Name.AUTHZ_FAILURES).stream().map(FilterSpec::name).toList();
+
+            assertThat(facetNames).doesNotContain(
+                FacetSpec.Name.AUTHZ_DECISION,
+                FacetSpec.Name.AUTHZ_REASON,
+                FacetSpec.Name.AUTHZ_OPERATION
+            );
+            assertThat(filterNames).doesNotContain(
+                FilterSpec.Name.AUTHZ_DECISION,
+                FilterSpec.Name.AUTHZ_REASON,
+                FilterSpec.Name.AUTHZ_OPERATION
+            );
+        }
+
+        @Test
+        void should_offer_the_operations_the_gamma_filter_offers() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            assertThat(service.findFilter(FilterSpec.Name.AUTHZ_OPERATION)).hasValueSatisfying(spec ->
+                assertThat(spec.enumValues()).containsExactly("evaluation", "evaluations", "search")
+            );
+        }
+
+        @Test
+        void should_offer_only_the_statuses_a_decision_report_writes() {
+            var service = new AnalyticsDefinitionYAMLQueryService();
+
+            assertThat(service.findFilter(FilterSpec.Name.AUTHZ_STATUS)).hasValueSatisfying(spec ->
+                assertThat(spec.enumValues()).containsExactly("success", "error")
+            );
         }
     }
 }

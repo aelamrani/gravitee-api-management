@@ -28,8 +28,10 @@ import io.gravitee.gamma.rest.core.observability.dashboard.model.Dashboard;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardFilter;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.TimeRange;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.TimeRangeType;
+import io.gravitee.gamma.rest.core.observability.filter.domain_service.ObservabilityFilterValidator;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterCondition;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterOperator;
+import io.gravitee.gamma.rest.infra.adapter.SpiFilterRegistry;
 import io.gravitee.gamma.rest.resource.AbstractResourceTest;
 import io.gravitee.gamma.rest.resources.observability.dashboards.ObservabilityDashboardsResourceTest.DashboardsTestConfiguration;
 import io.gravitee.gamma.rest.spring.ResourceContextConfiguration;
@@ -45,6 +47,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
@@ -130,6 +134,69 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         }
 
         @Test
+        void should_only_return_dashboards_of_the_requested_module() {
+            dashboardRepository.givenDashboard(dashboard("dash-aim", ENVIRONMENT, "aim"));
+            dashboardRepository.givenDashboard(dashboard("dash-apim", ENVIRONMENT, "apim"));
+            dashboardRepository.givenDashboard(dashboard("dash-none", ENVIRONMENT, null));
+
+            Response response = rootTarget().queryParam("module", "aim").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            JsonNode body = response.readEntity(JsonNode.class);
+            assertThat(body.get("data")).hasSize(1);
+            assertThat(body.get("data").get(0).get("id").asText()).isEqualTo("dash-aim");
+            assertThat(body.get("data").get(0).get("module").asText()).isEqualTo("aim");
+            assertThat(body.get("pagination").get("totalCount").asLong()).isEqualTo(1L);
+        }
+
+        @Test
+        void should_return_the_dashboards_of_every_module_repeated_in_the_query() {
+            dashboardRepository.givenDashboard(dashboard("dash-aim", ENVIRONMENT, "aim"));
+            dashboardRepository.givenDashboard(dashboard("dash-apim", ENVIRONMENT, "apim"));
+            dashboardRepository.givenDashboard(dashboard("dash-portals", ENVIRONMENT, "portals"));
+            dashboardRepository.givenDashboard(dashboard("dash-none", ENVIRONMENT, null));
+
+            Response response = rootTarget().queryParam("module", "aim", "apim").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            JsonNode body = response.readEntity(JsonNode.class);
+            assertThat(body.get("data"))
+                .extracting(dto -> dto.get("id").asText())
+                .containsExactly("dash-aim", "dash-apim");
+            assertThat(body.get("pagination").get("totalCount").asLong()).isEqualTo(2L);
+        }
+
+        @Test
+        void should_return_400_when_one_of_the_modules_is_invalid() {
+            Response response = rootTarget().queryParam("module", "aim", "AIM").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+        }
+
+        @Test
+        void should_return_every_module_including_dashboards_without_one_when_no_module_is_requested() {
+            dashboardRepository.givenDashboard(dashboard("dash-aim", ENVIRONMENT, "aim"));
+            dashboardRepository.givenDashboard(dashboard("dash-apim", ENVIRONMENT, "apim"));
+            dashboardRepository.givenDashboard(dashboard("dash-none", ENVIRONMENT, null));
+
+            Response response = rootTarget().request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            JsonNode data = response.readEntity(JsonNode.class).get("data");
+            assertThat(data)
+                .extracting(dto -> dto.get("id").asText())
+                .containsExactly("dash-aim", "dash-apim", "dash-none");
+            assertThat(data.get(2).has("module")).as("no module, no field").isFalse();
+        }
+
+        @Test
+        void should_return_400_on_an_invalid_module() {
+            Response response = rootTarget().queryParam("module", "AIM").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+        }
+
+        @Test
         void should_return_the_requested_page() {
             for (int i = 1; i <= 5; i++) {
                 dashboardRepository.givenDashboard(dashboard("dash-" + i, ENVIRONMENT));
@@ -185,6 +252,25 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         }
 
         @Test
+        void should_return_200_when_the_requested_module_matches() {
+            dashboardRepository.givenDashboard(dashboard(DASHBOARD_ID, ENVIRONMENT, "aim"));
+
+            Response response = rootTarget(DASHBOARD_ID).queryParam("module", "aim").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            assertThat(response.readEntity(JsonNode.class).get("module").asText()).isEqualTo("aim");
+        }
+
+        @Test
+        void should_return_404_when_the_requested_module_does_not_match() {
+            dashboardRepository.givenDashboard(dashboard(DASHBOARD_ID, ENVIRONMENT, "apim"));
+
+            Response response = rootTarget(DASHBOARD_ID).queryParam("module", "aim").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.NOT_FOUND_404);
+        }
+
+        @Test
         void should_return_404_when_dashboard_does_not_exist() {
             Response response = rootTarget("unknown").request().get();
 
@@ -214,6 +300,28 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
     class CreateDashboard {
 
         @Test
+        void should_return_400_naming_a_filter_the_catalog_would_refuse_at_query_time() {
+            Response response = rootTarget()
+                .request()
+                .post(
+                    Entity.json(
+                        """
+                        {
+                          "id": "dash-new",
+                          "module": "aim",
+                          "title": "Performance overview",
+                          "filters": [{ "name": "REQUEST_ID", "operator": "IN", "value": [], "editable": true }]
+                        }
+                        """
+                    )
+                );
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("message").asText()).contains("REQUEST_ID");
+            assertThat(dashboardRepository.findByIdAndEnvironmentId("dash-new", ENVIRONMENT)).isEmpty();
+        }
+
+        @Test
         void should_return_201_with_location_and_the_created_dashboard() {
             Response response = rootTarget()
                 .request()
@@ -222,11 +330,12 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
                         """
                         {
                           "id": "dash-new",
+                          "module": "aim",
                           "title": "Performance overview",
                           "description": "desc",
                           "filters": [
                             { "name": "API_TYPE", "label": "API Type", "operator": "eq", "value": "MCP" },
-                            { "name": "HTTP_STATUS", "label": "Status Code", "operator": "IN", "value": [], "editable": true }
+                            { "name": "HTTP_STATUS", "label": "Status Code", "operator": "EQ", "value": [], "editable": true }
                           ],
                           "timeRange": { "type": "relative", "period": "24h" },
                           "widgets": [{ "id": "w1", "type": "metric" }]
@@ -261,6 +370,49 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         }
 
         @Test
+        void should_store_the_module_sent_on_creation() {
+            Response response = rootTarget()
+                .request()
+                .post(Entity.json("{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Performance overview\" }"));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.CREATED_201);
+            assertThat(response.readEntity(JsonNode.class).get("module").asText()).isEqualTo("aim");
+            assertThat(dashboardRepository.findByIdAndEnvironmentId("dash-new", ENVIRONMENT)).hasValueSatisfying(persisted ->
+                assertThat(persisted.module()).isEqualTo("aim")
+            );
+        }
+
+        @ParameterizedTest
+        @ValueSource(
+            strings = {
+                "{ \"id\": \"dash-new\", \"title\": \"Performance overview\" }",
+                "{ \"id\": \"dash-new\", \"module\": null, \"title\": \"Performance overview\" }",
+                "{ \"id\": \"dash-new\", \"module\": \"\", \"title\": \"Performance overview\" }",
+                "{ \"id\": \"dash-new\", \"module\": \"  \", \"title\": \"Performance overview\" }",
+            }
+        )
+        void should_return_400_with_a_technical_code_when_the_module_is_missing(String payload) {
+            Response response = rootTarget().request().post(Entity.json(payload));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            JsonNode body = response.readEntity(JsonNode.class);
+            assertThat(body.get("message").asText()).as("names the request field").contains("field 'module'");
+            assertThat(body.get("technicalCode").asText()).isEqualTo("observability.dashboard.module_required");
+            assertThat(dashboardRepository.findByIdAndEnvironmentId("dash-new", ENVIRONMENT)).isEmpty();
+        }
+
+        @Test
+        void should_return_400_on_an_invalid_module() {
+            Response response = rootTarget()
+                .request()
+                .post(Entity.json("{ \"id\": \"dash-new\", \"module\": \"Not A Module\", \"title\": \"Performance overview\" }"));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("message").asText()).contains("'Not A Module' is invalid");
+            assertThat(dashboardRepository.findByIdAndEnvironmentId("dash-new", ENVIRONMENT)).isEmpty();
+        }
+
+        @Test
         void should_ignore_server_owned_fields_sent_in_the_body() {
             Response response = rootTarget()
                 .request()
@@ -269,6 +421,7 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
                         """
                         {
                           "id": "dash-new",
+                          "module": "aim",
                           "title": "Performance overview",
                           "version": 42,
                           "createdBy": "someone-else",
@@ -287,8 +440,59 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         }
 
         @Test
+        void should_return_400_naming_an_unknown_key_in_a_filter() {
+            Response response = rootTarget()
+                .request()
+                .post(
+                    Entity.json(
+                        """
+                        {
+                          "id": "dash-new",
+                          "title": "Performance overview",
+                          "filters": [{ "name": "API_TYPE", "operator": "IN", "values": ["MCP"] }]
+                        }
+                        """
+                    )
+                );
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("message").asText()).isEqualTo(
+                "Property [values] is not recognized as a valid property"
+            );
+            assertThat(dashboardRepository.findByIdAndEnvironmentId("dash-new", ENVIRONMENT)).isEmpty();
+        }
+
+        @Test
+        void should_return_201_to_the_library_save_payload() {
+            Response response = rootTarget()
+                .request()
+                .post(
+                    Entity.json(
+                        """
+                        {
+                          "id": "dash-new",
+                          "title": "API health",
+                          "description": "Errors and latency per API",
+                          "filters": [
+                            { "name": "API", "label": "API", "operator": "IN", "value": ["api-1"], "editable": true },
+                            { "name": "HTTP_STATUS", "operator": "EQ", "value": ["500"], "editable": false }
+                          ],
+                          "timeRange": { "type": "absolute", "from": 1760184000000, "to": 1760270400000 },
+                          "widgets": [{ "id": "w1", "type": "chart" }],
+                          "module": "apim"
+                        }
+                        """
+                    )
+                );
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.CREATED_201);
+        }
+
+        @Test
         void should_return_400_when_title_is_blank() {
-            Response response = rootTarget().request().post(Entity.json("{ \"id\": \"dash-new\", \"title\": \"  \" }"));
+            Response response = rootTarget()
+                .request()
+                .post(Entity.json("{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"  \" }"));
 
             assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
         }
@@ -306,7 +510,11 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         void should_return_400_on_duplicate_widget_ids() {
             Response response = rootTarget()
                 .request()
-                .post(Entity.json("{ \"id\": \"dash-new\", \"title\": \"Perf\", \"widgets\": [{ \"id\": \"w1\" }, { \"id\": \"w1\" }] }"));
+                .post(
+                    Entity.json(
+                        "{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Perf\", \"widgets\": [{ \"id\": \"w1\" }, { \"id\": \"w1\" }] }"
+                    )
+                );
 
             assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
         }
@@ -315,7 +523,11 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         void should_return_400_on_an_incoherent_time_range() {
             Response response = rootTarget()
                 .request()
-                .post(Entity.json("{ \"id\": \"dash-new\", \"title\": \"Perf\", \"timeRange\": { \"type\": \"relative\" } }"));
+                .post(
+                    Entity.json(
+                        "{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Perf\", \"timeRange\": { \"type\": \"relative\" } }"
+                    )
+                );
 
             assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
         }
@@ -324,7 +536,7 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         void should_return_400_on_a_null_filter_entry() {
             Response response = rootTarget()
                 .request()
-                .post(Entity.json("{ \"id\": \"dash-new\", \"title\": \"Perf\", \"filters\": [null] }"));
+                .post(Entity.json("{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Perf\", \"filters\": [null] }"));
 
             assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
         }
@@ -335,7 +547,7 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
                 .request()
                 .post(
                     Entity.json(
-                        "{ \"id\": \"dash-new\", \"title\": \"Perf\", \"filters\": [{ \"name\": \"API_TYPE\", \"operator\": \"between\", \"value\": \"x\" }] }"
+                        "{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Perf\", \"filters\": [{ \"name\": \"API_TYPE\", \"operator\": \"between\", \"value\": \"x\" }] }"
                     )
                 );
 
@@ -346,7 +558,9 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         void should_return_403_when_caller_cannot_create_dashboards() {
             when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(false);
 
-            Response response = rootTarget().request().post(Entity.json("{ \"id\": \"dash-new\", \"title\": \"Perf\" }"));
+            Response response = rootTarget()
+                .request()
+                .post(Entity.json("{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Perf\" }"));
 
             assertThat(response.getStatus()).isEqualTo(HttpStatusCode.FORBIDDEN_403);
         }
@@ -360,7 +574,7 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
                 widgets.append("{\"id\":\"w").append(i).append("\"}");
             }
             widgets.append(']');
-            return "{ \"id\": \"dash-new\", \"title\": \"Perf\", \"widgets\": " + widgets + " }";
+            return "{ \"id\": \"dash-new\", \"module\": \"aim\", \"title\": \"Perf\", \"widgets\": " + widgets + " }";
         }
     }
 
@@ -400,6 +614,95 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
             var persisted = dashboardRepository.findByIdAndEnvironmentId(DASHBOARD_ID, ENVIRONMENT).orElseThrow();
             assertThat(persisted.createdBy()).isEqualTo("user-1");
             assertThat(persisted.version()).isEqualTo(4);
+        }
+
+        @Test
+        void should_accept_the_dashboard_it_returned_echoed_back() {
+            rootTarget()
+                .request()
+                .post(
+                    Entity.json(
+                        """
+                        {
+                          "id": "dash-new",
+                          "module": "aim",
+                          "title": "Performance overview",
+                          "filters": [{ "name": "API_TYPE", "label": "API Type", "operator": "EQ", "value": ["MCP"], "editable": true }],
+                          "timeRange": { "type": "relative", "period": "24h" },
+                          "widgets": [{ "id": "w1", "type": "metric" }]
+                        }
+                        """
+                    )
+                );
+            JsonNode returned = rootTarget("dash-new").request().get().readEntity(JsonNode.class);
+
+            Response response = rootTarget("dash-new")
+                .request()
+                .header(HttpHeaders.IF_MATCH, "\"1\"")
+                .put(Entity.json(returned.toString()));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            assertThat(response.readEntity(JsonNode.class).get("version").asInt()).isEqualTo(2);
+        }
+
+        @Test
+        void should_return_200_to_the_library_save_payload() {
+            dashboardRepository.givenDashboard(dashboard(DASHBOARD_ID, ENVIRONMENT));
+
+            Response response = rootTarget(DASHBOARD_ID)
+                .request()
+                .header(HttpHeaders.IF_MATCH, "\"3\"")
+                .put(
+                    Entity.json(
+                        """
+                        {
+                          "title": "API health",
+                          "filters": [{ "name": "API_TYPE", "label": "API Type", "operator": "EQ", "value": ["MCP"], "editable": false }],
+                          "timeRange": { "type": "relative", "period": "24h" },
+                          "widgets": [{ "id": "w1", "type": "chart" }]
+                        }
+                        """
+                    )
+                );
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+        }
+
+        @Test
+        void should_return_400_naming_an_unknown_key_in_a_filter() {
+            dashboardRepository.givenDashboard(dashboard(DASHBOARD_ID, ENVIRONMENT));
+
+            Response response = rootTarget(DASHBOARD_ID)
+                .request()
+                .header(HttpHeaders.IF_MATCH, "\"3\"")
+                .put(
+                    Entity.json(
+                        "{ \"title\": \"Renamed\", \"filters\": [{ \"name\": \"API_TYPE\", \"operator\": \"EQ\", \"value\": \"MCP\", \"lable\": \"x\" }] }"
+                    )
+                );
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("message").asText()).isEqualTo(
+                "Property [lable] is not recognized as a valid property"
+            );
+            assertThat(dashboardRepository.findByIdAndEnvironmentId(DASHBOARD_ID, ENVIRONMENT).orElseThrow().version()).isEqualTo(3);
+        }
+
+        /** {@code module} is set once at creation; an update cannot move a dashboard to another module. */
+        @Test
+        void should_keep_the_stored_module_when_the_body_carries_another_one() {
+            dashboardRepository.givenDashboard(dashboard(DASHBOARD_ID, ENVIRONMENT, "aim"));
+
+            Response response = rootTarget(DASHBOARD_ID)
+                .request()
+                .header(HttpHeaders.IF_MATCH, "\"3\"")
+                .put(Entity.json("{ \"title\": \"Renamed\", \"module\": \"apim\" }"));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            assertThat(response.readEntity(JsonNode.class).get("module").asText()).isEqualTo("aim");
+            assertThat(dashboardRepository.findByIdAndEnvironmentId(DASHBOARD_ID, ENVIRONMENT)).hasValueSatisfying(persisted ->
+                assertThat(persisted.module()).isEqualTo("aim")
+            );
         }
 
         /** A weak validator is what a proxy may hand back; it still identifies the revision unambiguously here. */
@@ -712,6 +1015,7 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         return new Dashboard(
             versioned.id(),
             versioned.environmentId(),
+            versioned.module(),
             versioned.title(),
             versioned.description(),
             versioned.filters(),
@@ -725,10 +1029,15 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
     }
 
     private static Dashboard dashboard(String id, String environmentId) {
+        return dashboard(id, environmentId, null);
+    }
+
+    private static Dashboard dashboard(String id, String environmentId, String module) {
         try {
             return new Dashboard(
                 id,
                 environmentId,
+                module,
                 "Performance overview",
                 "desc",
                 List.of(new DashboardFilter(new FilterCondition("API_TYPE", FilterOperator.EQ, List.of("MCP")), "API Type", false)),
@@ -761,6 +1070,11 @@ class ObservabilityDashboardsResourceTest extends AbstractResourceTest {
         @Bean
         InMemoryDashboardRepository dashboardRepository() {
             return new InMemoryDashboardRepository();
+        }
+
+        @Bean
+        ObservabilityFilterValidator observabilityFilterValidator() {
+            return new ObservabilityFilterValidator(new SpiFilterRegistry());
         }
     }
 }

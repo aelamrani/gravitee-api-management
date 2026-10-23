@@ -16,7 +16,9 @@
 package io.gravitee.rest.api.management.v2.rest.spring;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.gravitee.apim.core.analytics.domain_service.EnvironmentAnalyticsApisDomainService;
 import io.gravitee.apim.core.analytics_engine.domain_service.BucketNamesPostProcessor;
+import io.gravitee.apim.core.analytics_engine.domain_service.FilterValueNameResolver;
 import io.gravitee.apim.core.analytics_engine.domain_service.QueryFilterTransformer;
 import io.gravitee.apim.core.analytics_engine.domain_service.UnitEnrichmentPostProcessor;
 import io.gravitee.apim.core.analytics_engine.query_service.AnalyticsDefinitionQueryService;
@@ -31,24 +33,22 @@ import io.gravitee.apim.infra.domain_service.user.UserContextLoaderImpl;
 import io.gravitee.apim.infra.spring.AnalyticsEngineRoutingConfiguration;
 import io.gravitee.apim.infra.spring.UsecaseSpringConfiguration;
 import io.gravitee.el.ExpressionLanguageInitializer;
-import io.gravitee.repository.management.api.ApiRepository;
 import io.gravitee.rest.api.kafkaexplorer.spring.KafkaExplorerSpringConfiguration;
 import io.gravitee.rest.api.management.v2.rest.adapter.PatchApiV4Deserializer;
 import io.gravitee.rest.api.management.v2.rest.adapter.PatchPlanFlowsDeserializer;
 import io.gravitee.rest.api.management.v2.rest.mapper.FlowMapper;
 import io.gravitee.rest.api.management.v2.rest.model.FlowV4;
 import io.gravitee.rest.api.management.v2.rest.resource.api.RemoteApiDefinitionParser;
+import io.gravitee.rest.api.management.v2.rest.resource.environment.NewtAIRateLimiter;
+import io.gravitee.rest.api.management.v2.rest.resource.kafka_console.KafkaConsoleClient;
 import io.gravitee.rest.api.management.v2.rest.utils.SubscriptionExpandHelper;
 import io.gravitee.rest.api.service.ApplicationService;
-import io.gravitee.rest.api.service.PermissionService;
 import io.gravitee.rest.api.service.UserService;
 import io.gravitee.rest.api.service.spring.ServiceConfiguration;
-import io.gravitee.rest.api.service.v4.ApiAuthorizationService;
 import io.gravitee.rest.api.service.v4.PlanSearchService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.EnableAsync;
 
 /**
@@ -88,11 +88,13 @@ public class RestManagementConfiguration {
     }
 
     @Bean
-    public BucketNamesPostProcessor bucketNamesPostProcessor(
-        @Lazy ApiRepository apiRepository,
-        ApplicationService applicationSearchService
-    ) {
-        return new BucketNamesPostProcessorImpl(apiRepository, applicationSearchService);
+    public KafkaConsoleClient kafkaConsoleClient(io.vertx.core.Vertx vertx, org.springframework.core.env.Environment environment) {
+        return new KafkaConsoleClient(vertx, environment);
+    }
+
+    @Bean
+    public BucketNamesPostProcessor bucketNamesPostProcessor(FilterValueNameResolver filterValueNameResolver) {
+        return new BucketNamesPostProcessorImpl(filterValueNameResolver);
     }
 
     @Bean
@@ -106,12 +108,8 @@ public class RestManagementConfiguration {
     }
 
     @Bean
-    public UserContextLoader userContextLoader(
-        ApiAuthorizationService apiAuthorizationService,
-        @Lazy ApiRepository apiRepository,
-        PermissionService permissionService
-    ) {
-        return new UserContextLoaderImpl(apiAuthorizationService, apiRepository, permissionService);
+    public UserContextLoader userContextLoader(EnvironmentAnalyticsApisDomainService environmentAnalyticsApisDomainService) {
+        return new UserContextLoaderImpl(environmentAnalyticsApisDomainService);
     }
 
     @Bean
@@ -124,11 +122,12 @@ public class RestManagementConfiguration {
     }
 
     @Bean
-    public ManagementContextLoader managementContextLoader(
-        ApiAuthorizationService apiAuthorizationService,
-        @Lazy ApiRepository apiRepository,
-        PermissionService permissionService
-    ) {
-        return new ManagementContextLoader(apiAuthorizationService, apiRepository, permissionService);
+    public ManagementContextLoader managementContextLoader(EnvironmentAnalyticsApisDomainService environmentAnalyticsApisDomainService) {
+        return new ManagementContextLoader(environmentAnalyticsApisDomainService);
+    }
+
+    @Bean
+    public NewtAIRateLimiter newtAIRateLimiter() {
+        return new NewtAIRateLimiter();
     }
 }

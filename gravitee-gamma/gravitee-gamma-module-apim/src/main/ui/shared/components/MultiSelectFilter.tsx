@@ -15,14 +15,26 @@
  */
 import { Button, Checkbox, cn, Popover, PopoverContent, PopoverTrigger } from '@gravitee/graphene-core';
 import { ChevronDownIcon } from '@gravitee/graphene-core/icons';
+import { useState } from 'react';
 
 export interface MultiSelectFilterOption {
     value: string;
     label: string;
+    /** When true, the option stays selected/unselected and cannot be toggled. */
+    disabled?: boolean;
+}
+
+function formatSelection(options: MultiSelectFilterOption[], selectedValues: string[], placeholder: string): string {
+    const optionValues = new Set(options.map(option => option.value));
+    const labels = options.filter(option => selectedValues.includes(option.value)).map(option => option.label);
+    const orphanValues = selectedValues.filter(value => !optionValues.has(value));
+    const parts = [...labels, ...orphanValues];
+    return parts.length === 0 ? placeholder : parts.join(', ');
 }
 
 /** Popover + checkbox list allowing multiple values to be selected for a single filter. */
 export function MultiSelectFilter({
+    id,
     placeholder,
     options,
     selectedValues,
@@ -30,7 +42,9 @@ export function MultiSelectFilter({
     emptyMessage,
     ariaLabel,
     className,
+    disabled = false,
 }: Readonly<{
+    id?: string;
     placeholder: string;
     options: MultiSelectFilterOption[];
     selectedValues: string[];
@@ -38,21 +52,26 @@ export function MultiSelectFilter({
     emptyMessage?: string;
     ariaLabel: string;
     className?: string;
+    disabled?: boolean;
 }>) {
-    const selectedLabels = options.filter(o => selectedValues.includes(o.value)).map(o => o.label);
-    const display = selectedLabels.length === 0 ? placeholder : selectedLabels.join(', ');
+    const [open, setOpen] = useState(false);
+    const display = formatSelection(options, selectedValues, placeholder);
 
     const toggle = (value: string) => {
+        const option = options.find(o => o.value === value);
+        if (option?.disabled) return;
         onSelectedValuesChange(selectedValues.includes(value) ? selectedValues.filter(v => v !== value) : [...selectedValues, value]);
     };
 
     return (
-        <Popover>
+        <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
                 <Button
+                    id={id}
                     type="button"
                     variant="outline"
                     aria-label={ariaLabel}
+                    disabled={disabled}
                     className={cn('h-9 w-full justify-start gap-2 px-3 font-normal', className)}
                 >
                     <span className={cn('min-w-0 flex-1 truncate text-left', selectedValues.length === 0 && 'text-muted-foreground')}>
@@ -65,10 +84,20 @@ export function MultiSelectFilter({
                 {options.length === 0 ? (
                     <p className="text-xs text-muted-foreground">{emptyMessage ?? 'No options'}</p>
                 ) : (
-                    <div className="max-h-[200px] space-y-2 overflow-y-auto">
+                    <div className="max-h-48 min-h-0 space-y-2 overflow-y-auto overscroll-contain">
                         {options.map(option => (
-                            <label key={option.value} className="flex cursor-pointer items-center gap-2 text-sm">
-                                <Checkbox checked={selectedValues.includes(option.value)} onCheckedChange={() => toggle(option.value)} />
+                            <label
+                                key={option.value}
+                                className={cn(
+                                    'flex items-center gap-2 text-sm',
+                                    option.disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+                                )}
+                            >
+                                <Checkbox
+                                    checked={selectedValues.includes(option.value)}
+                                    onCheckedChange={() => toggle(option.value)}
+                                    disabled={option.disabled}
+                                />
                                 <span className="truncate">{option.label}</span>
                             </label>
                         ))}

@@ -13,25 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { registerRemotes } from '@module-federation/runtime';
 import { useState, useEffect } from 'react';
 
 import { useBootstrapStore } from '../../../shared/config/bootstrap.store';
 import { useAuthStore } from '../../auth/auth.store';
+import { registerModuleRemotes } from '../modules.remotes';
 import { useModulesStore } from '../modules.store';
 import { type GammaModule, type GammaModuleResponse, hasUi, parseModule } from '../modules.types';
-
-const DEV_MODULE_ENTRIES: Record<string, string> = (process.env.DEV_MODULE_ENTRIES ?? '')
-    .split(',')
-    .filter(Boolean)
-    .reduce(
-        (acc, entry) => {
-            const [id, url] = entry.split('=', 2);
-            if (id && url) acc[id] = url;
-            return acc;
-        },
-        {} as Record<string, string>,
-    );
 
 export function useGammaModules(): { modules: GammaModule[]; loading: boolean; error: Error | null; retry: () => void } {
     const gammaBaseURL = useBootstrapStore(s => s.config?.gammaBaseURL ?? '');
@@ -43,7 +31,11 @@ export function useGammaModules(): { modules: GammaModule[]; loading: boolean; e
     const [error, setError] = useState<Error | null>(null);
     const [retryCount, setRetryCount] = useState(0);
 
-    const retry = () => setRetryCount(c => c + 1);
+    // Shows the retry as running at once: one that fails right away could otherwise end before it was seen to start.
+    const retry = () => {
+        setLoading(true);
+        setRetryCount(c => c + 1);
+    };
 
     useEffect(() => {
         if (!gammaBaseURL || !organizationId) {
@@ -58,8 +50,8 @@ export function useGammaModules(): { modules: GammaModule[]; loading: boolean; e
         }
 
         const controller = new AbortController();
+        // A failed load keeps its error until a load succeeds, so its message stays while a retry runs.
         setLoading(true);
-        setError(null);
 
         const modulesURL = `${gammaBaseURL}/organizations/${organizationId}/modules`;
         fetch(modulesURL, { credentials: 'include', signal: controller.signal })
@@ -69,14 +61,9 @@ export function useGammaModules(): { modules: GammaModule[]; loading: boolean; e
             })
             .then(data => {
                 const parsed = Array.isArray(data) ? data.filter(hasUi).map(parseModule) : [];
-                const remotes = parsed.map(m => ({
-                    name: m.remoteName,
-                    entry:
-                        DEV_MODULE_ENTRIES[m.id] ??
-                        `${gammaBaseURL}/organizations/${organizationId}/modules/${m.id}/assets/mf-manifest.json`,
-                }));
-                registerRemotes(remotes, { force: true });
+                registerModuleRemotes(parsed, gammaBaseURL, organizationId);
                 setModules(parsed);
+                setError(null);
             })
             .catch(err => {
                 if (!controller.signal.aborted) {

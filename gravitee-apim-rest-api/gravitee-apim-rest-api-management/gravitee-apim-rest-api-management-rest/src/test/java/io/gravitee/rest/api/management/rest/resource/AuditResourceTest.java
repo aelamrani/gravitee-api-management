@@ -16,6 +16,8 @@
 package io.gravitee.rest.api.management.rest.resource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
 import io.gravitee.common.data.domain.MetadataPage;
@@ -23,11 +25,13 @@ import io.gravitee.common.http.HttpStatusCode;
 import io.gravitee.node.api.license.License;
 import io.gravitee.node.api.license.LicenseManager;
 import io.gravitee.rest.api.model.audit.AuditEntity;
+import io.gravitee.rest.api.model.audit.AuditQuery;
 import jakarta.ws.rs.core.Response;
 import java.util.*;
 import javax.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * @author GraviteeSource Team
@@ -91,6 +95,53 @@ public class AuditResourceTest extends AbstractResourceTest {
         final Response response = envTarget().queryParam("event", "eventId").request().get();
 
         assertEquals(HttpStatusCode.OK_200, response.getStatus());
+    }
+
+    @Test
+    public void should_filter_audits_by_encrypted() {
+        when(license.isFeatureEnabled("apim-audit-trail")).thenReturn(true);
+        when(auditService.search(any(), argThat(Objects::nonNull))).thenReturn(new MetadataPage<>(List.of(), 1, 0, 0, new HashMap<>()));
+
+        final Response response = envTarget().queryParam("encrypted", true).request().get();
+
+        assertEquals(HttpStatusCode.OK_200, response.getStatus());
+        ArgumentCaptor<AuditQuery> query = ArgumentCaptor.forClass(AuditQuery.class);
+        verify(auditService).search(any(), query.capture());
+        assertEquals("true", query.getValue().getProperties().get("ENCRYPTED"));
+    }
+
+    @Test
+    public void should_not_filter_audits_when_encrypted_is_absent() {
+        when(license.isFeatureEnabled("apim-audit-trail")).thenReturn(true);
+        when(auditService.search(any(), argThat(Objects::nonNull))).thenReturn(new MetadataPage<>(List.of(), 1, 0, 0, new HashMap<>()));
+
+        final Response response = envTarget().request().get();
+
+        assertEquals(HttpStatusCode.OK_200, response.getStatus());
+        ArgumentCaptor<AuditQuery> query = ArgumentCaptor.forClass(AuditQuery.class);
+        verify(auditService).search(any(), query.capture());
+        assertNull(query.getValue().getProperties());
+    }
+
+    @Test
+    public void should_reject_encrypted_false() {
+        when(license.isFeatureEnabled("apim-audit-trail")).thenReturn(true);
+
+        final Response response = envTarget().queryParam("encrypted", false).request().get();
+
+        assertEquals(HttpStatusCode.BAD_REQUEST_400, response.getStatus());
+    }
+
+    @Test
+    public void should_list_the_encrypted_properties_accessed_and_refreshed_events() {
+        final Response response = envTarget().path("events").request().get();
+
+        assertEquals(HttpStatusCode.OK_200, response.getStatus());
+        String events = response.readEntity(String.class);
+        assertTrue(events.contains("\"API_ENCRYPTED_PROPERTIES_ACCESSED\""));
+        assertTrue(events.contains("\"DICTIONARY_ENCRYPTED_PROPERTIES_ACCESSED\""));
+        assertTrue(events.contains("\"API_ENCRYPTED_PROPERTIES_REFRESHED\""));
+        assertTrue(events.contains("\"DICTIONARY_ENCRYPTED_PROPERTIES_REFRESHED\""));
     }
 
     @Test

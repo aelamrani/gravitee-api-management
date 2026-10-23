@@ -19,20 +19,24 @@ import static assertions.MAPIAssertions.assertThat;
 import static io.gravitee.common.http.HttpStatusCode.BAD_REQUEST_400;
 import static io.gravitee.common.http.HttpStatusCode.OK_200;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 import fixtures.core.model.PlanFixtures;
 import fixtures.core.model.RepositoryFixtures;
 import fixtures.repository.ConnectionLogFixtures;
+import inmemory.ApiAuthorizationDomainServiceInMemory;
+import inmemory.ApiQueryServiceInMemory;
 import inmemory.ApplicationCrudServiceInMemory;
 import inmemory.ConnectionLogsCrudServiceInMemory;
 import inmemory.PlanCrudServiceInMemory;
+import io.gravitee.apim.core.analytics.domain_service.EnvironmentAnalyticsApisDomainService;
+import io.gravitee.apim.core.analytics.model.ApiDataKind;
 import io.gravitee.apim.core.plan.model.Plan;
 import io.gravitee.apim.core.user.domain_service.UserContextLoader;
 import io.gravitee.apim.core.user.model.UserContext;
+import io.gravitee.apim.infra.adapter.ApiAdapter;
 import io.gravitee.apim.infra.domain_service.user.UserContextLoaderImpl;
-import io.gravitee.repository.management.api.ApiRepository;
 import io.gravitee.repository.management.model.Api;
 import io.gravitee.rest.api.management.v2.rest.model.logs.engine.ArrayFilter;
 import io.gravitee.rest.api.management.v2.rest.model.logs.engine.EnvironmentApiLog;
@@ -47,8 +51,9 @@ import io.gravitee.rest.api.management.v2.rest.model.logs.engine.TimeRange;
 import io.gravitee.rest.api.management.v2.rest.resource.AbstractResourceTest;
 import io.gravitee.rest.api.model.BaseApplicationEntity;
 import io.gravitee.rest.api.model.EnvironmentEntity;
+import io.gravitee.rest.api.model.permissions.RolePermission;
+import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.service.common.GraviteeContext;
-import io.gravitee.rest.api.service.v4.ApiAuthorizationService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.client.Entity;
 import jakarta.ws.rs.client.WebTarget;
@@ -56,7 +61,6 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.stream.LongStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -64,6 +68,8 @@ import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.Mockito;
 
 @DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
@@ -100,10 +106,13 @@ class LogsSearchResourceTest extends AbstractResourceTest {
     final ConnectionLogFixtures connectionLogFixtures = new ConnectionLogFixtures(API_1, APPLICATION_1.getId(), PLAN_1.getId());
 
     @Inject
-    private ApiAuthorizationService apiAuthorizationService;
+    private ApiQueryServiceInMemory apiQueryService;
 
     @Inject
-    private ApiRepository apiRepository;
+    private ApiAuthorizationDomainServiceInMemory apiAuthorizationDomainService;
+
+    @Inject
+    private EnvironmentAnalyticsApisDomainService readableApis;
 
     @Inject
     private UserContextLoader userContextLoader;
@@ -133,13 +142,16 @@ class LogsSearchResourceTest extends AbstractResourceTest {
         GraviteeContext.setCurrentEnvironment(ENVIRONMENT);
         GraviteeContext.setCurrentOrganization(ORGANIZATION);
 
-        when(apiAuthorizationService.findApiIdsByUserId(any(), any(), any(), anyBoolean())).thenReturn(Set.of(API_1, API_2));
+        var readableApiList = List.of(ApiAdapter.INSTANCE.toCoreModel(GIO_API_1), ApiAdapter.INSTANCE.toCoreModel(GIO_API_2));
+        apiQueryService.initWith(readableApiList);
+        apiAuthorizationDomainService.initWith(readableApiList);
+        when(permissionService.hasPermission(any(), any(), eq(RolePermission.API_LOG), any(), eq(RolePermissionAction.READ))).thenReturn(
+            true
+        );
 
-        when(apiRepository.search(any(), any())).thenReturn(List.of(GIO_API_1, GIO_API_2));
-
-        var realContextManager = new UserContextLoaderImpl(apiAuthorizationService, apiRepository, permissionService);
-        when(userContextLoader.loadApis(any(UserContext.class))).thenAnswer(invocation ->
-            realContextManager.loadApis(invocation.getArgument(0))
+        var realContextManager = new UserContextLoaderImpl(readableApis);
+        when(userContextLoader.loadApis(any(UserContext.class), eq(ApiDataKind.PER_REQUEST))).thenAnswer(invocation ->
+            realContextManager.loadApis(invocation.getArgument(0), ApiDataKind.PER_REQUEST)
         );
     }
 
@@ -285,6 +297,25 @@ class LogsSearchResourceTest extends AbstractResourceTest {
             var response = searchTarget.request().post(Entity.json(request));
 
             assertThat(response).hasStatus(BAD_REQUEST_400).asError().hasHttpStatus(BAD_REQUEST_400);
+        }
+
+        @Test
+        void should_return_400_if_a_filter_does_not_support_its_operator() {
+            var request = new SearchLogsRequest()
+                .timeRange(
+                    new TimeRange()
+                        .from(OffsetDateTime.parse("2020-01-01T00:00:00.00Z"))
+                        .to(OffsetDateTime.parse("2020-12-31T23:59:59.00Z"))
+                )
+                .addFiltersItem(new Filter(new StringFilter().name(FilterName.URI).operator(Operator.CONTAINS).value("/foo")));
+
+            var response = searchTarget.request().post(Entity.json(request));
+
+            assertThat(response)
+                .hasStatus(BAD_REQUEST_400)
+                .asError()
+                .hasHttpStatus(BAD_REQUEST_400)
+                .hasMessage("Filter URI does not support operator CONTAINS.");
         }
 
         @Test
@@ -774,8 +805,10 @@ class LogsSearchResourceTest extends AbstractResourceTest {
                 });
         }
 
-        @Test
-        void should_filter_logs_by_uri() {
+        // EQ is the deprecated spelling of STARTS_WITH on URI.
+        @ParameterizedTest
+        @EnumSource(value = Operator.class, names = { "STARTS_WITH", "EQ" })
+        void should_filter_logs_by_uri_prefix(Operator operator) {
             connectionLogsCrudService.initWith(
                 List.of(
                     connectionLogFixtures.aConnectionLog("req1").toBuilder().uri("/foo").build(),
@@ -790,7 +823,7 @@ class LogsSearchResourceTest extends AbstractResourceTest {
                         .from(OffsetDateTime.parse("2020-01-01T00:00:00.00Z"))
                         .to(OffsetDateTime.parse("2020-12-31T23:59:59.00Z"))
                 )
-                .addFiltersItem(new Filter(new StringFilter().name(FilterName.URI).operator(Operator.EQ).value("/foo*")));
+                .addFiltersItem(new Filter(new StringFilter().name(FilterName.URI).operator(operator).value("/foo")));
 
             var response = searchTarget.request().post(Entity.json(request));
 
@@ -1063,7 +1096,7 @@ class LogsSearchResourceTest extends AbstractResourceTest {
 
         @Test
         void should_return_null_api_type_when_api_not_in_context() {
-            when(userContextLoader.loadApis(any(UserContext.class))).thenAnswer(invocation -> {
+            when(userContextLoader.loadApis(any(UserContext.class), eq(ApiDataKind.PER_REQUEST))).thenAnswer(invocation -> {
                 UserContext ctx = invocation.getArgument(0);
                 return ctx.withApis(List.of()).withApiNamesById(Map.of());
             });

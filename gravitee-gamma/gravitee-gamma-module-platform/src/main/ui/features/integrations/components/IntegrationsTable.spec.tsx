@@ -17,6 +17,7 @@
 import { dataTableHarness } from '@gravitee/graphene-core/testing';
 import { render, screen } from '@testing-library/react';
 import type { ComponentProps } from 'react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { IntegrationsTable } from './IntegrationsTable';
 import type { Integration, IntegrationAgentStatus } from '../types/integration';
@@ -38,17 +39,20 @@ const PROVIDER_LABEL_BY_TOKEN: [token: string, label: string][] = [
     ['confluent-platform', 'Confluent Platform'],
     ['mulesoft', 'MuleSoft'],
     ['edge-stack', 'Edge Stack'],
+    ['sap-api-management', 'SAP Business Technology Platform'],
 ];
 const SUPPORTED_PROVIDER_TOKENS = PROVIDER_LABEL_BY_TOKEN.map(([token]) => token);
 const UNMAPPED_PROVIDER_TOKEN = 'kong';
 const OBJECT_PROTOTYPE_MEMBER_PROVIDER_TOKEN = 'constructor';
 // The v2 DTO declares agentStatus nullable, so the wire can send an explicit null that the optional field type cannot express.
 const WIRE_NULL_AGENT_STATUS = null as unknown as IntegrationAgentStatus;
+const UNRECOGNIZED_AGENT_STATUS_TOKEN = 'UNKNOWN';
+const OBJECT_PROTOTYPE_MEMBER_AGENT_STATUS_TOKEN = 'constructor';
 
-const A2A_INTEGRATIONS_WITHOUT_AGENT_STATUS: [description: string, integration: Integration][] = [
-    ['omits the agentStatus key', { id: 'int-a2a', name: 'Agent Bridge', provider: 'A2A' }],
-    ['sets agentStatus to undefined', { id: 'int-a2a', name: 'Agent Bridge', provider: 'A2A', agentStatus: undefined }],
-    ['sets agentStatus to null', { id: 'int-a2a', name: 'Agent Bridge', provider: 'A2A', agentStatus: WIRE_NULL_AGENT_STATUS }],
+const INTEGRATIONS_WITHOUT_AGENT_STATUS: [description: string, integration: Integration][] = [
+    ['omits the agentStatus key', { id: 'int-silent', name: 'Silent Broker', provider: 'solace' }],
+    ['sets agentStatus to undefined', { id: 'int-silent', name: 'Silent Broker', provider: 'solace', agentStatus: undefined }],
+    ['sets agentStatus to null', { id: 'int-silent', name: 'Silent Broker', provider: 'solace', agentStatus: WIRE_NULL_AGENT_STATUS }],
 ];
 
 const PAGINATED_TOTAL_COUNT = 23;
@@ -56,16 +60,25 @@ const PAGE_SIZES_AT_OR_ABOVE_TOTAL_COUNT = TABLE_PAGE_SIZE_OPTIONS.filter(size =
 
 function renderTable(overrides: Partial<ComponentProps<typeof IntegrationsTable>> = {}) {
     return render(
-        <IntegrationsTable
-            integrations={INTEGRATIONS}
-            totalCount={INTEGRATIONS.length}
-            page={1}
-            pageSize={10}
-            loading={false}
-            onPageChange={jest.fn()}
-            onPageSizeChange={jest.fn()}
-            {...overrides}
-        />,
+        <MemoryRouter initialEntries={['/integrations']}>
+            <Routes>
+                <Route
+                    path="/integrations"
+                    element={
+                        <IntegrationsTable
+                            integrations={INTEGRATIONS}
+                            totalCount={INTEGRATIONS.length}
+                            page={1}
+                            pageSize={10}
+                            loading={false}
+                            onPageChange={jest.fn()}
+                            onPageSizeChange={jest.fn()}
+                            {...overrides}
+                        />
+                    }
+                />
+            </Routes>
+        </MemoryRouter>,
     );
 }
 
@@ -120,17 +133,30 @@ describe('IntegrationsTable', () => {
         expect(names).toEqual(['Acme Gateway', 'Broker North', 'Partner Apigee']);
     });
 
-    it('renders every name as plain text, offering nothing to navigate into', () => {
-        renderTable();
+    it("renders each name as a real link to that integration's overview", () => {
+        const integrations: Integration[] = [
+            { id: 'int-gateway', name: 'Acme Gateway', provider: 'aws-api-gateway' },
+            { id: 'int-broker', name: 'Broker North', provider: 'solace' },
+        ];
 
-        const nameCells = integrationsTable()
-            .getRows()
-            .map(row => row.getCellElement('Name'));
+        renderTable({ integrations, totalCount: integrations.length });
 
-        expect(nameCells).toHaveLength(INTEGRATIONS.length);
-        nameCells.forEach(nameCell => {
-            expect(nameCell.querySelector('a, button, [role="link"], [role="button"]')).toBeNull();
-        });
+        const linkTargets = integrations.map(({ name }) => screen.getByRole('link', { name }).getAttribute('href'));
+
+        expect(linkTargets).toEqual(['/integrations/int-gateway', '/integrations/int-broker']);
+    });
+
+    it('renders the name of an A2A integration as plain text rather than a link, and keeps the others as links', () => {
+        const integrations: Integration[] = [
+            { id: 'int-gateway', name: 'Acme Gateway', provider: 'aws-api-gateway' },
+            { id: 'int-a2a', name: 'Agent Bridge', provider: 'A2A' },
+        ];
+
+        renderTable({ integrations, totalCount: integrations.length });
+
+        expect(screen.getByRole('link', { name: 'Acme Gateway' }).getAttribute('href')).toBe('/integrations/int-gateway');
+        expect(screen.queryByRole('link', { name: 'Agent Bridge' })).toBeNull();
+        expect(integrationsTable().getRow('Agent Bridge').getCellText('Name')).toBe('Agent Bridge');
     });
 
     it("renders each supported provider's display label in its own Provider cell", () => {
@@ -145,14 +171,6 @@ describe('IntegrationsTable', () => {
         const labels = integrations.map(({ name }) => integrationsTable().getRow(name).getCellText('Provider'));
 
         expect(labels).toEqual(PROVIDER_LABEL_BY_TOKEN.map(([, label]) => label));
-    });
-
-    it('renders the mapped label rather than the bare token in the Provider cell of an A2A integration', () => {
-        const integrations = [{ id: 'int-a2a', name: 'Agent Bridge', provider: 'A2A' }];
-
-        renderTable({ integrations, totalCount: integrations.length });
-
-        expect(integrationsTable().getRow('Agent Bridge').getCellText('Provider')).toBe('A2A Protocol');
     });
 
     it.each([UNMAPPED_PROVIDER_TOKEN, OBJECT_PROTOTYPE_MEMBER_PROVIDER_TOKEN])(
@@ -220,36 +238,61 @@ describe('IntegrationsTable', () => {
         expect(integrationsTable().getRow('Connected Bearer').getCellText('Status')).toBe('Connected');
     });
 
-    it.each(A2A_INTEGRATIONS_WITHOUT_AGENT_STATUS)(
-        'renders an empty Status cell, and a row that is otherwise intact, for an A2A integration that %s',
+    it.each(INTEGRATIONS_WITHOUT_AGENT_STATUS)(
+        'renders an empty Status cell, and a row that is otherwise intact, for an integration that %s',
         (_description, integration) => {
             renderTable({ integrations: [integration], totalCount: 1 });
 
-            const row = integrationsTable().getRow('Agent Bridge');
+            const row = integrationsTable().getRow('Silent Broker');
 
             expect(row.getCellText('Status')).toBe('');
             expect(row.getCellElement('Status').querySelector('[data-slot="badge"]')).toBeNull();
-            expect(row.getCellText('Name')).toBe('Agent Bridge');
-            expect(row.getCellText('Provider')).toBe('A2A Protocol');
+            expect(row.getCellText('Name')).toBe('Silent Broker');
+            expect(row.getCellText('Provider')).toBe('Solace');
         },
     );
 
     it("leaves a status-less row's Status cell empty while its neighbors on both sides render badges", () => {
         const integrations: Integration[] = [
             { id: 'int-connected', name: 'Connected Bearer', provider: 'solace', agentStatus: 'CONNECTED' },
-            { id: 'int-a2a', name: 'Agent Bridge', provider: 'A2A' },
+            { id: 'int-silent', name: 'Silent Broker', provider: 'solace' },
             { id: 'int-disconnected', name: 'Disconnected Bearer', provider: 'apigee', agentStatus: 'DISCONNECTED' },
         ];
 
         renderTable({ integrations, totalCount: integrations.length });
 
-        const statusLessRow = integrationsTable().getRow('Agent Bridge');
+        const statusLessRow = integrationsTable().getRow('Silent Broker');
 
         expect(statusLessRow.getCellText('Status')).toBe('');
         expect(statusLessRow.getCellElement('Status').querySelector('[data-slot="badge"]')).toBeNull();
         expect(integrationsTable().getRow('Connected Bearer').getCellText('Status')).toBe('Connected');
         expect(integrationsTable().getRow('Disconnected Bearer').getCellText('Status')).toBe('Disconnected');
     });
+
+    it.each([UNRECOGNIZED_AGENT_STATUS_TOKEN, OBJECT_PROTOTYPE_MEMBER_AGENT_STATUS_TOKEN])(
+        'renders no badge and warns once, naming the status, for unrecognized agent status %s',
+        agentStatusToken => {
+            const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+            const integrations: Integration[] = [
+                {
+                    id: 'int-status',
+                    name: 'Status Bearer',
+                    provider: 'solace',
+                    agentStatus: agentStatusToken as unknown as IntegrationAgentStatus,
+                },
+            ];
+
+            renderTable({ integrations, totalCount: integrations.length });
+
+            const row = integrationsTable().getRow('Status Bearer');
+
+            expect(row.getCellElement('Status').querySelector('[data-slot="badge"]')).toBeNull();
+            expect(row.getCellText('Status')).toBe('');
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining(agentStatusToken));
+            warn.mockRestore();
+        },
+    );
 
     it.each([
         [3, 10],

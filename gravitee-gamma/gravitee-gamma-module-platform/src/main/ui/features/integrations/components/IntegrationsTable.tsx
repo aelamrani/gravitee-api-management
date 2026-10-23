@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
-import { DataTable, type DataTableProps } from '@gravitee/graphene-core';
+import { Button, DataTable, type DataTableProps } from '@gravitee/graphene-core';
+import { Link } from 'react-router-dom';
 
 import { IntegrationProviderLabel } from './IntegrationProviderLabel';
 import { IntegrationStatusBadge } from './IntegrationStatusBadge';
 import type { ColCell } from '../../../shared/utils/dataTableTypes';
 import type { Integration } from '../types/integration';
+import { isA2aIntegration } from '../utils/integrationKind';
 import { SMALLEST_TABLE_PAGE_SIZE, TABLE_PAGE_SIZE_OPTIONS } from '../utils/paginationConstants';
 
 const COLUMNS: DataTableProps<Integration>['columns'] = [
@@ -28,7 +30,14 @@ const COLUMNS: DataTableProps<Integration>['columns'] = [
         accessorKey: 'name',
         enableSorting: false,
         header: 'Name',
-        cell: ({ row }: ColCell<Integration>) => <span className="text-sm font-medium text-foreground">{row.original.name}</span>,
+        cell: ({ row }: ColCell<Integration>) =>
+            isA2aIntegration(row.original) ? (
+                <span className="text-sm font-medium text-foreground">{row.original.name}</span>
+            ) : (
+                <Button asChild variant="link" className="h-auto p-0 text-left text-sm font-medium text-foreground hover:underline">
+                    <Link to={row.original.id}>{row.original.name}</Link>
+                </Button>
+            ),
     },
     {
         id: 'provider',

@@ -26,6 +26,7 @@ import io.reactivex.rxjava3.core.Single;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.rxjava3.core.Vertx;
+import io.vertx.rxjava3.core.http.HttpClient;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -33,6 +34,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import lombok.CustomLog;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
@@ -77,8 +80,18 @@ public class ValidatePageSourceDomainServiceImpl implements ValidatePageSourceDo
 
     private static final Set<String> OPTIONAL_HTTP_PROPERTIES = Set.of(FETCH_CRON_PROPERTY, "autoFetch", "useSystemProxy");
 
+    private static final long REQUEST_TIMEOUT_MS = 10_000;
+
     private final ObjectMapper objectMapper;
     private final Vertx vertx;
+
+    /**
+     * Vert.x holds on to every client it creates until the Vert.x instance itself is closed, so a client per
+     * validation would accumulate for as long as the node runs. The page source URL is configured by a user, so each
+     * organization gets its own client: an unresponsive source can then only exhaust the connections of the
+     * organization that configured it.
+     */
+    private final Map<String, HttpClient> httpClients = new ConcurrentHashMap<>();
 
     public ValidatePageSourceDomainServiceImpl(ObjectMapper objectMapper, Vertx vertx) {
         this.objectMapper = objectMapper;
@@ -121,7 +134,7 @@ public class ValidatePageSourceDomainServiceImpl implements ValidatePageSourceDo
                 return Result.ofBoth(input.sanitized(sanitizedBuilder.build()), errors);
             }
 
-            if (!canAccessResource(config)) {
+            if (!canAccessResource(input.organizationId(), config)) {
                 errors.add(
                     Error.severe(
                         "Page [%s] cannot be fetched, this can come from either invalid / missing github credentials or an invalid file path",
@@ -149,18 +162,19 @@ public class ValidatePageSourceDomainServiceImpl implements ValidatePageSourceDo
         }
     }
 
-    private boolean canAccessResource(Map<String, Object> config) {
-        final RequestOptions reqOptions = getGithubRequestOptions(config);
+    private boolean canAccessResource(String organizationId, Map<String, Object> config) {
+        final RequestOptions reqOptions = getGithubRequestOptions(config).setTimeout(REQUEST_TIMEOUT_MS);
         // TODO: we could fallback to bearer auth here is the username is null
         if (config.get(GITHUB_PERSONAL_ACCESS_TOKEN) != null && config.get(GITHUB_USERNAME) != null) {
             String auth = config.get(GITHUB_USERNAME) + ":" + config.get(GITHUB_PERSONAL_ACCESS_TOKEN);
             reqOptions.putHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString(auth.getBytes()));
         }
 
-        return vertx
-            .createHttpClient()
+        return httpClients
+            .computeIfAbsent(organizationId, id -> vertx.createHttpClient())
             .rxRequest(reqOptions)
             .flatMap(req -> req.rxSend().flatMap(resp -> Single.just(resp.statusCode() == 200)))
+            .timeout(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .blockingGet();
     }
 

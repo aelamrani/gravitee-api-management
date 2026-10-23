@@ -42,6 +42,8 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -139,8 +141,34 @@ public class TagServiceTest {
         verifyNoInteractions(auditService);
     }
 
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = { "${TagName}|tagname", "TagName|tagname", "My Tag|my-tag" })
+    public void should_throw_DuplicateTagKeyException_when_key_normalizes_to_an_existing_key(String rawKey, String storedKey)
+        throws TechnicalException {
+        var newTag = new NewTagEntity();
+        newTag.setKey(rawKey);
+        newTag.setName("New Tag Name");
+
+        var existingTag = new Tag();
+        existingTag.setId("existing-id");
+        existingTag.setKey(storedKey);
+        existingTag.setReferenceId(REFERENCE_ID);
+        existingTag.setReferenceType(io.gravitee.repository.management.model.TagReferenceType.ORGANIZATION);
+
+        when(tagRepository.findByReference(REFERENCE_ID, io.gravitee.repository.management.model.TagReferenceType.ORGANIZATION)).thenReturn(
+            Set.of(existingTag)
+        );
+
+        assertThatThrownBy(() -> tagService.create(new ExecutionContext(REFERENCE_ID, null), newTag, REFERENCE_ID, REFERENCE_TYPE))
+            .isInstanceOf(DuplicateTagKeyException.class)
+            .hasMessageContaining(storedKey);
+
+        verify(tagRepository, never()).create(any());
+        verifyNoInteractions(auditService);
+    }
+
     @Test
-    public void should_delete_tag_from_api_products_on_org_tag_delete() throws TechnicalException {
+    public void should_delete_tag_key_from_apis_and_api_products_on_org_tag_delete() throws TechnicalException {
         var tagKey = "external";
         var tagId = "tag-uuid";
         var environmentId = "env-1";
@@ -164,7 +192,7 @@ public class TagServiceTest {
         tagService.delete(executionContext, tagKey, REFERENCE_ID, REFERENCE_TYPE);
 
         var inOrder = inOrder(apiTagService, apiProductTagDomainService, tagRepository, auditService);
-        inOrder.verify(apiTagService).deleteTagFromAPIs(executionContext, tagId);
+        inOrder.verify(apiTagService).deleteTagFromAPIs(executionContext, tagKey);
         inOrder.verify(apiProductTagDomainService).deleteTagFromApiProducts(environmentId, tagKey);
         inOrder.verify(tagRepository).delete(tagId);
         inOrder.verify(auditService).createOrganizationAuditLog(eq(executionContext), any());

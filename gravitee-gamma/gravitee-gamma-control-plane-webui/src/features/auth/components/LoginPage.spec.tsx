@@ -15,7 +15,7 @@
  */
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { MemoryRouter } from 'react-router-dom';
 
 import { useBootstrapStore } from '../../../shared/config/bootstrap.store';
@@ -70,10 +70,11 @@ function seedWithProviders(providers: SocialIdentityProvider[], localLoginEnable
     });
 }
 
-function stubLoginMethods(providers: SocialIdentityProvider[] = [], localLoginEnabled = true) {
+function stubLoginMethods(providers: SocialIdentityProvider[] = [], localLoginEnabled = true, registrationEnabled = false) {
     respondWith('get', `${TEST_MANAGEMENT_BASE}/social-identities`, providers);
     respondWith('get', `${TEST_MANAGEMENT_BASE}/console`, {
         authentication: { localLogin: { enabled: localLoginEnabled } },
+        management: { userCreation: { enabled: registrationEnabled } },
         reCaptcha: { enabled: false },
     });
 }
@@ -117,6 +118,20 @@ describe('LoginPage', () => {
 
             expect(await screen.findByRole('alert')).toBeTruthy();
             expect(screen.getByText("That username and password don't match. Try again.")).toBeTruthy();
+        });
+
+        it('should keep the usual message when the platform refuses the sign-in, as waiting would not change it', async () => {
+            const user = userEvent.setup();
+            respondWithError('post', `${TEST_MANAGEMENT_BASE}/user/login`, 400);
+            renderLoginPage();
+
+            await user.type(screen.getByLabelText('Username'), 'admin');
+            await user.type(screen.getByLabelText('Password'), 'password');
+            await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+            const alert = await screen.findByRole('alert');
+            expect(alert.textContent).toContain("That username and password don't match. Try again.");
+            expect(alert.textContent).not.toContain('The platform may be updating');
         });
 
         it('should call login successfully', async () => {
@@ -188,6 +203,110 @@ describe('LoginPage', () => {
         });
     });
 
+    describe('session that could not be checked', () => {
+        it('should show no alert to a user who is simply signed out', () => {
+            renderLoginPage();
+
+            expect(screen.queryByRole('alert')).toBeNull();
+        });
+
+        it('should say that the session could not be checked and what to do', () => {
+            useAuthStore.setState({ sessionCheckFailed: true });
+            renderLoginPage();
+
+            const alert = screen.getByRole('alert');
+            expect(alert.textContent).toContain('Could not check your session');
+            expect(alert.textContent).toContain('Reload the page in a minute, or sign in again.');
+        });
+
+        it('should say it too when only identity providers are offered, without the password form', async () => {
+            useAuthStore.setState({ sessionCheckFailed: true });
+            stubLoginMethods([googleProvider], false);
+            renderLoginPage();
+
+            expect(await screen.findByText('Google')).toBeTruthy();
+            expect(screen.queryByLabelText('Username')).toBeNull();
+            expect(screen.getByRole('alert').textContent).toContain('Could not check your session');
+        });
+
+        it('should be read with the field that takes the focus, as the alert is there when the page opens', () => {
+            useAuthStore.setState({ sessionCheckFailed: true });
+            renderLoginPage();
+
+            const username = screen.getByLabelText('Username');
+            expect(document.activeElement).toBe(username);
+            expect(username.getAttribute('aria-describedby')).toBe(screen.getByRole('alert').id);
+        });
+
+        it('should leave the field alone when there is no session alert', () => {
+            renderLoginPage();
+
+            expect(screen.getByLabelText('Username').hasAttribute('aria-describedby')).toBe(false);
+        });
+
+        it('should not look like a failed sign-in: a warning, with an icon', () => {
+            useAuthStore.setState({ sessionCheckFailed: true });
+            renderLoginPage();
+
+            const alert = screen.getByRole('alert');
+            expect(alert.getAttribute('data-variant')).toBe('warning');
+            expect(alert.querySelector('svg')).toBeTruthy();
+        });
+
+        it('should show the sign-in error in its place once a sign-in fails', async () => {
+            const user = userEvent.setup();
+            useAuthStore.setState({ sessionCheckFailed: true });
+            respondWithError('post', `${TEST_MANAGEMENT_BASE}/user/login`, 401);
+            renderLoginPage();
+
+            await user.type(screen.getByLabelText('Username'), 'admin');
+            await user.type(screen.getByLabelText('Password'), 'wrong');
+            await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+            expect(await screen.findByText("That username and password don't match. Try again.")).toBeTruthy();
+            expect(screen.getAllByRole('alert')).toHaveLength(1);
+        });
+    });
+
+    describe('sign-in while the platform cannot answer', () => {
+        it.each([
+            ['answers with an error', () => HttpResponse.json({ message: 'Error 503' }, { status: 503 })],
+            ['does not answer', () => HttpResponse.error()],
+        ])('should say that the platform may be updating, not blame the credentials, when it %s', async (_case, respond) => {
+            const user = userEvent.setup();
+            server.use(http.post(`${TEST_MANAGEMENT_BASE}/user/login`, respond));
+            renderLoginPage();
+
+            await user.type(screen.getByLabelText('Username'), 'admin');
+            await user.type(screen.getByLabelText('Password'), 'password');
+            await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+            const alert = await screen.findByRole('alert');
+            expect(alert.textContent).toContain('The platform may be updating. Reload the page in a minute, or sign in again.');
+            expect(alert.textContent).not.toContain("That username and password don't match");
+        });
+
+        it('should not bring the session alert back while a new sign-in runs', async () => {
+            const user = userEvent.setup();
+            useAuthStore.setState({ sessionCheckFailed: true });
+            server.use(
+                http.post(`${TEST_MANAGEMENT_BASE}/user/login`, async () => {
+                    await delay(50);
+                    return HttpResponse.json({ message: 'Error 503' }, { status: 503 });
+                }),
+            );
+            renderLoginPage();
+
+            await user.type(screen.getByLabelText('Username'), 'admin');
+            await user.type(screen.getByLabelText('Password'), 'password');
+            await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+            expect(screen.queryByText('Could not check your session')).toBeNull();
+            expect(await screen.findByText('The platform may be updating. Reload the page in a minute, or sign in again.')).toBeTruthy();
+            expect(screen.queryByText('Could not check your session')).toBeNull();
+        });
+    });
+
     describe('identity provider buttons', () => {
         it('should not render IdP section when no providers configured', async () => {
             stubLoginMethods([]);
@@ -256,6 +375,14 @@ describe('LoginPage', () => {
             expect(screen.queryByText('or')).toBeNull();
         });
 
+        // jsdom 26 normalises colours to rgb() where 20 kept the literal, so the expectation goes
+        // through the same engine instead of hard-coding a notation.
+        const asCssColor = (value: string) => {
+            const probe = document.createElement('div');
+            probe.style.borderColor = value;
+            return probe.style.borderColor;
+        };
+
         it('should edge the chip with the provider color rather than filling it', async () => {
             stubLoginMethods([googleProvider]);
             renderLoginPage();
@@ -263,7 +390,7 @@ describe('LoginPage', () => {
             const button = (await screen.findByText('Google')).closest('button')!;
             const chip = button.querySelector('[aria-hidden]') as HTMLElement;
 
-            expect(chip.style.borderColor.toLowerCase()).toBe('#4285f4');
+            expect(chip.style.borderColor).toBe(asCssColor('#4285f4'));
             // A fill would put a multi-colour glyph on an administrator-chosen colour it cannot
             // adapt to, so the chip surface stays neutral and the glyph stays legible.
             expect(chip.style.backgroundColor).toBe('');
@@ -346,6 +473,45 @@ describe('LoginPage', () => {
 
             expect(loginWithProviderSpy).toHaveBeenCalledWith('google-idp', '/dashboard');
             loginWithProviderSpy.mockRestore();
+        });
+    });
+
+    describe('sign-up entry point', () => {
+        it('should link to sign-up when registration is enabled', async () => {
+            stubLoginMethods([], true, true);
+            renderLoginPage();
+
+            const link = await screen.findByRole('link', { name: 'Request an account' });
+            expect(link.getAttribute('href')).toBe('/sign-up');
+        });
+
+        it('should render nothing about sign-up when registration is disabled', async () => {
+            stubLoginMethods([], true, false);
+            renderLoginPage();
+
+            await screen.findByLabelText('Username');
+            // Not a disabled control and not an explanation: either would advertise a
+            // capability the operator turned off.
+            expect(screen.queryByRole('link', { name: 'Request an account' })).toBeNull();
+            expect(screen.queryByText(/account/i)).toBeNull();
+        });
+
+        it('should not offer sign-up when local login is disabled', async () => {
+            stubLoginMethods([googleProvider], false, true);
+            renderLoginPage();
+
+            await screen.findByText('Google');
+            // Sign-up creates a local account, which nothing on this page could then sign in with.
+            expect(screen.queryByRole('link', { name: 'Request an account' })).toBeNull();
+        });
+
+        it('should place sign-up after the identity providers', async () => {
+            stubLoginMethods([googleProvider], true, true);
+            renderLoginPage();
+
+            const signUp = await screen.findByRole('link', { name: 'Request an account' });
+            const provider = screen.getByRole('button', { name: 'Continue with Google' });
+            expect(provider.compareDocumentPosition(signUp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         });
     });
 });

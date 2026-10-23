@@ -14,12 +14,10 @@
  * limitations under the License.
  */
 
-import { Button } from '@gravitee/graphene-core';
-import { RefreshCwIcon } from '@gravitee/graphene-core/icons';
 import { useMemo } from 'react';
 
 import { ApplicationCard, type CardMetrics } from './components/application-card/ApplicationCard';
-import { APPLICATIONS, buildModulePath, type ModuleId } from './components/application-card/applications';
+import { APPLICATIONS, buildModulePath } from './components/application-card/applications';
 import { GET_STARTED_STEPS } from './components/get-started/get-started';
 import { GetStartedCard } from './components/get-started/GetStartedCard';
 import {
@@ -34,7 +32,8 @@ import {
 import { useUser } from '../../features/auth';
 import { useEnvironmentStore } from '../../features/environment/environment.store';
 import { useEnvHrid } from '../../features/environment/environment.utils';
-import type { GammaModule } from '../../features/modules';
+import { PORTALS_MODULE_ID, buildPortalNextEditorUrl, type GammaModule, type ModuleId } from '../../features/modules';
+import { useBootstrapStore } from '../../shared/config/bootstrap.store';
 
 function pluralize(count: number | null, singular: string, plural: string): string {
     return count === 1 ? singular : plural;
@@ -43,13 +42,12 @@ function pluralize(count: number | null, singular: string, plural: string): stri
 interface HomePageProps {
     readonly modules: readonly GammaModule[];
     readonly loading: boolean;
-    readonly error: Error | null;
-    readonly onRetry?: () => void;
 }
 
-export function HomePage({ modules, loading, error, onRetry }: HomePageProps) {
+export function HomePage({ modules, loading }: HomePageProps) {
     const user = useUser();
     const envHrid = useEnvHrid();
+    const consoleUrl = useBootstrapStore(s => s.config?.consoleUrl);
     const envName = useEnvironmentStore(s => s.currentEnvironment?.name);
     const firstName = user?.firstname?.trim() || user?.displayName?.split(' ')[0] || '';
 
@@ -125,20 +123,7 @@ export function HomePage({ modules, loading, error, onRetry }: HomePageProps) {
                     <p className="text-xs text-muted-foreground">Navigate to any Gravitee product</p>
                 </div>
 
-                {error ? (
-                    <div
-                        role="alert"
-                        className="flex items-center gap-3 rounded-lg border border-destructive/50 bg-destructive/5 px-4 py-3"
-                    >
-                        <p className="flex-1 text-sm text-destructive">Failed to load modules: {error.message}</p>
-                        {onRetry && (
-                            <Button variant="outline" size="sm" onClick={onRetry}>
-                                <RefreshCwIcon aria-hidden />
-                                Retry
-                            </Button>
-                        )}
-                    </div>
-                ) : loading ? (
+                {loading ? (
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-busy="true">
                         {APPLICATIONS.map(app => (
                             <div key={app.title} className="flex flex-col gap-3 rounded-xl border bg-card p-5 opacity-60">
@@ -154,7 +139,14 @@ export function HomePage({ modules, loading, error, onRetry }: HomePageProps) {
                 ) : (
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         {APPLICATIONS.map(app => {
-                            const to = isAvailable(app.moduleId) || !app.upgrade ? buildModulePath(envHrid, app.moduleId) : null;
+                            let to = null;
+                            if (isAvailable(app.moduleId) && app.moduleId === PORTALS_MODULE_ID) {
+                                // portals module redirects to portal-next editor in classic console
+                                to = consoleUrl ? buildPortalNextEditorUrl(consoleUrl, envHrid) : null;
+                            } else if (isAvailable(app.moduleId) || !app.upgrade) {
+                                // other modules redirect to the module path
+                                to = buildModulePath(envHrid, app.moduleId);
+                            }
                             return (
                                 <ApplicationCard key={app.title} app={app} to={to} metrics={to ? moduleMetrics[app.moduleId] : undefined} />
                             );

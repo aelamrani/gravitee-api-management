@@ -22,15 +22,17 @@ import io.gravitee.gamma.rest.core.observability.dashboard.exception.DashboardVe
 import io.gravitee.gamma.rest.core.observability.dashboard.exception.InvalidDashboardException;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.Dashboard;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardContent;
+import io.gravitee.gamma.rest.core.observability.dashboard.model.DashboardFilter;
 import io.gravitee.gamma.rest.core.observability.dashboard.model.VersionPrecondition;
 import io.gravitee.gamma.rest.core.observability.dashboard.port.repository.DashboardRepository;
+import io.gravitee.gamma.rest.core.observability.filter.domain_service.ObservabilityFilterValidator;
 import java.util.Optional;
 import lombok.AllArgsConstructor;
 
 /**
  * Replaces a dashboard's author-editable content, under optimistic locking (OBS-17). Starts from the
  * existing aggregate so the server-owned fields survive the write: {@code createdAt} and
- * {@code createdBy} are carried over, {@code updatedAt} is stamped now and {@code version} is
+ * {@code createdBy} are carried over, so is {@code module} (immutable), {@code updatedAt} is stamped now and {@code version} is
  * incremented.
  *
  * <p>The caller must state a {@link VersionPrecondition}, and a stored revision that fails it is
@@ -63,6 +65,7 @@ import lombok.AllArgsConstructor;
 public class UpdateObservabilityDashboardUseCase {
 
     private final DashboardRepository dashboardRepository;
+    private final ObservabilityFilterValidator filterValidator;
 
     public record Input(String environmentId, String dashboardId, VersionPrecondition precondition, DashboardContent content) {}
 
@@ -70,6 +73,7 @@ public class UpdateObservabilityDashboardUseCase {
 
     public Output execute(Input input) {
         input.content().validate();
+        filterValidator.validateDashboardFilters(input.content().filters().stream().map(DashboardFilter::condition).toList());
         if (input.precondition() == null) {
             throw new InvalidDashboardException("The revision this edit is based on must be stated");
         }
@@ -100,6 +104,7 @@ public class UpdateObservabilityDashboardUseCase {
         return new Dashboard(
             existing.id(),
             existing.environmentId(),
+            existing.module(),
             input.content().title(),
             input.content().description(),
             input.content().filters(),

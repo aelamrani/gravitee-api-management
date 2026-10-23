@@ -27,13 +27,9 @@ import io.gravitee.gamma.rest.resources.observability.analytics.dto.AnalyticsTim
 import io.gravitee.gamma.rest.resources.observability.analytics.dto.FacetMetricQueryDto;
 import io.gravitee.gamma.rest.resources.observability.analytics.dto.MetricQueryDto;
 import io.gravitee.gamma.rest.resources.observability.analytics.dto.NumberRangeDto;
+import io.gravitee.gamma.rest.resources.observability.dto.RequestEntries;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.FilterConditionDto;
-import io.gravitee.rest.api.model.permissions.RolePermission;
-import io.gravitee.rest.api.model.permissions.RolePermissionAction;
-import io.gravitee.rest.api.service.PermissionService;
-import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
-import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
@@ -46,8 +42,8 @@ import java.util.List;
  * {@code /gamma/organizations/{orgId}/environments/{envId}/observability/analytics}.
  *
  * <p>Consumes the unified Gamma filter vocabulary ({@code FilterCondition[]}) validated against the
- * {@code ANALYTICS} signal and delegates to the proven APIM analytics engine. Server-side RBAC
- * scoping ensures the caller only sees metrics for APIs they can read.
+ * {@code ANALYTICS} signal and delegates to the proven APIM analytics engine. The metrics count the
+ * APIs whose aggregates the caller reads, or whose logs they read for a query identifying callers.
  *
  * @author GraviteeSource Team
  */
@@ -62,16 +58,11 @@ public class AnalyticsResource {
     @Inject
     private ComputeObservabilityTimeSeriesUseCase computeTimeSeriesUseCase;
 
-    @Inject
-    private PermissionService permissionService;
-
     @POST
     @Path("/measures")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public JsonNode computeMeasures(AnalyticsMeasuresRequestDto request) {
-        checkReadObservabilityPermission();
-
         var ctx = GraviteeContext.getExecutionContext();
         var output = computeMeasuresUseCase.execute(
             new ComputeObservabilityMeasuresUseCase.Input(
@@ -91,8 +82,6 @@ public class AnalyticsResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public JsonNode computeFacets(AnalyticsFacetsRequestDto request) {
-        checkReadObservabilityPermission();
-
         var ctx = GraviteeContext.getExecutionContext();
         var output = computeFacetsUseCase.execute(
             new ComputeObservabilityFacetsUseCase.Input(
@@ -115,8 +104,6 @@ public class AnalyticsResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public JsonNode computeTimeSeries(AnalyticsTimeSeriesRequestDto request) {
-        checkReadObservabilityPermission();
-
         var ctx = GraviteeContext.getExecutionContext();
         var output = computeTimeSeriesUseCase.execute(
             new ComputeObservabilityTimeSeriesUseCase.Input(
@@ -128,7 +115,7 @@ public class AnalyticsResource {
                 request != null ? request.interval() : null,
                 toFacetMetrics(request != null ? request.metrics() : null),
                 request != null && request.by() != null ? request.by() : List.of(),
-                request != null ? request.facetSize() : null,
+                request != null ? request.seriesLimit() : null,
                 toRanges(request != null ? request.ranges() : null)
             )
         );
@@ -136,52 +123,24 @@ public class AnalyticsResource {
     }
 
     private static List<FilterCondition> toFilters(List<FilterConditionDto> dtos) {
-        if (dtos == null) {
-            return List.of();
-        }
-        return dtos.stream().map(FilterConditionDto::toCore).toList();
+        return RequestEntries.map(dtos, "filters", FilterConditionDto::toCore);
     }
 
     private static List<io.gravitee.gamma.rest.core.observability.analytics.model.AnalyticsMetricQuery> toMetrics(
         List<MetricQueryDto> dtos
     ) {
-        if (dtos == null) {
-            return List.of();
-        }
-        return dtos.stream().map(MetricQueryDto::toCore).toList();
+        return RequestEntries.map(dtos, "metrics", MetricQueryDto::toCore);
     }
 
     private static List<io.gravitee.gamma.rest.core.observability.analytics.model.AnalyticsFacetMetricQuery> toFacetMetrics(
         List<FacetMetricQueryDto> dtos
     ) {
-        if (dtos == null) {
-            return List.of();
-        }
-        return dtos.stream().map(FacetMetricQueryDto::toCore).toList();
+        return RequestEntries.map(dtos, "metrics", FacetMetricQueryDto::toCore);
     }
 
     private static List<io.gravitee.gamma.rest.core.observability.analytics.model.AnalyticsNumberRange> toRanges(
         List<NumberRangeDto> dtos
     ) {
-        if (dtos == null) {
-            return List.of();
-        }
-        return dtos.stream().map(NumberRangeDto::toCore).toList();
-    }
-
-    private void checkReadObservabilityPermission() {
-        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
-        String environmentId = executionContext.getEnvironmentId();
-        boolean allowed =
-            permissionService.hasPermission(
-                executionContext,
-                RolePermission.ENVIRONMENT_DASHBOARD,
-                environmentId,
-                RolePermissionAction.READ
-            ) ||
-            permissionService.hasPermission(executionContext, RolePermission.ENVIRONMENT_API, environmentId, RolePermissionAction.READ);
-        if (!allowed) {
-            throw new ForbiddenAccessException();
-        }
+        return RequestEntries.map(dtos, "ranges", NumberRangeDto::toCore);
     }
 }

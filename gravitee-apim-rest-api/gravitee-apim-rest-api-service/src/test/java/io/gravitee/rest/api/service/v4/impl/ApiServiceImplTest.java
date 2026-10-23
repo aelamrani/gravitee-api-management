@@ -15,13 +15,17 @@
  */
 package io.gravitee.rest.api.service.v4.impl;
 
+import static io.gravitee.apim.core.utils.EncryptedValueMask.ENCRYPTED_VALUE_MASK;
 import static io.gravitee.definition.model.DefinitionContext.MODE_FULLY_MANAGED;
 import static io.gravitee.definition.model.DefinitionContext.ORIGIN_KUBERNETES;
 import static io.gravitee.definition.model.DefinitionContext.ORIGIN_MANAGEMENT;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_CREATED;
+import static io.gravitee.repository.management.model.Api.AuditEvent.API_DELETED;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_LOGGING_DISABLED;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_LOGGING_ENABLED;
 import static io.gravitee.repository.management.model.Api.AuditEvent.API_LOGGING_UPDATED;
+import static io.gravitee.repository.management.model.Api.AuditEvent.API_UPDATED;
+import static io.gravitee.repository.management.model.Audit.AuditProperties.ENCRYPTED;
 import static io.gravitee.rest.api.model.api.ApiLifecycleState.CREATED;
 import static io.gravitee.rest.api.model.api.ApiLifecycleState.PUBLISHED;
 import static io.gravitee.rest.api.model.api.ApiLifecycleState.UNPUBLISHED;
@@ -38,24 +42,38 @@ import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.same;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
+import io.gravitee.apim.core.api.exception.ApiPropertyEncryptedToPlainException;
+import io.gravitee.apim.core.api.exception.ApiPropertyNotCiphertextException;
 import io.gravitee.apim.core.api.query_service.ApiMetadataQueryService;
 import io.gravitee.apim.core.api_product.domain_service.RemoveApiFromApiProductsDomainService;
+import io.gravitee.apim.core.exception.TechnicalDomainException;
 import io.gravitee.apim.core.flow.crud_service.FlowCrudService;
+import io.gravitee.apim.core.portal_page.domain_service.ApiDocumentationCleanupDomainService;
+import io.gravitee.apim.core.subscription_form.domain_service.RemoveApiFromSubscriptionFormDomainService;
 import io.gravitee.common.event.EventManager;
 import io.gravitee.common.http.HttpMethod;
+import io.gravitee.common.util.DataEncryptor;
 import io.gravitee.definition.jackson.datatype.GraviteeMapper;
 import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.definition.model.flow.Operator;
@@ -115,6 +133,7 @@ import io.gravitee.rest.api.model.permissions.SystemRole;
 import io.gravitee.rest.api.model.v4.api.ApiEntity;
 import io.gravitee.rest.api.model.v4.api.GenericApiEntity;
 import io.gravitee.rest.api.model.v4.api.UpdateApiEntity;
+import io.gravitee.rest.api.model.v4.api.properties.PropertyEntity;
 import io.gravitee.rest.api.model.v4.plan.PlanEntity;
 import io.gravitee.rest.api.service.AlertService;
 import io.gravitee.rest.api.service.ApiMetadataService;
@@ -161,6 +180,7 @@ import io.gravitee.rest.api.service.v4.mapper.ApiMapper;
 import io.gravitee.rest.api.service.v4.mapper.GenericApiMapper;
 import io.gravitee.rest.api.service.v4.validation.ApiValidationService;
 import io.gravitee.rest.api.service.v4.validation.TagsValidationService;
+import java.security.GeneralSecurityException;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -179,6 +199,8 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.slf4j.LoggerFactory;
+import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -191,6 +213,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @MockitoSettings(strictness = Strictness.WARN)
 public class ApiServiceImplTest {
 
+    private static final DataEncryptor REAL_DATA_ENCRYPTOR = new DataEncryptor(
+        new MockEnvironment(),
+        "api.properties.encryption.secret",
+        "vvLJ4Q8Khvv9tm2tIPdkGEdmgKUruAL6"
+    );
     private static final String API_ID = "id-api";
     private static final String API_NAME = "myAPI";
     private static final String USER_NAME = "myUser";
@@ -283,6 +310,9 @@ public class ApiServiceImplTest {
     private PropertiesService propertiesService;
 
     @Mock
+    private DataEncryptor dataEncryptor;
+
+    @Mock
     private ApiNotificationService apiNotificationService;
 
     @Mock
@@ -296,6 +326,12 @@ public class ApiServiceImplTest {
 
     @Mock
     private RemoveApiFromApiProductsDomainService removeApiFromApiProductsDomainService;
+
+    @Mock
+    private RemoveApiFromSubscriptionFormDomainService removeApiFromSubscriptionFormDomainService;
+
+    @Mock
+    private ApiDocumentationCleanupDomainService apiDocumentationCleanupDomainService;
 
     @Mock
     private ApiMetadataQueryService apiMetadataQueryService;
@@ -364,6 +400,7 @@ public class ApiServiceImplTest {
             subscriptionService,
             eventService,
             pageService,
+            apiDocumentationCleanupDomainService,
             topApiService,
             portalNotificationConfigService,
             alertService,
@@ -377,7 +414,9 @@ public class ApiServiceImplTest {
             groupService,
             apiCategoryService,
             removeApiFromApiProductsDomainService,
-            apiMetadataQueryService
+            removeApiFromSubscriptionFormDomainService,
+            apiMetadataQueryService,
+            new PropertyDomainService(dataEncryptor)
         );
         var apiSearchService = new ApiSearchServiceImpl(
             apiRepository,
@@ -438,6 +477,79 @@ public class ApiServiceImplTest {
     }
 
     @Test
+    public void should_cleanup_api_documentation_in_the_api_environment_before_deleting_the_api() throws TechnicalException {
+        api.setEnvironmentId("api-environment");
+        api.setLifecycleState(LifecycleState.STOPPED);
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+
+        apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false);
+
+        var inOrder = inOrder(pageService, apiDocumentationCleanupDomainService, apiRepository);
+        inOrder.verify(pageService).deleteAllByApi(GraviteeContext.getExecutionContext(), API_ID);
+        inOrder.verify(apiDocumentationCleanupDomainService).cleanupForApi("api-environment", API_ID);
+        inOrder.verify(apiRepository).delete(API_ID);
+        verifyNoMoreInteractions(apiDocumentationCleanupDomainService);
+    }
+
+    @Test
+    public void should_not_delete_the_api_when_documentation_cleanup_fails() throws TechnicalException {
+        api.setEnvironmentId("api-environment");
+        api.setLifecycleState(LifecycleState.STOPPED);
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+        var failure = new TechnicalDomainException("Unable to delete API documentation");
+        doThrow(failure).when(apiDocumentationCleanupDomainService).cleanupForApi("api-environment", API_ID);
+
+        assertThatThrownBy(() -> apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false)).isSameAs(failure);
+
+        verify(apiRepository, never()).delete(anyString());
+    }
+
+    @Test
+    public void should_not_cleanup_documentation_when_the_api_is_missing() throws TechnicalException {
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false)).isInstanceOf(
+            ApiNotFoundException.class
+        );
+
+        verifyNoInteractions(apiDocumentationCleanupDomainService);
+        verify(apiRepository, never()).delete(anyString());
+    }
+
+    @Test
+    public void should_not_cleanup_documentation_when_the_api_is_running() throws TechnicalException {
+        api.setLifecycleState(LifecycleState.STARTED);
+        api.setOrigin(ORIGIN_MANAGEMENT);
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+
+        assertThatThrownBy(() -> apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false)).isInstanceOf(
+            ApiRunningStateException.class
+        );
+
+        verifyNoInteractions(apiDocumentationCleanupDomainService);
+        verify(apiRepository, never()).delete(anyString());
+    }
+
+    @Test
+    public void should_not_cleanup_documentation_when_the_api_has_a_published_plan() throws TechnicalException {
+        api.setLifecycleState(LifecycleState.STOPPED);
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+        var plan = new PlanEntity();
+        plan.setId(PLAN_ID);
+        plan.setStatus(PlanStatus.PUBLISHED);
+        when(planSearchService.findByApi(eq(GraviteeContext.getExecutionContext()), any(GenericApiEntity.class), eq(false))).thenReturn(
+            singleton(plan)
+        );
+
+        assertThatThrownBy(() -> apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false)).isInstanceOf(
+            ApiNotDeletableException.class
+        );
+
+        verifyNoInteractions(apiDocumentationCleanupDomainService);
+        verify(apiRepository, never()).delete(anyString());
+    }
+
+    @Test
     public void should_not_delete_because_running_state() throws TechnicalException {
         assertThrows(ApiRunningStateException.class, () -> {
             Api api = new Api();
@@ -486,6 +598,25 @@ public class ApiServiceImplTest {
         apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false);
 
         verify(removeApiFromApiProductsDomainService, times(1)).removeApiFromApiProducts(eq(API_ID), any(), any(), any());
+    }
+
+    @Test
+    public void should_remove_api_from_its_subscription_form_when_deleting() throws TechnicalException {
+        Api api = new Api();
+        api.setId(API_ID);
+        api.setEnvironmentId("api-environment");
+        api.setLifecycleState(LifecycleState.STOPPED);
+        api.setDefinitionVersion(DefinitionVersion.V4);
+        api.setType(ApiType.NATIVE);
+
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+
+        apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false);
+
+        // Unmapped while the API still exists, so a failed unmapping leaves the deletion retryable.
+        var inOrder = inOrder(removeApiFromSubscriptionFormDomainService, apiRepository);
+        inOrder.verify(removeApiFromSubscriptionFormDomainService).removeApi("api-environment", API_ID);
+        inOrder.verify(apiRepository).delete(API_ID);
     }
 
     @Test
@@ -587,6 +718,7 @@ public class ApiServiceImplTest {
         verify(apiRepository).findById(eq(API_ID));
         verify(apiRepository).delete(eq(API_ID));
         verify(pageService).deleteAllByApi(eq(GraviteeContext.getExecutionContext()), eq(API_ID));
+        verify(apiDocumentationCleanupDomainService).cleanupForApi(api.getEnvironmentId(), API_ID);
         verify(topApiService).delete(eq(GraviteeContext.getExecutionContext()), eq(API_ID));
         verify(searchEngineService).delete(eq(GraviteeContext.getExecutionContext()), argThat(_api -> _api.getId().equals(API_ID)));
         verify(membershipService).deleteReference(eq(GraviteeContext.getExecutionContext()), eq(MembershipReferenceType.API), eq(API_ID));
@@ -679,6 +811,20 @@ public class ApiServiceImplTest {
     }
 
     @Test
+    public void should_not_mark_the_deletion_audit_when_the_api_held_an_encrypted_property() throws Exception {
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+
+        apiService.delete(GraviteeContext.getExecutionContext(), API_ID, false);
+
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_DELETED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
     public void shouldDeleteScoringReport() throws Exception {
         when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
 
@@ -691,6 +837,58 @@ public class ApiServiceImplTest {
     /*
     Create by import tests
      */
+    @Test
+    public void should_not_expose_property_values_when_the_import_creation_fails() throws TechnicalException {
+        ApiEntity apiEntity = fakeApiEntityV4();
+        apiEntity.setProperties(List.of(new Property("plain-key", "super-secret-value", false, false)));
+        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        doReturn(Optional.empty()).when(apiRepository).findById(anyString());
+        doReturn(apiEntity.getPrimaryOwner())
+            .when(primaryOwnerService)
+            .getPrimaryOwner(executionContext, USER_NAME, apiEntity.getPrimaryOwner());
+        doReturn(emptySet()).when(groupService).findByEvent(GraviteeContext.getCurrentEnvironment(), GroupEvent.API_CREATE);
+        doReturn(false).when(parameterService).findAsBoolean(executionContext, Key.API_REVIEW_ENABLED, ParameterReferenceType.ENVIRONMENT);
+        doThrow(new TechnicalException("repository unavailable")).when(apiRepository).create(any());
+        Appender<ILoggingEvent> appender = mock(Appender.class);
+        Logger logger = (Logger) LoggerFactory.getLogger(ApiServiceImpl.class);
+        logger.addAppender(appender);
+        try {
+            assertThatThrownBy(() -> apiService.createWithImport(executionContext, apiEntity, USER_NAME))
+                .isInstanceOf(TechnicalManagementException.class)
+                .hasMessageNotContaining("super-secret-value");
+            verify(appender, atLeastOnce()).doAppend(any());
+            verify(appender, never()).doAppend(argThat(event -> event.getFormattedMessage().contains("super-secret-value")));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    public void should_mark_the_creation_audit_when_an_imported_api_holds_an_encrypted_property() throws TechnicalException {
+        ApiEntity apiEntity = fakeApiEntityV4();
+        apiEntity.setProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        doReturn(Optional.empty()).when(apiRepository).findById(anyString());
+        doReturn(apiEntity.getPrimaryOwner())
+            .when(primaryOwnerService)
+            .getPrimaryOwner(executionContext, USER_NAME, apiEntity.getPrimaryOwner());
+        doReturn(emptySet()).when(groupService).findByEvent(GraviteeContext.getCurrentEnvironment(), GroupEvent.API_CREATE);
+        doReturn(new ApiEntity()).when(apiMetadataService).fetchMetadataForApi(any(), any());
+        doReturn(false).when(parameterService).findAsBoolean(executionContext, Key.API_REVIEW_ENABLED, ParameterReferenceType.ENVIRONMENT);
+        Api createdApi = new Api();
+        createdApi.setId(API_ID);
+        createdApi.setCreatedAt(new Date());
+        doReturn(createdApi).when(apiRepository).create(any());
+
+        apiService.createWithImport(executionContext, apiEntity, USER_NAME);
+
+        verify(auditService).createApiAuditLog(
+            eq(executionContext),
+            argThat(data -> data.getEvent().equals(API_CREATED) && "true".equals(data.getProperties().get(ENCRYPTED))),
+            eq(API_ID)
+        );
+    }
+
     @Test
     public void shouldCreateFromImport() throws TechnicalException {
         ApiEntity apiEntity = fakeApiEntityV4();
@@ -1034,6 +1232,243 @@ public class ApiServiceImplTest {
 
         ApiEntity apiEntity = apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, true, USER_NAME);
         verify(apiNotificationService, times(1)).triggerUpdateNotification(eq(GraviteeContext.getExecutionContext()), eq(apiEntity));
+    }
+
+    @Test
+    public void should_not_update_when_an_encrypted_property_is_made_plain() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "encrypted-value", true, false)));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "plain-value", false, false)));
+
+        assertThrows(ApiPropertyEncryptedToPlainException.class, () ->
+            apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME)
+        );
+        verify(apiRepository, never()).update(any());
+        verify(auditService, never()).createApiAuditLog(any(), any(), any());
+    }
+
+    @Test
+    public void should_not_update_when_a_changed_plaintext_is_flagged_encrypted() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "encrypted-value", true, false)));
+        when(dataEncryptor.decrypt("plain-value")).thenThrow(new GeneralSecurityException("bad padding"));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "plain-value", false, true)));
+
+        assertThrows(ApiPropertyNotCiphertextException.class, () ->
+            apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME)
+        );
+        verify(apiRepository, never()).update(any());
+    }
+
+    @Test
+    public void should_update_when_an_encrypted_dynamic_property_is_echoed_back() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "encrypted-value", true, true)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "encrypted-value", false, true, true)));
+
+        assertDoesNotThrow(() -> apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME));
+        verify(dataEncryptor, never()).decrypt(anyString());
+    }
+
+    @Test
+    public void should_mark_the_update_audit_and_keep_plaintext_out_when_an_encrypted_value_is_renewed() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "old-ciphertext", true, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenReturn(
+            List.of(new PropertyEntity("secret-key", "new-ciphertext", true, true))
+        );
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "new-plaintext", true, false)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(apiRepository).update(
+            argThat(
+                persisted -> persisted.getDefinition().contains("new-ciphertext") && !persisted.getDefinition().contains("new-plaintext")
+            )
+        );
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && "true".equals(data.getProperties().get(ENCRYPTED))),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_no_property_is_encrypted() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("plain-key", "v1", false, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("plain-key", "v2", false, false)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_a_plain_property_is_added_beside_an_unchanged_encrypted_one() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        updateApiEntity.setProperties(
+            List.of(new PropertyEntity("secret-key", "ciphertext", false, true), new PropertyEntity("plain-c", "plain-c", false, false))
+        );
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_the_mask_is_sent_back_beside_a_new_plain_property() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        PropertiesService realPropertiesService = new PropertiesServiceImpl(dataEncryptor);
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation ->
+            realPropertiesService.encryptProperties(invocation.getArgument(0), invocation.getArgument(1))
+        );
+        updateApiEntity.setProperties(
+            List.of(
+                new PropertyEntity("secret-key", ENCRYPTED_VALUE_MASK, false, true),
+                new PropertyEntity("plain-c", "plain-c", false, false)
+            )
+        );
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(apiRepository).update(
+            argThat(
+                persisted -> persisted.getDefinition().contains("ciphertext") && !persisted.getDefinition().contains(ENCRYPTED_VALUE_MASK)
+            )
+        );
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_an_encrypted_value_is_resubmitted_as_the_same_plaintext() throws Exception {
+        prepareUpdate();
+        String storedCiphertext = REAL_DATA_ENCRYPTOR.encrypt("s3cret");
+        givenStoredProperties(List.of(new Property("secret-key", storedCiphertext, true, false)));
+        PropertiesService realPropertiesService = new PropertiesServiceImpl(REAL_DATA_ENCRYPTOR);
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation ->
+            realPropertiesService.encryptProperties(invocation.getArgument(0), invocation.getArgument(1))
+        );
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "s3cret", true, false)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(apiRepository).update(argThat(persisted -> persisted.getDefinition().contains(storedCiphertext)));
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_only_the_name_of_an_api_holding_an_encrypted_property_changes() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        updateApiEntity.setName("renamed");
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "ciphertext", false, true)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_an_encrypted_property_is_removed() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false), new Property("plain", "value", false, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("plain", "value", false, false)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_only_the_tags_of_an_api_holding_an_encrypted_property_change() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        updateApiEntity.setTags(Set.of("new-tag"));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "ciphertext", false, true)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_mark_the_update_audit_when_only_the_plans_of_an_api_holding_an_encrypted_property_change() throws Exception {
+        prepareUpdate();
+        givenStoredProperties(List.of(new Property("secret-key", "ciphertext", true, false)));
+        when(propertiesService.encryptProperties(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        PlanEntity plan = new PlanEntity();
+        plan.setId("plan");
+        updateApiEntity.setPlans(Set.of(plan));
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "ciphertext", false, true)));
+
+        apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME);
+
+        verify(planService).createOrUpdatePlan(any(), same(plan));
+        verify(auditService).createApiAuditLog(
+            eq(GraviteeContext.getExecutionContext()),
+            argThat(data -> data.getEvent().equals(API_UPDATED) && !data.getProperties().containsKey(ENCRYPTED)),
+            eq(API_ID)
+        );
+    }
+
+    @Test
+    public void should_not_audit_when_encryption_fails_on_update() throws Exception {
+        prepareUpdate();
+        when(propertiesService.encryptProperties(any(), any())).thenThrow(
+            new TechnicalManagementException("Unable to encrypt property [secret-key]")
+        );
+        updateApiEntity.setProperties(List.of(new PropertyEntity("secret-key", "plain-value", true, false)));
+
+        assertThrows(TechnicalManagementException.class, () ->
+            apiService.update(GraviteeContext.getExecutionContext(), API_ID, updateApiEntity, USER_NAME)
+        );
+        verify(auditService, never()).createApiAuditLog(any(), any(), any());
+    }
+
+    private void givenStoredProperties(List<Property> properties) throws JsonProcessingException {
+        io.gravitee.definition.model.v4.Api apiDefinition = new io.gravitee.definition.model.v4.Api();
+        apiDefinition.setId(API_ID);
+        apiDefinition.setName(API_NAME);
+        apiDefinition.setListeners(singletonList(HttpListener.builder().paths(List.of(Path.builder().path("/context").build())).build()));
+        apiDefinition.setProperties(properties);
+        api.setDefinition(objectMapper.writeValueAsString(apiDefinition));
     }
 
     @Test

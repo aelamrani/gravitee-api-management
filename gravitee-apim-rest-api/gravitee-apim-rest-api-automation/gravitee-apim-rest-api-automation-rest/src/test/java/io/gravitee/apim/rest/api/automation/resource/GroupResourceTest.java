@@ -115,6 +115,43 @@ class GroupResourceTest extends AbstractResourceTest {
         }
 
         @Test
+        void should_return_default_member_roles() {
+            givenExistingGroup();
+            givenNoMembers();
+            var groupEntity = new io.gravitee.rest.api.model.GroupEntity();
+            groupEntity.setRoles(
+                java.util.Map.of(
+                    io.gravitee.rest.api.model.permissions.RoleScope.API,
+                    "USER",
+                    io.gravitee.rest.api.model.permissions.RoleScope.API_PRODUCT,
+                    "OWNER"
+                )
+            );
+            when(groupService.findById(any(), org.mockito.ArgumentMatchers.eq(groupIdFromHrid(HRID)))).thenReturn(groupEntity);
+
+            try (var response = rootTarget().path(HRID).request().get()) {
+                assertThat(response.getStatus()).isEqualTo(200);
+                var state = response.readEntity(GroupState.class);
+                assertThat(state.getDefaultMemberRoles()).isEqualTo(
+                    new io.gravitee.apim.rest.api.automation.model.GroupDefaultMemberRoles().api("USER").apiProduct("OWNER")
+                );
+            }
+        }
+
+        @Test
+        void should_answer_empty_default_member_roles_when_there_are_none() {
+            givenExistingGroup();
+            givenNoMembers();
+
+            try (var response = rootTarget().path(HRID).request().get()) {
+                assertThat(response.getStatus()).isEqualTo(200);
+                assertThat(response.readEntity(GroupState.class).getDefaultMemberRoles()).isEqualTo(
+                    new io.gravitee.apim.rest.api.automation.model.GroupDefaultMemberRoles()
+                );
+            }
+        }
+
+        @Test
         void should_get_group_from_known_guid() {
             givenExistingGroupWithLegacyId();
             givenNoMembers();
@@ -161,6 +198,30 @@ class GroupResourceTest extends AbstractResourceTest {
             try (var response = rootTarget().path("unknown").request().get()) {
                 assertThat(response.getStatus()).isEqualTo(404);
             }
+        }
+
+        @Test
+        void should_get_group_whose_environment_id_differs_only_in_case() {
+            groupQueryServiceInMemory.initWith(
+                List.of(Group.builder().id(GUID).name("Legacy Group").environmentId(ENVIRONMENT.toUpperCase()).build())
+            );
+            givenNoMembers();
+
+            try (var response = rootTarget().path(GUID).queryParam("hridContainsUUID", true).request().get()) {
+                assertThat(response.getStatus()).isEqualTo(200);
+            }
+        }
+
+        @Test
+        void should_return_a_404_status_code_and_read_no_member_for_a_group_of_another_environment() {
+            groupQueryServiceInMemory.initWith(
+                List.of(Group.builder().id(GUID).name("Other Group").environmentId("another-environment").build())
+            );
+
+            try (var response = rootTarget().path(GUID).queryParam("hridContainsUUID", true).request().get()) {
+                assertThat(response.getStatus()).isEqualTo(404);
+            }
+            verifyNoInteractions(membershipService, userService);
         }
 
         private void givenNoMembers() {

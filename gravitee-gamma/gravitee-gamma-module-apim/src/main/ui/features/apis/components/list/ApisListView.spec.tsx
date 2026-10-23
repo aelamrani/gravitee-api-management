@@ -16,6 +16,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
+import { EMPTY_API_LIST_FILTERS } from './apiListFilters';
 import { ApisListView } from './ApisListView';
 import { useApiStats } from '../../hooks/useApiStats';
 
@@ -25,10 +26,22 @@ jest.mock('@gravitee/gamma-lib-observability', () => ({
 }));
 
 jest.mock('../../hooks/useApiStats');
+jest.mock('../../hooks/useOrgTags', () => ({ useOrgTags: () => ({ data: [] }) }));
+jest.mock('../../hooks/useEnvCategories', () => ({ useEnvCategories: () => ({ data: [] }) }));
 
 const mockUseApiStats = useApiStats as jest.Mock;
 
-const STUB_STATS = { total: 5, private: 2, published: 3, isLoading: false };
+const STUB_STATS = { total: 5, private: 2, published: 3, isLoading: false, failed: { total: false, private: false, published: false } };
+
+const FAILED_STATS = {
+    total: null,
+    private: null,
+    published: null,
+    isLoading: false,
+    failed: { total: true, private: true, published: true },
+};
+
+const STAT_CARD_LABELS = ['Total APIs', 'Private', 'Published'];
 
 const DEFAULT_PROPS = {
     apis: [],
@@ -36,6 +49,7 @@ const DEFAULT_PROPS = {
     isLoading: false,
     isFetching: false,
     search: '',
+    debouncedSearch: '',
     page: 1,
     perPage: 10,
     onSearchChange: jest.fn(),
@@ -43,6 +57,9 @@ const DEFAULT_PROPS = {
     onPerPageChange: jest.fn(),
     onCreateProxy: jest.fn(),
     canCreate: true,
+    forbidden: false,
+    filters: EMPTY_API_LIST_FILTERS,
+    onFiltersChange: jest.fn(),
 };
 
 function renderView(overrides: Partial<typeof DEFAULT_PROPS> = {}) {
@@ -89,5 +106,41 @@ describe('ApisListView', () => {
         renderView({ canCreate: true, onCreateProxy });
         fireEvent.click(screen.getByRole('button', { name: /Create New Proxy/i }));
         expect(onCreateProxy).toHaveBeenCalled();
+    });
+
+    it('asks the stat cards for the search text only, even when list filters are set', () => {
+        renderView({
+            search: 'orders',
+            debouncedSearch: 'orders',
+            filters: { apiTypes: ['V4_TCP_PROXY'], statuses: ['STARTED'], tags: [], categories: [] },
+        });
+        expect(mockUseApiStats).toHaveBeenCalledWith('orders');
+    });
+
+    it.each([
+        { name: 'forwards a non-empty debounced search as-is', search: 'orders', debouncedSearch: 'orders', expected: 'orders' },
+        { name: 'forwards an empty debounced search as undefined', search: '', debouncedSearch: '', expected: undefined },
+        { name: 'uses the debounced search rather than the live search', search: 'ord', debouncedSearch: 'orders', expected: 'orders' },
+    ])('$name to the stats query', ({ search, debouncedSearch, expected }) => {
+        renderView({ search, debouncedSearch });
+        expect(mockUseApiStats).toHaveBeenCalledWith(expected);
+    });
+
+    it.each([
+        { name: 'disables the search input when listing is forbidden', forbidden: true, expectedDisabled: true },
+        { name: 'keeps the search input enabled when listing is allowed', forbidden: false, expectedDisabled: false },
+    ])('$name', ({ forbidden, expectedDisabled }) => {
+        renderView({ forbidden });
+        expect((screen.getByLabelText('Search APIs') as HTMLInputElement).disabled).toBe(expectedDisabled);
+    });
+
+    it.each([
+        { name: 'hides the API stat cards when listing is forbidden', forbidden: true, stats: FAILED_STATS, expectedVisible: false },
+        { name: 'shows the API stat cards when listing is allowed', forbidden: false, stats: STUB_STATS, expectedVisible: true },
+    ])('$name', ({ forbidden, stats, expectedVisible }) => {
+        mockUseApiStats.mockReturnValue(stats);
+        renderView({ forbidden });
+        STAT_CARD_LABELS.forEach(label => expect(screen.queryByText(label) !== null).toBe(expectedVisible));
+        expect(screen.queryAllByLabelText('Count unavailable')).toHaveLength(0);
     });
 });

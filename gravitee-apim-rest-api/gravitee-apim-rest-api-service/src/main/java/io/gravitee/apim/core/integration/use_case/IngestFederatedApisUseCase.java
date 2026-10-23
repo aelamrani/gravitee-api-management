@@ -49,6 +49,7 @@ import io.gravitee.apim.core.plan.domain_service.DeletePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.UpdatePlanDomainService;
 import io.gravitee.apim.core.plan.model.Plan;
 import io.gravitee.apim.core.plan.model.factory.PlanModelFactory;
+import io.gravitee.apim.core.sanitizer.HtmlSanitizer;
 import io.gravitee.apim.core.subscription.domain_service.CloseSubscriptionDomainService;
 import io.gravitee.apim.core.subscription.domain_service.DeleteSubscriptionDomainService;
 import io.gravitee.apim.core.subscription.query_service.SubscriptionQueryService;
@@ -96,6 +97,7 @@ public class IngestFederatedApisUseCase {
     private final HomepageDomainService homepageDomainService;
     private final ClearIngestedApiDocumentationDomainService clearIngestedApiDocumentationDomainService;
     private final IntegrationCrudService integrationCrudService;
+    private final HtmlSanitizer htmlSanitizer;
 
     public Completable execute(Input input) {
         log.info("Ingesting {} federated APIs [jobId={}]", input.apisToIngest().size(), input.ingestJobId);
@@ -224,12 +226,14 @@ public class IngestFederatedApisUseCase {
             }
             var ingestedPagesNames = integrationApi.pages().stream().map(IntegrationApi.Page::filename).toList();
             clearIngestedApiDocumentationDomainService.clearIngestedPagesOf(federatedApi.getId(), ingestedPagesNames, bulk.auditInfo());
-            var existingPages = pageQueryService
-                .searchByApiId(federatedApi.getId())
+            var pagesOfApi = pageQueryService.searchByApiId(federatedApi.getId());
+            var existingPages = pagesOfApi
                 .stream()
-                .collect(Collectors.toMap(Page::getName, Function.identity()));
+                .filter(IngestFederatedApisUseCase::isUpdatableByProvider)
+                .collect(Collectors.toMap(Page::getName, Function.identity(), (first, second) -> first.isIngested() ? first : second));
             List<Page> updatedOrNewPages = stream(integrationApi.pages())
                 .flatMap(page -> buildPage(page, integrationApi, federatedApi.getId()))
+                .filter(page -> existingPages.containsKey(page.getName()) || !isNameTakenInGravitee(page, pagesOfApi))
                 .map(page -> {
                     /*
                      * We let agent choose coherent page name and rely on it to updating
@@ -238,12 +242,16 @@ public class IngestFederatedApisUseCase {
                     if (existingPage == null) {
                         return createApiDocumentationDomainService.createPage(page, bulk.auditInfo());
                     } else {
-                        var pageWithProperCreatedAt = page
+                        // The provider owns the content; visibility, publication, placement and viewer settings belong to the publisher
+                        var updatedPage = existingPage
                             .toBuilder()
-                            .createdAt(existingPage.getCreatedAt())
-                            .id(existingPage.getId())
+                            .name(page.getName())
+                            .type(page.getType())
+                            .content(page.getContent())
+                            .updatedAt(page.getUpdatedAt())
+                            .ingested(true)
                             .build();
-                        return updateApiDocumentationDomainService.updatePage(pageWithProperCreatedAt, existingPage, bulk.auditInfo());
+                        return updateApiDocumentationDomainService.updatePage(updatedPage, existingPage, bulk.auditInfo());
                     }
                 })
                 .toList();
@@ -260,6 +268,35 @@ public class IngestFederatedApisUseCase {
         }
     }
 
+    /**
+     * Specification pages ingested before 4.6.0 carry no ingested flag, so they still match by name. Markdown and AsciiDoc
+     * pages are only ingested with the flag: an unflagged one was written in Gravitee and is never taken over.
+     */
+    private static boolean isUpdatableByProvider(Page page) {
+        return page.isIngested() || page.getType() == Page.Type.SWAGGER || page.getType() == Page.Type.ASYNCAPI;
+    }
+
+    /** Page names are unique per parent and type: a root page written in Gravitee keeps its name over a provider page. */
+    private static boolean isNameTakenInGravitee(Page page, Collection<Page> pagesOfApi) {
+        var taken = pagesOfApi
+            .stream()
+            .anyMatch(
+                existing ->
+                    !isUpdatableByProvider(existing) &&
+                    (existing.getParentId() == null || existing.getParentId().isEmpty()) &&
+                    existing.getType() == page.getType() &&
+                    page.getName().equals(existing.getName())
+            );
+        if (taken) {
+            log.warn(
+                "Skipping ingested page {} of API {}: a page with the same name was created in Gravitee",
+                page.getName(),
+                page.getReferenceId()
+            );
+        }
+        return taken;
+    }
+
     private Stream<Page> buildPage(IntegrationApi.Page page, IntegrationApi integrationApi, String referenceId) {
         if (page == null || page.pageType() == null) {
             return Stream.empty();
@@ -267,7 +304,21 @@ public class IngestFederatedApisUseCase {
         return switch (page.pageType()) {
             case SWAGGER -> Stream.of(buildSwaggerPage(referenceId, page));
             case ASYNCAPI -> Stream.of(buildAsyncApiPage(referenceId, page));
-            case ASCIIDOC, MARKDOWN, MARKDOWN_TEMPLATE -> {
+            case MARKDOWN -> {
+                var safety = htmlSanitizer.isSafe(page.content());
+                if (!safety.isSafe()) {
+                    log.warn(
+                        "Skipping ingested markdown page {} of API {}: unsafe content ({}); a version ingested before is kept",
+                        page.filename(),
+                        referenceId,
+                        safety.getRejectedMessage()
+                    );
+                    yield Stream.empty();
+                }
+                yield Stream.of(buildDocumentationPage(referenceId, page, Page.Type.MARKDOWN));
+            }
+            case ASCIIDOC -> Stream.of(buildDocumentationPage(referenceId, page, Page.Type.ASCIIDOC));
+            case MARKDOWN_TEMPLATE -> {
                 log.error("Impossible to import {} documentation for {}", page.pageType(), integrationApi.name());
                 yield Stream.empty();
             }
@@ -305,6 +356,24 @@ public class IngestFederatedApisUseCase {
             .published(true)
             .visibility(Page.Visibility.PRIVATE)
             .homepage(true)
+            .createdAt(now)
+            .updatedAt(now)
+            .ingested(true)
+            .build();
+    }
+
+    private Page buildDocumentationPage(String referenceId, IntegrationApi.Page page, Page.Type type) {
+        var now = Date.from(TimeProvider.instantNow());
+        return Page.builder()
+            .id(UuidString.generateRandom())
+            .name(page.filename())
+            .content(page.content())
+            .type(type)
+            .referenceId(referenceId)
+            .referenceType(Page.ReferenceType.API)
+            .published(true)
+            .visibility(Page.Visibility.PRIVATE)
+            .homepage(false)
             .createdAt(now)
             .updatedAt(now)
             .ingested(true)

@@ -27,6 +27,7 @@ import io.gravitee.definition.model.ExecutionMode;
 import io.gravitee.gateway.api.context.SimpleExecutionContext;
 import io.gravitee.gateway.api.handler.Handler;
 import io.gravitee.gateway.core.component.ComponentProvider;
+import io.gravitee.gateway.core.invoker.V3InvokerAttributes;
 import io.gravitee.gateway.env.GatewayConfiguration;
 import io.gravitee.gateway.env.RequestClientAuthConfiguration;
 import io.gravitee.gateway.env.RequestPathConfiguration;
@@ -90,6 +91,7 @@ import lombok.CustomLog;
 public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
 
     private static final String ATTR_INTERNAL_VERTX_TIMER_ID = ContextAttributes.ATTR_PREFIX + "vertx-timer-id";
+
     public static final String ATTR_ENTRYPOINT = ContextAttributes.ATTR_PREFIX + "entrypoint";
     // Key checked by gravitee-node's RouteGetter (OTel span naming) before falling back to the raw request URI.
     private static final String TRACING_ROUTE_CONTEXT_KEY = "VertxRoute";
@@ -158,6 +160,9 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
         // the resolution, the acceptor lookup — falls inside the window every latency metric covers.
         // Stamping it in the wrapper's constructor would start the clock once the work is done.
         final long receivedAt = System.currentTimeMillis();
+        // Same instant, monotonic clock. Every duration is derived from this one, so it has to be taken here too:
+        // left to its default it would be stamped when the request wrapper is built, once the work below is done.
+        final long receivedAtNs = System.nanoTime();
 
         //Keep same behavior as in Vertx4 when host was also returning the port.
         //The authority is null when the request has no Host header (nor :authority pseudo-header), as Vertx4 host() was.
@@ -185,7 +190,7 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
                 // unknown host answers 400 rather than the 404 it used to, and that is the point
                 // — resolving first would let a caller sending a dot segment tell a known host
                 // from an unknown one by the status code, and enumerate the deployed APIs.
-                return handleRejectedPath(httpServerRequest, serverId, receivedAt);
+                return handleRejectedPath(httpServerRequest, serverId, receivedAt, receivedAtNs);
             }
             normalizedPath = RequestPathNormalizer.normalize(rawPath);
             // No normalized form at all: the path carries a malformed percent sequence. Inside this
@@ -193,7 +198,7 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
             // API declares and an HTTP/2 request without a :path pseudo-header actually produces —
             // must keep reaching the acceptor exactly as it did before this setting existed.
             if (normalizedPath == null) {
-                return handleRejectedPath(httpServerRequest, serverId, receivedAt);
+                return handleRejectedPath(httpServerRequest, serverId, receivedAt, receivedAtNs);
             }
             // Both forms, deliberately: the point of this line is to answer "what did the client
             // actually send" once the gateway has started deciding on something else.
@@ -219,7 +224,8 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
                 httpServerRequest,
                 serverId,
                 pathWasNormalized ? normalizedPath : null,
-                receivedAt
+                receivedAt,
+                receivedAtNs
             );
             mutableCtx.tracer(
                 new io.gravitee.gateway.reactive.api.tracing.Tracer(vertxContext, gatewayTracingContext.opentelemetryTracer())
@@ -269,7 +275,8 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
                 httpServerRequest,
                 serverId,
                 pathWasNormalized ? normalizedPath : null,
-                receivedAt
+                receivedAt,
+                receivedAtNs
             );
             mutableCtx.request().contextPath(httpAcceptor.path());
             markTracingRoute(vertxContext, httpAcceptor.path());
@@ -389,7 +396,8 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
         final HttpServerRequest httpServerRequest,
         String serverId,
         final String path,
-        final long receivedAt
+        final long receivedAt,
+        final long receivedAtNs
     ) {
         VertxHttpServerRequest request = new VertxHttpServerRequest(
             httpServerRequest,
@@ -398,6 +406,7 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
                 .clientAuthHeaderName(requestClientAuthConfiguration.getHeaderName())
                 .path(path)
                 .timestamp(receivedAt)
+                .timestampNs(receivedAtNs)
                 .build()
         );
 
@@ -433,10 +442,15 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
      * gained the pre-processor chain and the whole tracing block in a single review round, and the
      * copy silently kept neither.
      */
-    private Completable handleRejectedPath(final HttpServerRequest httpServerRequest, final String serverId, final long receivedAt) {
+    private Completable handleRejectedPath(
+        final HttpServerRequest httpServerRequest,
+        final String serverId,
+        final long receivedAt,
+        final long receivedAtNs
+    ) {
         // Nothing is rewritten here, so the path stays the one received — which is what the report
         // has to carry for an operator to see what was actually sent.
-        final MutableExecutionContext ctx = prepareExecutionContext(httpServerRequest, serverId, null, receivedAt);
+        final MutableExecutionContext ctx = prepareExecutionContext(httpServerRequest, serverId, null, receivedAt, receivedAtNs);
         ctx.request().contextPath("/");
 
         final Context vertxContext = VertxContext.createNewDuplicatedContext(vertx.getOrCreateContext());
@@ -551,6 +565,8 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
         // Prepare handler chain and catch the end of the v3 request handling to complete the reactive chain.
         return Completable.create(emitter -> {
             Handler<io.gravitee.gateway.api.ExecutionContext> endHandler = endRequestHandler(emitter, httpServerRequest);
+            // Disposed when the client goes away: nothing else tells the v3 engine, so release the upstream connection.
+            emitter.setCancellable(() -> cancelUpstreamIfPending(simpleExecutionContext));
             requestProcessorChainFactory
                 .create()
                 .handler(ctx -> {
@@ -587,6 +603,19 @@ public class DefaultHttpRequestDispatcher implements HttpRequestDispatcher {
                         throwable
                     );
             });
+    }
+
+    private void cancelUpstreamIfPending(final io.gravitee.gateway.api.ExecutionContext context) {
+        if (!context.response().ended()) {
+            final Object cancelUpstream = context.getAttribute(V3InvokerAttributes.ATTR_INTERNAL_V3_CANCEL_UPSTREAM);
+            if (cancelUpstream instanceof Runnable runnable) {
+                try {
+                    runnable.run();
+                } catch (Exception e) {
+                    log.debug("Unable to cancel the upstream connection", e);
+                }
+            }
+        }
     }
 
     private Handler<io.gravitee.gateway.api.ExecutionContext> endRequestHandler(

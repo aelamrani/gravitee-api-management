@@ -20,6 +20,7 @@ import io.gravitee.apim.core.group.query_service.GroupQueryService;
 import io.gravitee.apim.core.member.model.RoleScope;
 import io.gravitee.apim.rest.api.automation.exception.HRIDNotFoundException;
 import io.gravitee.apim.rest.api.automation.mapper.GroupMapper;
+import io.gravitee.apim.rest.api.automation.model.GroupDefaultMemberRoles;
 import io.gravitee.common.http.MediaType;
 import io.gravitee.rest.api.model.MemberEntity;
 import io.gravitee.rest.api.model.MembershipReferenceType;
@@ -75,7 +76,10 @@ public class GroupResource extends AbstractResource {
     public Response getGroupByHRID(@PathParam("hrid") String hrid, @QueryParam("hridContainsUUID") boolean hridContainsUUID) {
         var executionContext = GraviteeContext.getExecutionContext();
         var groupId = hridContainsUUID ? hrid : HRIDToUUID.group().context(executionContext).hrid(hrid).id();
-        var group = groupQueryService.findById(groupId).orElseThrow(() -> new HRIDNotFoundException(hrid));
+        var group = groupQueryService
+            .findById(groupId)
+            .filter(g -> executionContext.getEnvironmentId().equalsIgnoreCase(g.getEnvironmentId()))
+            .orElseThrow(() -> new HRIDNotFoundException(hrid));
 
         Set<MemberEntity> memberEntities = membershipService.getMembersByReference(
             executionContext,
@@ -84,8 +88,9 @@ public class GroupResource extends AbstractResource {
         );
 
         var members = buildGroupMembers(executionContext, memberEntities);
+        var defaultMemberRoles = buildDefaultMemberRoles(executionContext, groupId);
 
-        return Response.ok(GroupMapper.INSTANCE.groupToGroupState(group, members, executionContext)).build();
+        return Response.ok(GroupMapper.INSTANCE.groupToGroupState(group, members, defaultMemberRoles, executionContext)).build();
     }
 
     @DELETE
@@ -134,5 +139,9 @@ public class GroupResource extends AbstractResource {
                     .build()
             )
             .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private GroupDefaultMemberRoles buildDefaultMemberRoles(ExecutionContext executionContext, String groupId) {
+        return GroupMapper.INSTANCE.groupEntityToDefaultMemberRoles(groupService.findById(executionContext, groupId));
     }
 }

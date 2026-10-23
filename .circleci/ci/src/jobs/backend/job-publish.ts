@@ -15,38 +15,74 @@
  */
 import { Command, Config, Job, commands, reusable } from '../../circleci-config';
 import { config } from '../../config';
-import { AzureArtifactsTokenCommand, NotifyOnFailureCommand, RestoreMavenJobCacheCommand, SaveMavenJobCacheCommand } from '../../commands';
+import {
+  AzureArtifactsTokenCommand,
+  InstallYarnCommand,
+  NotifyOnFailureCommand,
+  RestoreMavenJobCacheCommand,
+  SaveMavenJobCacheCommand,
+} from '../../commands';
 import { OpenJdkNodeExecutor } from '../../executors';
 import { CircleCIEnvironment } from '../../pipelines';
 import { mavenParallelism } from '../../utils';
 
 export class PublishJob {
-  public static create(dynamicConfig: Config, environment: CircleCIEnvironment, target: 'nexus' | 'artifactory'): Job {
-    const jobName = `job-publish-on-${target}`;
+  public static create(dynamicConfig: Config, environment: CircleCIEnvironment): Job {
+    const jobName = 'job-publish-snapshot';
 
     const restoreMavenJobCacheCmd = RestoreMavenJobCacheCommand.get(environment);
     const saveMavenJobCacheCmd = SaveMavenJobCacheCommand.get();
     const notifyOnFailureCmd = NotifyOnFailureCommand.get(dynamicConfig, environment);
     const azureArtifactsTokenCmd = AzureArtifactsTokenCommand.get(dynamicConfig);
+    // The Gamma UI build runs `yarn install`; with the image's yarn 1 it would ignore the berry
+    // lockfile and let swagger-ui's React 18 into the shared React.
+    const installYarnCmd = InstallYarnCommand.get();
     dynamicConfig.addReusableCommand(restoreMavenJobCacheCmd);
     dynamicConfig.addReusableCommand(saveMavenJobCacheCmd);
     dynamicConfig.addReusableCommand(notifyOnFailureCmd);
     dynamicConfig.addReusableCommand(azureArtifactsTokenCmd);
+    dynamicConfig.addReusableCommand(installYarnCmd);
 
     const steps: Command[] = [
       new commands.Checkout(),
       new commands.workspace.Attach({ at: '.' }),
       new reusable.ReusedCommand(restoreMavenJobCacheCmd, { jobName }),
       new reusable.ReusedCommand(azureArtifactsTokenCmd),
-      target === 'nexus'
-        ? new commands.Run({
-            name: 'Maven Package and deploy to Nexus Snapshots',
-            command: `mvn deploy --no-transfer-progress -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=true ${mavenParallelism('large')} -s ${config.maven.settingsFile} -U`,
-          })
-        : new commands.Run({
-            name: 'Maven Package and deploy to Artifactory ([gravitee-snapshots] repository)',
-            command: `mvn deploy --no-transfer-progress -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=true ${mavenParallelism('large')} -s ${config.maven.settingsFile} -U -P gio-artifactory-snapshot`,
-          }),
+      new reusable.ReusedCommand(installYarnCmd),
+      // The profile is still active for what it carries besides the repository — signing and
+      // the other deploy settings — while altDeploymentRepository points the deploy at the
+      // Azure feed.
+      //
+      // Both flags on purpose: for a SNAPSHOT version maven-deploy-plugin reads
+      // altSnapshotDeploymentRepository first, so a profile setting it would win over
+      // altDeploymentRepository alone. No profile does today; this keeps the command
+      // line authoritative if one ever does.
+      //
+      // The Gamma UI is built apart, in the next step: each of its three modules runs an Nx build
+      // with a 4 GB Node heap, and under -T they run side by side, which the 8 GB of a large
+      // executor does not hold (the job is killed). Their jars are deployed here without the UI
+      // and replaced by the next step.
+      new commands.Run({
+        name: 'Maven deploy to the Azure feed (snapshots)',
+        command: `mvn deploy --no-transfer-progress -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=true -Dskip.ui.build=true ${mavenParallelism('large')} -s ${config.maven.settingsFile} -U -P gio-artifactory-snapshot -DaltDeploymentRepository=azure-artifacts-gravitee-snapshots::${config.maven.azureSnapshotsFeedUrl} \\
+  -DaltSnapshotDeploymentRepository=azure-artifacts-gravitee-snapshots::${config.maven.azureSnapshotsFeedUrl}`,
+        environment: {
+          // Cap the maven JVM heap: its default is derived from the memory of the underlying CI
+          // host, not from the resource class of the job.
+          MAVEN_OPTS: '-Xmx2048m',
+        },
+      }),
+      // Gamma alone, UI included, one module at a time (-T 1) so a single Node build runs at once.
+      // Its rest-api dependencies come from the local repository the step above installed into:
+      // no -U, -nsu, so a published snapshot cannot take their place.
+      new commands.Run({
+        name: 'Maven deploy the Gamma modules with their UI to the Azure feed (snapshots)',
+        command: `mvn deploy --no-transfer-progress -DskipTests -Dskip.validation=true -Dgravitee.archrules.skip=true -Dgamma-modules -T 1 -s ${config.maven.settingsFile} -nsu -P gio-artifactory-snapshot -DaltDeploymentRepository=azure-artifacts-gravitee-snapshots::${config.maven.azureSnapshotsFeedUrl} \\
+  -DaltSnapshotDeploymentRepository=azure-artifacts-gravitee-snapshots::${config.maven.azureSnapshotsFeedUrl}`,
+        environment: {
+          MAVEN_OPTS: '-Xmx2048m',
+        },
+      }),
       new reusable.ReusedCommand(notifyOnFailureCmd),
       new reusable.ReusedCommand(saveMavenJobCacheCmd, { jobName }),
     ];

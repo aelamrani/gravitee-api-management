@@ -39,10 +39,12 @@ import io.gravitee.gamma.rest.resource.AbstractResourceTest;
 import io.gravitee.gamma.rest.resource.observability.filters.ObservabilityFiltersResourceTest.FiltersTestConfiguration;
 import io.gravitee.gamma.rest.spring.ResourceContextConfiguration;
 import io.gravitee.rest.api.model.EnvironmentEntity;
+import io.gravitee.rest.api.model.permissions.RolePermission;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.client.Entity;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,6 +52,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.context.annotation.Bean;
@@ -60,6 +64,7 @@ import org.springframework.test.context.ContextConfiguration;
 class ObservabilityFiltersResourceTest extends AbstractResourceTest {
 
     private static final String ENVIRONMENT = "fake-env";
+    private static final String OTHER_ENVIRONMENT = "other-env";
 
     @Inject
     private GetObservabilityFilterDefinitionsUseCase getFilterDefinitionsUseCase;
@@ -165,14 +170,15 @@ class ObservabilityFiltersResourceTest extends AbstractResourceTest {
             Mockito.verifyNoInteractions(getFilterDefinitionsUseCase);
         }
 
+        /** The catalog holds no traffic data. */
         @Test
-        void should_return_403_when_caller_cannot_read_observability() {
+        void should_return_the_catalog_to_a_caller_without_any_permission() {
             when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(false);
+            when(getFilterDefinitionsUseCase.execute(any())).thenReturn(new GetObservabilityFilterDefinitionsUseCase.Output(List.of()));
 
             Response response = rootTarget("definition").request().get();
 
-            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.FORBIDDEN_403);
-            Mockito.verifyNoInteractions(getFilterDefinitionsUseCase);
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
         }
     }
 
@@ -271,6 +277,36 @@ class ObservabilityFiltersResourceTest extends AbstractResourceTest {
         }
 
         @Test
+        void should_forward_the_api_product_the_request_is_scoped_to() {
+            when(getFilterValuesUseCase.execute(any())).thenReturn(
+                new GetObservabilityFilterValuesUseCase.Output(new FilterValuesPage(List.of(), 0L), 1, 10)
+            );
+
+            rootTarget("APPLICATION/values").queryParam("apiProduct", "workspace-1").request().get();
+
+            ArgumentCaptor<GetObservabilityFilterValuesUseCase.Input> captor = ArgumentCaptor.forClass(
+                GetObservabilityFilterValuesUseCase.Input.class
+            );
+            Mockito.verify(getFilterValuesUseCase).execute(captor.capture());
+            assertThat(captor.getValue().apiProduct()).isEqualTo("workspace-1");
+        }
+
+        @Test
+        void should_read_a_blank_api_product_as_absent() {
+            when(getFilterValuesUseCase.execute(any())).thenReturn(
+                new GetObservabilityFilterValuesUseCase.Output(new FilterValuesPage(List.of(), 0L), 1, 10)
+            );
+
+            rootTarget("APPLICATION/values").queryParam("apiProduct", " ").request().get();
+
+            ArgumentCaptor<GetObservabilityFilterValuesUseCase.Input> captor = ArgumentCaptor.forClass(
+                GetObservabilityFilterValuesUseCase.Input.class
+            );
+            Mockito.verify(getFilterValuesUseCase).execute(captor.capture());
+            assertThat(captor.getValue().apiProduct()).isNull();
+        }
+
+        @Test
         void should_return_400_for_unknown_apiType_value() {
             Response response = rootTarget("API_TYPE/values").queryParam("apiType", "NOPE").request().get();
 
@@ -278,14 +314,56 @@ class ObservabilityFiltersResourceTest extends AbstractResourceTest {
             Mockito.verifyNoInteractions(getFilterValuesUseCase);
         }
 
+        /** The values come from the rows the caller reads: no environment permission is required. */
         @Test
-        void should_return_403_when_caller_cannot_read_observability() {
+        void should_list_values_without_any_environment_permission() {
             when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(false);
+            when(getFilterValuesUseCase.execute(any())).thenReturn(
+                new GetObservabilityFilterValuesUseCase.Output(new FilterValuesPage(List.of(), 0L), 1, 10)
+            );
+
+            Response response = rootTarget("APPLICATION/values").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            Mockito.verify(getFilterValuesUseCase).execute(any());
+        }
+
+        @Test
+        void should_answer_from_the_rows_when_caller_only_holds_environment_api_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_API, ENVIRONMENT);
+            when(getFilterValuesUseCase.execute(any())).thenReturn(
+                new GetObservabilityFilterValuesUseCase.Output(new FilterValuesPage(List.of(), 0L), 1, 10)
+            );
 
             Response response = rootTarget("API_TYPE/values").request().get();
 
-            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.FORBIDDEN_403);
-            Mockito.verifyNoInteractions(getFilterValuesUseCase);
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            Mockito.verify(getFilterValuesUseCase).execute(any());
+        }
+
+        @Test
+        void should_answer_from_the_rows_when_environment_platform_read_is_held_on_another_environment() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_PLATFORM, OTHER_ENVIRONMENT);
+            when(getFilterValuesUseCase.execute(any())).thenReturn(
+                new GetObservabilityFilterValuesUseCase.Output(new FilterValuesPage(List.of(), 0L), 1, 10)
+            );
+
+            Response response = rootTarget("API_TYPE/values").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            Mockito.verify(getFilterValuesUseCase).execute(any());
+        }
+
+        @Test
+        void should_return_200_when_caller_holds_environment_platform_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_PLATFORM, ENVIRONMENT);
+            when(getFilterValuesUseCase.execute(any())).thenReturn(
+                new GetObservabilityFilterValuesUseCase.Output(new FilterValuesPage(List.of(), 0L), 1, 10)
+            );
+
+            Response response = rootTarget("API_TYPE/values").request().get();
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
         }
     }
 
@@ -342,15 +420,130 @@ class ObservabilityFiltersResourceTest extends AbstractResourceTest {
         }
 
         @Test
-        void should_return_403_when_caller_cannot_read_observability() {
+        void should_forward_the_api_product_the_labelled_request_is_scoped_to() {
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
+
+            Response response = rootTarget("resolve")
+                .queryParam("apiProduct", "workspace-1")
+                .request()
+                .post(
+                    Entity.entity(
+                        Map.of("entries", List.of(Map.of("filterName", "APPLICATION", "ids", List.of("app-1")))),
+                        MediaType.APPLICATION_JSON_TYPE
+                    )
+                );
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            ArgumentCaptor<ResolveObservabilityFilterLabelsUseCase.Input> captor = ArgumentCaptor.forClass(
+                ResolveObservabilityFilterLabelsUseCase.Input.class
+            );
+            Mockito.verify(resolveFilterLabelsUseCase).execute(captor.capture());
+            assertThat(captor.getValue().apiProduct()).isEqualTo("workspace-1");
+        }
+
+        @Test
+        void should_read_a_blank_api_product_as_absent() {
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
+
+            rootTarget("resolve")
+                .queryParam("apiProduct", "")
+                .request()
+                .post(
+                    Entity.entity(
+                        Map.of("entries", List.of(Map.of("filterName", "APPLICATION", "ids", List.of("app-1")))),
+                        MediaType.APPLICATION_JSON_TYPE
+                    )
+                );
+
+            ArgumentCaptor<ResolveObservabilityFilterLabelsUseCase.Input> captor = ArgumentCaptor.forClass(
+                ResolveObservabilityFilterLabelsUseCase.Input.class
+            );
+            Mockito.verify(resolveFilterLabelsUseCase).execute(captor.capture());
+            assertThat(captor.getValue().apiProduct()).isNull();
+        }
+
+        @Test
+        void should_return_200_to_the_library_resolve_payload() {
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
+            var body = Map.of(
+                "entries",
+                List.of(
+                    Map.of("filterName", "API", "ids", List.of("api-1", "api-2")),
+                    Map.of("filterName", "APPLICATION", "ids", List.of("app-1"))
+                )
+            );
+
+            Response response = rootTarget("resolve").request().post(Entity.entity(body, MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+        }
+
+        @ParameterizedTest
+        @CsvSource({ "root, apiId", "entry, filtername" })
+        void should_return_400_naming_an_unknown_key(String location, String unknownKey) {
+            var entry = new HashMap<String, Object>(Map.of("filterName", "API", "ids", List.of("api-1")));
+            var body = new HashMap<String, Object>(Map.of("entries", List.of(entry)));
+            (location.equals("root") ? body : entry).put(unknownKey, "x");
+
+            Response response = rootTarget("resolve").request().post(Entity.entity(body, MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response.readEntity(JsonNode.class).get("message").asText()).isEqualTo(
+                "Property [" + unknownKey + "] is not recognized as a valid property"
+            );
+            Mockito.verifyNoInteractions(resolveFilterLabelsUseCase);
+        }
+
+        /** Only ids found in the rows the caller reads are labelled: no environment permission is required. */
+        @Test
+        void should_resolve_labels_without_any_environment_permission() {
             when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(false);
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
 
             Response response = rootTarget("resolve")
                 .request()
                 .post(Entity.entity(Map.of("entries", List.of()), MediaType.APPLICATION_JSON_TYPE));
 
-            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.FORBIDDEN_403);
-            Mockito.verifyNoInteractions(resolveFilterLabelsUseCase);
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            Mockito.verify(resolveFilterLabelsUseCase).execute(any());
+        }
+
+        @Test
+        void should_answer_from_the_rows_when_caller_only_holds_environment_api_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_API, ENVIRONMENT);
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
+
+            Response response = rootTarget("resolve")
+                .request()
+                .post(Entity.entity(Map.of("entries", List.of()), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            Mockito.verify(resolveFilterLabelsUseCase).execute(any());
+        }
+
+        @Test
+        void should_answer_from_the_rows_when_environment_platform_read_is_held_on_another_environment() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_PLATFORM, OTHER_ENVIRONMENT);
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
+
+            Response response = rootTarget("resolve")
+                .request()
+                .post(Entity.entity(Map.of("entries", List.of()), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
+            Mockito.verify(resolveFilterLabelsUseCase).execute(any());
+        }
+
+        @Test
+        void should_return_200_when_caller_holds_environment_platform_read() {
+            givenOnlyReadPermission(RolePermission.ENVIRONMENT_PLATFORM, ENVIRONMENT);
+            when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveObservabilityFilterLabelsUseCase.Output(List.of()));
+
+            Response response = rootTarget("resolve")
+                .request()
+                .post(Entity.entity(Map.of("entries", List.of()), MediaType.APPLICATION_JSON_TYPE));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatusCode.OK_200);
         }
     }
 

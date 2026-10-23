@@ -29,10 +29,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
 import io.gravitee.apim.core.api.model.ApiMetadata;
 import io.gravitee.apim.core.api.query_service.ApiMetadataQueryService;
 import io.gravitee.apim.core.api_product.domain_service.RemoveApiFromApiProductsDomainService;
 import io.gravitee.apim.core.flow.crud_service.FlowCrudService;
+import io.gravitee.apim.core.portal_page.domain_service.ApiDocumentationCleanupDomainService;
+import io.gravitee.apim.core.subscription_form.domain_service.RemoveApiFromSubscriptionFormDomainService;
 import io.gravitee.common.data.domain.Page;
 import io.gravitee.definition.jackson.datatype.GraviteeMapper;
 import io.gravitee.definition.model.v4.ApiType;
@@ -202,6 +205,9 @@ public class ApiServiceImpl_findAllTest {
     private PropertiesService propertiesService;
 
     @Mock
+    private PropertyDomainService propertyDomainService;
+
+    @Mock
     private ApiNotificationService apiNotificationService;
 
     @Mock
@@ -215,6 +221,12 @@ public class ApiServiceImpl_findAllTest {
 
     @Mock
     private RemoveApiFromApiProductsDomainService removeApiFromApiProductsDomainService;
+
+    @Mock
+    private RemoveApiFromSubscriptionFormDomainService removeApiFromSubscriptionFormDomainService;
+
+    @Mock
+    private ApiDocumentationCleanupDomainService apiDocumentationCleanupDomainService;
 
     @Mock
     private ApiMetadataQueryService apiMetadataQueryService;
@@ -280,6 +292,7 @@ public class ApiServiceImpl_findAllTest {
             subscriptionService,
             eventService,
             pageService,
+            apiDocumentationCleanupDomainService,
             topApiService,
             portalNotificationConfigService,
             alertService,
@@ -293,7 +306,9 @@ public class ApiServiceImpl_findAllTest {
             groupService,
             apiCategoryService,
             removeApiFromApiProductsDomainService,
-            apiMetadataQueryService
+            removeApiFromSubscriptionFormDomainService,
+            apiMetadataQueryService,
+            propertyDomainService
         );
     }
 

@@ -96,7 +96,7 @@ export function DeploymentConfigurationPage() {
     return (
         <div className="space-y-4">
             <div className="space-y-1">
-                <h1 className="text-2xl font-semibold tracking-tight">Deployment Configuration</h1>
+                <h1 className="text-2xl font-semibold tracking-tight">Sharding Tags</h1>
                 <p className="text-sm text-muted-foreground">
                     Control where this API is deployed on the gateway mesh. Only gateway instances advertising matching sharding tags will
                     load this API definition.
@@ -168,7 +168,7 @@ export function DeploymentConfigurationPage() {
             </Card>
 
             {isDirty ? (
-                <div className="flex items-center justify-end gap-3 border-t pt-4">
+                <div className="sticky bottom-0 z-10 flex items-center justify-end gap-3 border-t bg-background py-4">
                     <Button type="button" variant="outline" size="sm" onClick={handleDiscard} disabled={isSaving}>
                         Discard
                     </Button>

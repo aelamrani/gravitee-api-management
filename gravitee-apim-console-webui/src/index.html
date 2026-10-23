@@ -101,6 +101,10 @@
         align-items: flex-start;
         line-height: normal;
       }
+
+      .index__gravitee-error-banner__retry {
+        margin-left: 16px;
+      }
     </style>
     <script language="JavaScript">
       /**
@@ -138,13 +142,6 @@
         }
       };
     </script>
-
-    <script type="module">
-      // Load Asciidoctor by default to avoid some es6 error
-      // Try to remove it when ui-particle use angular 14+ and asciidoctor 3.x
-      import Asciidoctor from './assets/asciidoctor/asciidoctor.js';
-      window.Asciidoctor = Asciidoctor;
-    </script>
   </head>
 
   <body layout="column" class="mat mat-typography mat-app-background">
@@ -172,6 +169,7 @@
           </div>
 
           <div id="gravitee-error-banner-message" class="index__gravitee-error-banner__message"></div>
+          <button id="gravitee-error-banner-retry" class="index__gravitee-error-banner__retry" type="button">Retry</button>
         </div>
       </div>
 

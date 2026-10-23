@@ -27,6 +27,7 @@ import io.gravitee.apim.core.portal_page.model.NavigationItemReference;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItem;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItemType;
 import io.gravitee.apim.core.portal_page.model.PortalPageContentType;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
@@ -69,7 +70,9 @@ class HomepageUniquenessRuleTest {
     void two_console_owned_homepages_conflict() {
         navigationItemsQueryService.storage().add(PortalNavigationItem.from(homepageCreateItem(null), ORG_ID, ENV_ID, null));
 
-        assertThatThrownBy(() -> rule.validate(homepageCreateItem(null), ENV_ID, null)).isInstanceOf(HomepageAlreadyExistsException.class);
+        assertThatThrownBy(() -> rule.validate(homepageCreateItem(null), ENV_ID, CreateValidationContext.empty())).isInstanceOf(
+            HomepageAlreadyExistsException.class
+        );
     }
 
     @Test
@@ -78,9 +81,9 @@ class HomepageUniquenessRuleTest {
             .storage()
             .add(PortalNavigationItem.from(homepageCreateItem("11111111-1111-1111-1111-1111111111a1"), ORG_ID, ENV_ID, null));
 
-        assertThatThrownBy(() -> rule.validate(homepageCreateItem("11111111-1111-1111-1111-1111111111a1"), ENV_ID, null)).isInstanceOf(
-            HomepageAlreadyExistsException.class
-        );
+        assertThatThrownBy(() ->
+            rule.validate(homepageCreateItem("11111111-1111-1111-1111-1111111111a1"), ENV_ID, CreateValidationContext.empty())
+        ).isInstanceOf(HomepageAlreadyExistsException.class);
     }
 
     @Test
@@ -90,7 +93,7 @@ class HomepageUniquenessRuleTest {
             .add(PortalNavigationItem.from(homepageCreateItem("11111111-1111-1111-1111-1111111111a1"), ORG_ID, ENV_ID, null));
 
         assertThatCode(() ->
-            rule.validate(homepageCreateItem("11111111-1111-1111-1111-1111111111b1"), ENV_ID, null)
+            rule.validate(homepageCreateItem("11111111-1111-1111-1111-1111111111b1"), ENV_ID, CreateValidationContext.empty())
         ).doesNotThrowAnyException();
     }
 
@@ -99,7 +102,7 @@ class HomepageUniquenessRuleTest {
         navigationItemsQueryService.storage().add(PortalNavigationItem.from(homepageCreateItem(null), ORG_ID, ENV_ID, null));
 
         assertThatCode(() ->
-            rule.validate(homepageCreateItem("11111111-1111-1111-1111-1111111111a1"), ENV_ID, null)
+            rule.validate(homepageCreateItem("11111111-1111-1111-1111-1111111111a1"), ENV_ID, CreateValidationContext.empty())
         ).doesNotThrowAnyException();
     }
 
@@ -107,7 +110,16 @@ class HomepageUniquenessRuleTest {
     void existing_homepage_in_different_env_does_not_conflict() {
         navigationItemsQueryService.storage().add(PortalNavigationItem.from(homepageCreateItem(null), ORG_ID, "env-other", null));
 
-        assertThatCode(() -> rule.validate(homepageCreateItem(null), ENV_ID, null)).doesNotThrowAnyException();
+        assertThatCode(() -> rule.validate(homepageCreateItem(null), ENV_ID, CreateValidationContext.empty())).doesNotThrowAnyException();
+    }
+
+    @Test
+    void an_existing_homepage_declared_ignorable_does_not_conflict() {
+        var staleHomepage = PortalNavigationItem.from(homepageCreateItem(null), ORG_ID, ENV_ID, null);
+        navigationItemsQueryService.storage().add(staleHomepage);
+        var ctx = CreateValidationContext.replacing(Set.of(staleHomepage.getId()));
+
+        assertThatCode(() -> rule.validate(homepageCreateItem(null), ENV_ID, ctx)).doesNotThrowAnyException();
     }
 
     private static CreatePortalNavigationItem homepageCreateItem(String referenceId) {

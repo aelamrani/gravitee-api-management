@@ -45,7 +45,7 @@ public abstract sealed class PortalNavigationItem
 
     @Builder.Default
     @Nonnull
-    private NavigationItemReference reference = NavigationItemReference.DEFAULT;
+    private NavigationItemReference reference = NavigationItemReference.defaultReference();
 
     @Setter
     @Nonnull
@@ -134,6 +134,13 @@ public abstract sealed class PortalNavigationItem
         this.rootId = parent.getRootId();
     }
 
+    /**
+     * The owner follows the place an item is moved to; nothing else changes it after creation.
+     */
+    public void changeOwner(@Nonnull NavigationItemReference owner) {
+        this.reference = owner;
+    }
+
     public void attachTo(@Nullable PortalNavigationItemContainer parent) {
         if (parent == null) {
             markAsRoot();
@@ -208,7 +215,7 @@ public abstract sealed class PortalNavigationItem
             );
         };
         newItem.setSegment(segmentFor(item));
-        newItem.reference = Objects.requireNonNullElse(item.getReference(), NavigationItemReference.DEFAULT);
+        newItem.reference = Objects.requireNonNullElse(item.getReference(), NavigationItemReference.defaultReference());
         newItem.source = item.getSource();
         newItem.automationMetadata = item.getAutomationMetadata();
         if (parent == null) {

@@ -18,20 +18,16 @@ import { Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectV
 import type { EndpointGroupFormState, LoadBalancerType } from '../types';
 import { validateGroupName } from '../types';
 
-const LB_OPTIONS: { value: LoadBalancerType; label: string }[] = [
-    { value: 'ROUND_ROBIN', label: 'Round robin' },
-    { value: 'RANDOM', label: 'Random' },
-    { value: 'WEIGHTED_ROUND_ROBIN', label: 'Weighted round robin' },
-    { value: 'WEIGHTED_RANDOM', label: 'Weighted random' },
-];
+const LB_OPTIONS: LoadBalancerType[] = ['RANDOM', 'ROUND_ROBIN', 'WEIGHTED_RANDOM', 'WEIGHTED_ROUND_ROBIN'];
 
 interface GeneralStepProps {
     form: EndpointGroupFormState;
     existingGroupNames: string[];
     onFormChange: (patch: Partial<EndpointGroupFormState>) => void;
+    readOnly?: boolean;
 }
 
-export function GeneralStep({ form, existingGroupNames, onFormChange }: Readonly<GeneralStepProps>) {
+export function GeneralStep({ form, existingGroupNames, onFormChange, readOnly = false }: Readonly<GeneralStepProps>) {
     const nameError = (() => {
         const base = validateGroupName(form.name);
         if (base) return base;
@@ -51,6 +47,7 @@ export function GeneralStep({ form, existingGroupNames, onFormChange }: Readonly
                     value={form.name}
                     onChange={e => onFormChange({ name: e.target.value })}
                     placeholder="default-group"
+                    disabled={readOnly}
                 />
                 {nameError && <p className="text-xs text-destructive">{nameError}</p>}
                 <p className="text-xs text-muted-foreground">
@@ -66,14 +63,18 @@ export function GeneralStep({ form, existingGroupNames, onFormChange }: Readonly
                 <Label htmlFor="lb-type" className="text-sm">
                     Load balancing algorithm <span className="text-destructive">*</span>
                 </Label>
-                <Select value={form.loadBalancerType} onValueChange={v => onFormChange({ loadBalancerType: v as LoadBalancerType })}>
+                <Select
+                    value={form.loadBalancerType}
+                    onValueChange={v => onFormChange({ loadBalancerType: v as LoadBalancerType })}
+                    disabled={readOnly}
+                >
                     <SelectTrigger id="lb-type" className="w-full">
                         <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                         {LB_OPTIONS.map(opt => (
-                            <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
+                            <SelectItem key={opt} value={opt}>
+                                {opt}
                             </SelectItem>
                         ))}
                     </SelectContent>

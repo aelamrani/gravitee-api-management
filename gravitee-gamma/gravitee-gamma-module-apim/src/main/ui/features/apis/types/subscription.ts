@@ -56,6 +56,7 @@ export interface Subscription {
     publisherMessage?: string;
     consumerMessage?: string;
     failureCause?: string;
+    consumerConfiguration?: Record<string, string>;
     metadata?: Record<string, string>;
 }
 
@@ -86,6 +87,7 @@ export interface Plan {
     security?: { type: SubscriptionSecurityType };
     mode?: 'STANDARD' | 'PUSH';
     status?: string;
+    generalConditions?: string;
 }
 
 export interface PlanPage {
@@ -118,6 +120,7 @@ export interface CreateSubscriptionPayload {
     planId: string;
     applicationId: string;
     customApiKey?: string;
+    apiKeyMode?: ApiKeyMode;
 }
 
 export interface ApproveSubscriptionPayload {

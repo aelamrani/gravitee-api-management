@@ -17,9 +17,11 @@ package io.gravitee.repository.elasticsearch.v4.analytics.engine.adapter;
 
 import io.gravitee.repository.analytics.engine.api.metric.Measure;
 import io.gravitee.repository.analytics.engine.api.metric.Metric;
+import io.gravitee.repository.analytics.engine.api.query.Filter;
 import io.gravitee.repository.analytics.engine.api.query.MeasuresQuery;
 import io.gravitee.repository.analytics.engine.api.query.MetricMeasuresQuery;
 import io.gravitee.repository.analytics.engine.api.query.Query;
+import io.gravitee.repository.elasticsearch.v4.analytics.engine.adapter.api.FieldResolver;
 import io.gravitee.repository.elasticsearch.v4.analytics.engine.aggregation.SimpleAVGBuilder;
 import io.gravitee.repository.elasticsearch.v4.analytics.engine.aggregation.SimpleCountBuilder;
 import io.gravitee.repository.elasticsearch.v4.analytics.engine.aggregation.SimpleMaxBuilder;
@@ -34,7 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-public class AuthzMeasuresQueryAdapter {
+public class AuthzMeasuresQueryAdapter implements AuthzMeasuresAdapter {
 
     private final AuthzFieldResolver fieldResolver = new AuthzFieldResolver();
     private final FilterAdapter filterAdapter = new FilterAdapter(fieldResolver);
@@ -54,49 +56,60 @@ public class AuthzMeasuresQueryAdapter {
     }
 
     private JsonObject json(MeasuresQuery query) {
-        return new JsonObject().put("size", 0).put("query", adaptQuery(query)).put("aggs", adaptMetrics(query.metrics()));
+        return new JsonObject().put("size", 0).put("query", adaptQuery(query)).put("aggs", adaptMetrics(query.metrics(), query.filters()));
     }
 
-    JsonObject adaptQuery(Query query) {
+    @Override
+    public FieldResolver fieldResolver() {
+        return fieldResolver;
+    }
+
+    @Override
+    public JsonObject adaptQuery(Query query) {
         return boolAdapter.adaptForAuthz(query);
     }
 
-    boolean isScoped(Metric metric) {
-        return scopeFilter(metric) != null;
+    static String scopeAggName(Metric metric) {
+        return metric.name() + AggregationAdapter.AGG_NAME_SEPARATOR + AggregationAdapter.FILTER_AGG_SUFFIX;
     }
 
-    JsonObject adaptMetrics(List<MetricMeasuresQuery> metrics) {
+    @Override
+    public JsonObject adaptMetrics(List<MetricMeasuresQuery> metrics, List<Filter> filters) {
         var aggs = new JsonObject();
         for (var metric : metrics) {
             var measureAggs = buildMeasureAggs(metric);
-            var scope = scopeFilter(metric.metric());
+            var scope = scopeFilter(metric.metric(), filters);
             if (scope == null) {
                 aggs.mergeIn(measureAggs);
             } else {
-                var name = metric.metric().name() + AggregationAdapter.AGG_NAME_SEPARATOR + AggregationAdapter.FILTER_AGG_SUFFIX;
-                aggs.put(name, new JsonObject().put("filter", scope).put("aggs", measureAggs));
+                aggs.put(scopeAggName(metric.metric()), new JsonObject().put("filter", scope).put("aggs", measureAggs));
             }
         }
         return aggs;
     }
 
-    private JsonObject scopeFilter(Metric metric) {
-        if (fieldResolver.isDecisionScoped(metric)) {
-            return new JsonObject().put("term", new JsonObject().put("decision", fieldResolver.decisionValue(metric)));
-        }
-        if (fieldResolver.isFailureScoped(metric)) {
-            var successTerm = new JsonObject().put("term", new JsonObject().put("status", fieldResolver.successStatus()));
-            return new JsonObject().put("bool", new JsonObject().put("must_not", new JsonArray().add(successTerm)));
+    @Override
+    public JsonObject scopeFilter(Metric metric, List<Filter> filters) {
+        var scopeTerm = fieldResolver.scopeTerm(metric);
+        if (scopeTerm.isPresent()) {
+            return term(scopeTerm.get());
         }
         if (metric == Metric.AUTHZ_EVAL_DURATION) {
-            var operationTerm = new JsonObject().put("term", new JsonObject().put("operation", "evaluate"));
-            var durationExists = new JsonObject().put("exists", new JsonObject().put("field", "duration-nanos"));
-            return new JsonObject().put("bool", new JsonObject().put("filter", new JsonArray().add(operationTerm).add(durationExists)));
+            var durationExists = new JsonObject().put("exists", new JsonObject().put("field", fieldResolver.fromMetric(metric)));
+            return new JsonObject().put(
+                "bool",
+                new JsonObject().put("filter", new JsonArray().add(term(fieldResolver.successfulEvaluation())).add(durationExists))
+            );
         }
         return null;
     }
 
-    JsonObject buildMeasureAggs(MetricMeasuresQuery metric) {
+    private static JsonObject term(AuthzFieldResolver.ScopeTerm scopeTerm) {
+        return new JsonObject().put("term", new JsonObject().put(scopeTerm.field(), scopeTerm.value()));
+    }
+
+    @Override
+    public JsonObject buildMeasureAggs(MetricMeasuresQuery metric) {
         if (metric.filters() != null && !metric.filters().isEmpty()) {
             throw new UnsupportedOperationException(
                 "Authz decisions do not support per-metric filters yet, got " + metric.filters() + " on " + metric.metric()

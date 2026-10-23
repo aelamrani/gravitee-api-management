@@ -15,19 +15,32 @@
  */
 package io.gravitee.rest.api.service.impl.configuration.dictionary;
 
+import static io.gravitee.apim.core.utils.EncryptedValueMask.ENCRYPTED_VALUE_MASK;
+import static io.gravitee.repository.management.model.Audit.AuditProperties.ENCRYPTED;
 import static io.gravitee.repository.management.model.Dictionary.AuditEvent.DICTIONARY_CREATED;
+import static io.gravitee.rest.api.service.impl.configuration.dictionary.DictionaryAuditPatch.json;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.gravitee.common.util.DataEncryptor;
+import io.gravitee.definition.model.dictionary.DictionaryProperty;
 import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.DictionaryRepository;
 import io.gravitee.repository.management.model.Dictionary;
 import io.gravitee.repository.management.model.LifecycleState;
 import io.gravitee.rest.api.model.configuration.dictionary.DictionaryEntity;
+import io.gravitee.rest.api.model.configuration.dictionary.DictionaryPropertyOptions;
 import io.gravitee.rest.api.model.configuration.dictionary.DictionaryType;
 import io.gravitee.rest.api.model.configuration.dictionary.NewDictionaryEntity;
 import io.gravitee.rest.api.service.AuditService;
@@ -35,15 +48,24 @@ import io.gravitee.rest.api.service.EnvironmentService;
 import io.gravitee.rest.api.service.EventService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
+import java.security.GeneralSecurityException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.slf4j.LoggerFactory;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.WARN)
@@ -53,6 +75,9 @@ public class DictionaryServiceImpl_CreateTest {
 
     @InjectMocks
     private DictionaryServiceImpl dictionaryService = new DictionaryServiceImpl();
+
+    @Spy
+    private ObjectMapper mapper = new ObjectMapper();
 
     @Mock
     private DictionaryRepository dictionaryRepository;
@@ -66,8 +91,37 @@ public class DictionaryServiceImpl_CreateTest {
     @Mock
     private AuditService auditService;
 
+    @Mock
+    private Appender<ILoggingEvent> appender;
+
+    @Mock
+    private DataEncryptor dataEncryptor;
+
+    @BeforeEach
+    public void setUp() {
+        Logger logger = (Logger) LoggerFactory.getLogger(DictionaryServiceImpl.class);
+        logger.addAppender(appender);
+    }
+
     @Test
-    public void shouldCreateWithExplicitKeyLegacy() throws TechnicalException {
+    public void should_reject_a_null_property_value() throws TechnicalException {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setKey("my-key");
+        newDictionary.setName("My Dictionary");
+        newDictionary.setType(DictionaryType.MANUAL);
+        Map<String, String> properties = new HashMap<>();
+        properties.put("hostname", null);
+        newDictionary.setProperties(properties);
+
+        assertThatThrownBy(() -> dictionaryService.create(GraviteeContext.getExecutionContext(), newDictionary))
+            .isInstanceOf(DictionaryPropertyValueRequiredException.class)
+            .hasMessageContaining("hostname");
+
+        verify(dictionaryRepository, never()).create(any(Dictionary.class));
+    }
+
+    @Test
+    public void should_create_with_explicit_key_legacy() throws TechnicalException {
         NewDictionaryEntity newDictionary = new NewDictionaryEntity();
         newDictionary.setKey("my-key");
         newDictionary.setName("My Dictionary");
@@ -83,14 +137,14 @@ public class DictionaryServiceImpl_CreateTest {
         assertThat(result.getId()).isNotBlank().isNotEqualTo("my-key");
         assertThat(result.getKey()).isEqualTo("my-key");
         assertThat(result.getName()).isEqualTo("My Dictionary");
-        assertThat(result.getProperties()).containsEntry("foo", "bar");
+        assertThat(result.getProperties()).containsExactlyEntriesOf(Map.of("foo", "bar"));
 
         verify(dictionaryRepository).create(argThat(dict -> "my-key".equals(dict.getKey()) && dict.getId() != null));
         verify(auditService).createAuditLog(any(), argThat(data -> data.getEvent().equals(DICTIONARY_CREATED)));
     }
 
     @Test
-    public void shouldCreateWithExplicitKeyWhenIdAlreadyTaken() throws TechnicalException {
+    public void should_create_with_explicit_key_when_id_already_taken() throws TechnicalException {
         NewDictionaryEntity newDictionary = new NewDictionaryEntity();
         newDictionary.setKey("my-key");
         newDictionary.setName("My Dictionary");
@@ -113,7 +167,7 @@ public class DictionaryServiceImpl_CreateTest {
     }
 
     @Test
-    public void shouldCreateWithGeneratedKeyWhenKeyIsNull() throws TechnicalException {
+    public void should_create_with_generated_key_when_key_is_null() throws TechnicalException {
         NewDictionaryEntity newDictionary = new NewDictionaryEntity();
         newDictionary.setName("My Dictionary");
         newDictionary.setType(DictionaryType.MANUAL);
@@ -130,7 +184,7 @@ public class DictionaryServiceImpl_CreateTest {
     }
 
     @Test
-    public void shouldNotCreateWhenKeyAlreadyExistsInSameEnvironment() throws TechnicalException {
+    public void should_not_create_when_key_already_exists_in_same_environment() throws TechnicalException {
         NewDictionaryEntity newDictionary = new NewDictionaryEntity();
         newDictionary.setKey("my-key");
         newDictionary.setName("My Dictionary");
@@ -148,7 +202,7 @@ public class DictionaryServiceImpl_CreateTest {
     }
 
     @Test
-    public void shouldNotCreateWhenExplicitKeyMatchesExistingIdInSameEnvironment() throws TechnicalException {
+    public void should_not_create_when_explicit_key_matches_existing_id_in_same_environment() throws TechnicalException {
         NewDictionaryEntity newDictionary = new NewDictionaryEntity();
         newDictionary.setKey("idp-server-details");
         newDictionary.setName("tf_idp-server-details");
@@ -169,7 +223,132 @@ public class DictionaryServiceImpl_CreateTest {
     }
 
     @Test
-    public void shouldSetStoppedStateOnCreate() throws TechnicalException {
+    public void should_create_dictionary_with_encrypted_property_declared_by_caller() throws TechnicalException, GeneralSecurityException {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setKey("my-key");
+        newDictionary.setName("My Dictionary");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("plain", "plain-value", "secret", "cipher"));
+        newDictionary.setPropertyOptions(Map.of("secret", DictionaryPropertyOptions.builder().encrypted(true).build()));
+
+        when(dictionaryRepository.findById("my-key")).thenReturn(Optional.empty());
+        when(dictionaryRepository.findByKeyAndEnvironment("my-key", ENVIRONMENT_ID)).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any(Dictionary.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(dataEncryptor.decrypt("cipher")).thenReturn("plaintext");
+        dictionaryService.create(GraviteeContext.getExecutionContext(), newDictionary);
+
+        verify(dictionaryRepository).create(
+            argThat(
+                dict ->
+                    dict.getProperties().get("secret").encrypted() &&
+                    dict.getProperties().get("secret").value().equals("cipher") &&
+                    !dict.getProperties().get("plain").encrypted() &&
+                    dict.getProperties().get("plain").value().equals("plain-value")
+            )
+        );
+    }
+
+    @Test
+    public void should_not_log_encrypted_property_values_on_create() throws Exception {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setKey("my-key");
+        newDictionary.setName("My Dictionary");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("secret", "super-secret-value"));
+        newDictionary.setPropertyOptions(Map.of("secret", DictionaryPropertyOptions.builder().encrypted(true).build()));
+
+        when(dictionaryRepository.findById("my-key")).thenReturn(Optional.empty());
+        when(dictionaryRepository.findByKeyAndEnvironment("my-key", ENVIRONMENT_ID)).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any(Dictionary.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(dataEncryptor.encrypt("super-secret-value")).thenReturn("ENC(cipher)");
+
+        dictionaryService.create(GraviteeContext.getExecutionContext(), newDictionary);
+
+        verify(appender, never()).doAppend(argThat(event -> event.getFormattedMessage().contains("super-secret-value")));
+    }
+
+    @Test
+    public void should_mark_audit_as_encrypted_when_a_property_is_encrypted() throws Exception {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setName("my-dict");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("secret", "s3cr3t"));
+        newDictionary.setPropertyOptions(Map.of("secret", DictionaryPropertyOptions.builder().encryptable(true).build()));
+
+        when(dictionaryRepository.findById(any())).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(dataEncryptor.encrypt("s3cr3t")).thenReturn("ENCRYPTED");
+
+        dictionaryService.create(new ExecutionContext(GraviteeContext.getCurrentOrganization(), ENVIRONMENT_ID), newDictionary);
+
+        verify(auditService).createAuditLog(
+            any(ExecutionContext.class),
+            argThat(data -> "true".equals(data.getProperties().get(ENCRYPTED)))
+        );
+    }
+
+    @Test
+    public void should_not_mark_audit_as_encrypted_when_no_property_is_encrypted() throws TechnicalException {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setName("my-dict");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("plain", "value"));
+
+        when(dictionaryRepository.findById(any())).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        dictionaryService.create(new ExecutionContext(GraviteeContext.getCurrentOrganization(), ENVIRONMENT_ID), newDictionary);
+
+        verify(auditService).createAuditLog(any(ExecutionContext.class), argThat(data -> !data.getProperties().containsKey(ENCRYPTED)));
+    }
+
+    @Test
+    public void should_audit_only_the_fingerprint_of_an_encrypted_property_on_create() throws Exception {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setName("my-dict");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("secret", "s3cr3t", "plain", "plain-value"));
+        newDictionary.setPropertyOptions(Map.of("secret", DictionaryPropertyOptions.builder().encryptable(true).build()));
+
+        when(dictionaryRepository.findById(any())).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(dataEncryptor.encrypt("s3cr3t")).thenReturn("CIPHER-OF-S3CR3T");
+
+        dictionaryService.create(new ExecutionContext(GraviteeContext.getCurrentOrganization(), ENVIRONMENT_ID), newDictionary);
+
+        JsonNode patch = DictionaryAuditPatch.capturedPatch(auditService);
+        assertThat(patch).contains(
+            json(
+                """
+                {"op":"add","path":"/properties","value":{"secret":{"value":"<sha256:e0b6daa9e5b1247e71610b26c5b48482b03daf2c445d853458ae04afce4af65b>","encrypted":true},"plain":"plain-value"}}
+                """
+            )
+        );
+        assertThat(patch.toString()).doesNotContain("CIPHER-OF-S3CR3T").doesNotContain("s3cr3t");
+        verify(dictionaryRepository).create(
+            argThat(dict -> new DictionaryProperty("CIPHER-OF-S3CR3T", true).equals(dict.getProperties().get("secret")))
+        );
+    }
+
+    @Test
+    public void should_not_audit_the_value_of_an_encrypted_property_whose_key_contains_a_slash() throws Exception {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setName("my-dict");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("db/pass~word", "s3cr3t"));
+        newDictionary.setPropertyOptions(Map.of("db/pass~word", DictionaryPropertyOptions.builder().encryptable(true).build()));
+
+        when(dictionaryRepository.findById(any())).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(dataEncryptor.encrypt("s3cr3t")).thenReturn("CIPHER-OF-S3CR3T");
+
+        dictionaryService.create(new ExecutionContext(GraviteeContext.getCurrentOrganization(), ENVIRONMENT_ID), newDictionary);
+
+        assertThat(DictionaryAuditPatch.capturedPatch(auditService).toString()).doesNotContain("CIPHER-OF-S3CR3T").contains("db/pass~word");
+    }
+
+    @Test
+    public void should_set_stopped_state_on_create() throws TechnicalException {
         NewDictionaryEntity newDictionary = new NewDictionaryEntity();
         newDictionary.setKey("my-key");
         newDictionary.setName("My Dictionary");
@@ -190,5 +369,83 @@ public class DictionaryServiceImpl_CreateTest {
                     ENVIRONMENT_ID.equals(dict.getEnvironmentId())
             )
         );
+    }
+
+    @Test
+    public void should_carry_the_encryption_policy_through_create() throws TechnicalException {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setKey("my-key");
+        newDictionary.setName("My Dictionary");
+        newDictionary.setType(DictionaryType.DYNAMIC);
+        io.gravitee.rest.api.model.configuration.dictionary.DictionaryEncryptionPolicyEntity encryption =
+            new io.gravitee.rest.api.model.configuration.dictionary.DictionaryEncryptionPolicyEntity();
+        encryption.setEncryptOnFetch(true);
+        newDictionary.setEncryption(encryption);
+
+        when(dictionaryRepository.findById("my-key")).thenReturn(Optional.empty());
+        when(dictionaryRepository.findByKeyAndEnvironment("my-key", ENVIRONMENT_ID)).thenReturn(Optional.empty());
+        when(dictionaryRepository.create(any(Dictionary.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        dictionaryService.create(GraviteeContext.getExecutionContext(), newDictionary);
+
+        verify(dictionaryRepository).create(argThat(dict -> dict.getEncryption() != null && dict.getEncryption().isEncryptOnFetch()));
+    }
+
+    static Stream<Arguments> decryptionFailures() {
+        return Stream.of(
+            Arguments.of("not base64", new IllegalArgumentException("Illegal base64 character 20")),
+            Arguments.of("wrong key", new GeneralSecurityException("Given final block not properly padded"))
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("decryptionFailures")
+    public void should_reject_a_declared_ciphertext_that_does_not_decrypt(String description, Exception decryptionFailure)
+        throws TechnicalException, GeneralSecurityException {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setKey("my-key");
+        newDictionary.setName("My Dictionary");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("secret", "not-a-ciphertext"));
+        newDictionary.setPropertyOptions(Map.of("secret", DictionaryPropertyOptions.builder().encrypted(true).build()));
+
+        when(dictionaryRepository.findById("my-key")).thenReturn(Optional.empty());
+        when(dictionaryRepository.findByKeyAndEnvironment("my-key", ENVIRONMENT_ID)).thenReturn(Optional.empty());
+        when(dataEncryptor.decrypt("not-a-ciphertext")).thenThrow(decryptionFailure);
+
+        assertThatThrownBy(() -> dictionaryService.create(GraviteeContext.getExecutionContext(), newDictionary))
+            .isInstanceOf(InvalidDictionaryPropertyOptionsException.class)
+            .hasMessageContaining("secret")
+            .hasMessageNotContaining("not-a-ciphertext");
+        verify(dictionaryRepository, never()).create(any(Dictionary.class));
+    }
+
+    static Stream<Arguments> optionsSentWithTheMask() {
+        return Stream.of(
+            Arguments.of("no options", null),
+            Arguments.of("encrypted", Map.of("secret", DictionaryPropertyOptions.builder().encrypted(true).build())),
+            Arguments.of("encryptable", Map.of("secret", DictionaryPropertyOptions.builder().encryptable(true).build()))
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("optionsSentWithTheMask")
+    public void should_reject_the_mask_on_create(String description, Map<String, DictionaryPropertyOptions> options)
+        throws TechnicalException {
+        NewDictionaryEntity newDictionary = new NewDictionaryEntity();
+        newDictionary.setKey("my-key");
+        newDictionary.setName("My Dictionary");
+        newDictionary.setType(DictionaryType.MANUAL);
+        newDictionary.setProperties(Map.of("secret", ENCRYPTED_VALUE_MASK));
+        newDictionary.setPropertyOptions(options);
+
+        when(dictionaryRepository.findById("my-key")).thenReturn(Optional.empty());
+        when(dictionaryRepository.findByKeyAndEnvironment("my-key", ENVIRONMENT_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> dictionaryService.create(GraviteeContext.getExecutionContext(), newDictionary))
+            .isInstanceOf(DictionaryPropertyMaskedValueException.class)
+            .hasMessageContaining("secret");
+        verify(dictionaryRepository, never()).create(any(Dictionary.class));
+        verifyNoInteractions(dataEncryptor);
     }
 }

@@ -30,15 +30,19 @@ import io.gravitee.rest.api.model.MembershipMemberType;
 import io.gravitee.rest.api.model.MembershipReferenceType;
 import io.gravitee.rest.api.model.RoleEntity;
 import io.gravitee.rest.api.model.UserEntity;
+import io.gravitee.rest.api.model.parameters.Key;
+import io.gravitee.rest.api.model.parameters.ParameterReferenceType;
 import io.gravitee.rest.api.security.cookies.CookieGenerator;
 import io.gravitee.rest.api.security.filter.TokenAuthenticationFilter;
 import io.gravitee.rest.api.service.MembershipService;
+import io.gravitee.rest.api.service.ParameterService;
 import io.gravitee.rest.api.service.UserService;
+import io.gravitee.rest.api.service.auth.IdpOAuthTokenResponseUtils;
+import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
 import io.gravitee.rest.api.service.common.JWTHelper;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.ws.rs.core.Response;
 import java.io.IOException;
 import java.time.Duration;
@@ -84,6 +88,9 @@ public abstract class AbstractAuthenticationResource {
     @Autowired
     protected CookieGenerator cookieGenerator;
 
+    @Autowired
+    protected ParameterService parameterService;
+
     protected Map<String, Object> getResponseEntity(final Response response) throws IOException {
         return getEntity((getResponseEntityAsString(response)));
     }
@@ -104,11 +111,15 @@ public abstract class AbstractAuthenticationResource {
         final String idToken
     ) {
         UserEntity user = userService.connect(GraviteeContext.getExecutionContext(), userId);
-        return this.connectUserInternal(user, state, servletResponse, accessToken, idToken);
+        return this.connectUserInternal(user, state, servletResponse, accessToken, idToken, null);
     }
 
     protected void connectUser(UserEntity user, final HttpServletResponse servletResponse) {
-        this.connectUserInternal(user, null, servletResponse, null, null);
+        this.connectUserInternal(user, null, servletResponse, null, null, null);
+    }
+
+    protected void connectUser(UserEntity user, final HttpServletResponse servletResponse, Map<String, String> additionalClaims) {
+        this.connectUserInternal(user, null, servletResponse, null, null, additionalClaims);
     }
 
     protected Response connectUserInternal(
@@ -116,9 +127,10 @@ public abstract class AbstractAuthenticationResource {
         final String state,
         final HttpServletResponse servletResponse,
         final String accessToken,
-        final String idToken
+        final String idToken,
+        final Map<String, String> additionalClaims
     ) {
-        TokenEntity tokenEntity = generateToken(user, state, accessToken, idToken, null);
+        TokenEntity tokenEntity = generateToken(user, state, accessToken, idToken, null, additionalClaims);
 
         final Cookie bearerCookie = cookieGenerator.generate(
             TokenAuthenticationFilter.AUTH_COOKIE_NAME,
@@ -130,7 +142,7 @@ public abstract class AbstractAuthenticationResource {
     }
 
     protected TokenEntity generateToken(final UserEntity user, final Integer expireAfter) {
-        return generateToken(user, null, null, null, expireAfter);
+        return generateToken(user, null, null, null, expireAfter, null);
     }
 
     protected TokenEntity generateToken(
@@ -138,7 +150,8 @@ public abstract class AbstractAuthenticationResource {
         final String state,
         final String accessToken,
         final String idToken,
-        final Integer expireAfter
+        final Integer expireAfter,
+        final Map<String, String> additionalClaims
     ) {
         final Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
@@ -175,7 +188,7 @@ public abstract class AbstractAuthenticationResource {
                 )
             );
 
-        final String token = JWT.create()
+        var jwtBuilder = JWT.create()
             .withIssuer(environment.getProperty("jwt.issuer", DEFAULT_JWT_ISSUER))
             .withIssuedAt(issueAt)
             .withExpiresAt(Date.from(expireAt))
@@ -185,20 +198,41 @@ public abstract class AbstractAuthenticationResource {
             .withClaim(JWTHelper.Claims.FIRSTNAME, user.getFirstname())
             .withClaim(JWTHelper.Claims.LASTNAME, user.getLastname())
             .withClaim(JWTHelper.Claims.ORG, user.getOrganizationId())
-            .withJWTId(UUID.randomUUID().toString())
-            .sign(algorithm);
+            .withJWTId(UUID.randomUUID().toString());
+
+        if (additionalClaims != null) {
+            additionalClaims.forEach(jwtBuilder::withClaim);
+        }
+
+        final String token = jwtBuilder.sign(algorithm);
 
         final TokenEntity tokenEntity = new TokenEntity();
         tokenEntity.setType(BEARER);
         tokenEntity.setToken(token);
-        if (idToken != null) {
-            tokenEntity.setAccessToken(accessToken);
-            tokenEntity.setIdToken(idToken);
-        }
+        applyIdpTokensIfExposed(tokenEntity, accessToken, idToken);
 
         if (state != null && !state.isEmpty()) {
             tokenEntity.setState(state);
         }
         return tokenEntity;
+    }
+
+    private void applyIdpTokensIfExposed(final TokenEntity tokenEntity, final String accessToken, final String idToken) {
+        if (accessToken == null && idToken == null) {
+            return;
+        }
+        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        boolean exposeAccessToken = parameterService.findAsBoolean(
+            executionContext,
+            Key.CONSOLE_AUTHENTICATION_EXPOSE_ACCESS_TOKEN,
+            ParameterReferenceType.SYSTEM
+        );
+        boolean exposeIdToken = parameterService.findAsBoolean(
+            executionContext,
+            Key.CONSOLE_AUTHENTICATION_EXPOSE_ID_TOKEN,
+            ParameterReferenceType.SYSTEM
+        );
+        IdpOAuthTokenResponseUtils.accessTokenField(accessToken, idToken, exposeAccessToken).ifPresent(tokenEntity::setAccessToken);
+        IdpOAuthTokenResponseUtils.idTokenField(idToken, exposeIdToken).ifPresent(tokenEntity::setIdToken);
     }
 }

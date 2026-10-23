@@ -17,6 +17,7 @@ package io.gravitee.apim.infra.query_service.analytics_engine;
 
 import io.gravitee.apim.core.analytics_engine.model.FacetsRequest;
 import io.gravitee.apim.core.analytics_engine.model.FacetsResponse;
+import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresRequest;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresResponse;
 import io.gravitee.apim.core.analytics_engine.model.MetricSpec;
@@ -24,6 +25,7 @@ import io.gravitee.apim.core.analytics_engine.model.TimeSeriesRequest;
 import io.gravitee.apim.core.analytics_engine.model.TimeSeriesResponse;
 import io.gravitee.apim.core.analytics_engine.query_service.AnalyticsEngineQueryService;
 import io.gravitee.apim.infra.adapter.AnalyticsMeasuresAdapter;
+import io.gravitee.repository.analytics.engine.api.query.AnalyticsSearchPath;
 import io.gravitee.repository.log.v4.api.AnalyticsRepository;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.util.Set;
@@ -44,6 +46,11 @@ public class MessageDataPlaneQueryService implements AnalyticsEngineQueryService
     }
 
     @Override
+    public boolean narrowsBy(MetricSpec.Name metric, FilterSpec.Name filter) {
+        return IgnoredFilters.narrows(analyticsRepository, AnalyticsSearchPath.MESSAGE, filter);
+    }
+
+    @Override
     public Set<MetricSpec.Name> metrics() {
         return Set.of(
             MetricSpec.Name.MESSAGE_PAYLOAD_SIZE,
@@ -57,20 +64,29 @@ public class MessageDataPlaneQueryService implements AnalyticsEngineQueryService
     public MeasuresResponse searchMeasures(ExecutionContext context, MeasuresRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchMessageMeasures(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.MESSAGE, query)
+        );
     }
 
     @Override
     public FacetsResponse searchFacets(ExecutionContext context, FacetsRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchMessageFacets(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.MESSAGE, query)
+        );
     }
 
     @Override
     public TimeSeriesResponse searchTimeSeries(ExecutionContext context, TimeSeriesRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchMessageTimeSeries(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.MESSAGE, query)
+        );
     }
 }

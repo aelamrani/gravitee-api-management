@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { apimFetchJsonV1Env, apimFetchJsonV2 } from '../../../shared/api/apimClient';
+import { apimFetchBlobV2, apimFetchJsonV1Env, apimFetchJsonV2 } from '../../../shared/api/apimClient';
 import type {
     ApiKey,
     ApiKeyPage,
@@ -27,6 +27,7 @@ import type {
     SubscriptionPage,
     SubscriptionStatus,
 } from '../types/subscription';
+import { dateInputToOffsetDateTime } from '../utils/dateInputToOffsetDateTime';
 
 function buildQuery(params: Record<string, string | string[] | number | boolean | undefined>): string {
     const p = new URLSearchParams();
@@ -43,28 +44,38 @@ const entityBase = (ctx: SubscriptionContext) =>
 
 const sub = (ctx: SubscriptionContext, subId: string) => `${entityBase(ctx)}/subscriptions/${encodeURIComponent(subId)}`;
 
-export async function listSubscriptions(
-    envId: string,
-    ctx: SubscriptionContext,
-    filters: {
-        statuses?: SubscriptionStatus[];
-        planIds?: string[];
-        applicationIds?: string[];
-        apiKey?: string;
-        page?: number;
-        perPage?: number;
-    },
-): Promise<SubscriptionPage> {
-    const q = buildQuery({
+interface SubscriptionListFilters {
+    statuses?: SubscriptionStatus[];
+    planIds?: string[];
+    applicationIds?: string[];
+    apiKey?: string;
+    page?: number;
+    perPage?: number;
+}
+
+function subscriptionFiltersQuery(filters: SubscriptionListFilters) {
+    return {
         statuses: filters.statuses,
         planIds: filters.planIds,
         applicationIds: filters.applicationIds,
         apiKey: filters.apiKey,
         page: filters.page ?? 1,
         perPage: filters.perPage ?? 10,
-        expands: 'plan,application',
-    });
+    };
+}
+
+export async function listSubscriptions(
+    envId: string,
+    ctx: SubscriptionContext,
+    filters: SubscriptionListFilters,
+): Promise<SubscriptionPage> {
+    const q = buildQuery({ ...subscriptionFiltersQuery(filters), expands: 'plan,application' });
     return apimFetchJsonV2<SubscriptionPage>(envId, `${entityBase(ctx)}/subscriptions${q}`);
+}
+
+export async function exportSubscriptionsCsv(envId: string, apiId: string, filters: SubscriptionListFilters): Promise<Blob> {
+    const q = buildQuery(subscriptionFiltersQuery(filters));
+    return apimFetchBlobV2(envId, `/apis/${encodeURIComponent(apiId)}/subscriptions/_export${q}`);
 }
 
 export async function getSubscription(envId: string, ctx: SubscriptionContext, subscriptionId: string): Promise<Subscription> {
@@ -77,6 +88,17 @@ export async function createSubscription(
     payload: CreateSubscriptionPayload,
 ): Promise<Subscription> {
     return apimFetchJsonV2<Subscription>(envId, `${entityBase(ctx)}/subscriptions`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function verifyCustomApiKey(
+    envId: string,
+    ctx: SubscriptionContext,
+    payload: { applicationId: string; apiKey: string },
+): Promise<{ ok: boolean }> {
+    return apimFetchJsonV2<{ ok: boolean }>(envId, `${entityBase(ctx)}/subscriptions/_verify`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
 }
 
 export async function transferSubscription(
@@ -107,9 +129,24 @@ export async function updateSubscriptionEndDate(
     envId: string,
     ctx: SubscriptionContext,
     subscriptionId: string,
+    subscription: Pick<Subscription, 'startingAt' | 'consumerConfiguration' | 'metadata'>,
     endingAt: string | null,
 ): Promise<Subscription> {
-    return apimFetchJsonV2<Subscription>(envId, sub(ctx, subscriptionId), { method: 'PUT', body: JSON.stringify({ endingAt }) });
+    return apimFetchJsonV2<Subscription>(envId, sub(ctx, subscriptionId), {
+        method: 'PUT',
+        body: JSON.stringify({
+            startingAt: toOffsetDateTime(subscription.startingAt),
+            endingAt,
+            consumerConfiguration: subscription.consumerConfiguration,
+            metadata: subscription.metadata,
+        }),
+    });
+}
+
+/** Management API v2 dates are OffsetDateTime. A calendar date (`YYYY-MM-DD`) fails deserialization. */
+function toOffsetDateTime(value: string | undefined): string | undefined {
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    return dateInputToOffsetDateTime(value);
 }
 
 export async function listApiKeys(
@@ -122,8 +159,18 @@ export async function listApiKeys(
     return apimFetchJsonV2<ApiKeyPage>(envId, `${sub(ctx, subscriptionId)}/api-keys${buildQuery({ page, perPage })}`);
 }
 
-export async function renewApiKey(envId: string, ctx: SubscriptionContext, subscriptionId: string): Promise<ApiKey> {
-    return apimFetchJsonV2<ApiKey>(envId, `${sub(ctx, subscriptionId)}/api-keys/_renew`, { method: 'POST', body: JSON.stringify({}) });
+export async function renewApiKey(envId: string, ctx: SubscriptionContext, subscriptionId: string, customApiKey?: string): Promise<ApiKey> {
+    return apimFetchJsonV2<ApiKey>(envId, `${sub(ctx, subscriptionId)}/api-keys/_renew`, {
+        method: 'POST',
+        body: JSON.stringify(customApiKey ? { customApiKey } : {}),
+    });
+}
+
+export async function reactivateApiKey(envId: string, ctx: SubscriptionContext, subscriptionId: string, apiKeyId: string): Promise<ApiKey> {
+    return apimFetchJsonV2<ApiKey>(envId, `${sub(ctx, subscriptionId)}/api-keys/${encodeURIComponent(apiKeyId)}/_reactivate`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    });
 }
 
 export async function revokeApiKey(envId: string, ctx: SubscriptionContext, subscriptionId: string, apiKeyId: string): Promise<void> {
@@ -181,14 +228,87 @@ export async function listApiPlans(envId: string, ctx: SubscriptionContext): Pro
     return apimFetchJsonV2<PlanPage>(envId, `${entityBase(ctx)}/plans${buildQuery({ statuses: 'PUBLISHED', perPage: 100 })}`);
 }
 
+interface ApiSubscriberEntry {
+    id: string;
+    name?: string;
+}
+
+interface ApiSubscribersPage {
+    data?: ApiSubscriberEntry[];
+    pagination?: { totalCount?: number };
+}
+
+/** Applications subscribed to an API (Classic `getSubscribers`). */
+export async function listApiSubscribers(
+    envId: string,
+    apiId: string,
+    options?: { page?: number; perPage?: number; name?: string; signal?: AbortSignal },
+): Promise<ApiSubscribersPage> {
+    const q = buildQuery({
+        page: options?.page ?? 1,
+        perPage: options?.perPage ?? 100,
+        name: options?.name,
+    });
+    return apimFetchJsonV2<ApiSubscribersPage>(envId, `/apis/${encodeURIComponent(apiId)}/subscribers${q}`, { signal: options?.signal });
+}
+
+/** Fetches every subscriber page for alert filter pickers. */
+export async function listAllApiSubscribers(envId: string, apiId: string): Promise<ApiSubscriberEntry[]> {
+    const perPage = 100;
+    const all: ApiSubscriberEntry[] = [];
+    let page = 1;
+    let totalCount: number | undefined;
+    while (page <= 100) {
+        const response = await listApiSubscribers(envId, apiId, { page, perPage });
+        const batch = response.data ?? [];
+        all.push(...batch);
+        totalCount = response.pagination?.totalCount ?? totalCount;
+        if (batch.length === 0) {
+            break;
+        }
+        if (totalCount !== undefined && all.length >= totalCount) {
+            break;
+        }
+        if (batch.length < perPage) {
+            break;
+        }
+        page += 1;
+    }
+    return all;
+}
+
 interface V1ApplicationEntry {
     id: string;
     name: string;
     description?: string;
     type?: string;
     apiKeyMode?: Application['apiKeyMode'];
+    /** V1 application search returns snake_case. */
+    api_key_mode?: Application['apiKeyMode'];
     owner?: { displayName: string; id?: string; email?: string };
     primaryOwner?: { displayName: string; id?: string; email?: string };
+}
+
+/** V1 application subscription row used to decide exclusive vs shared API key mode. */
+export interface ApplicationApiKeySubscriptionRef {
+    api?: string;
+    referenceType?: string;
+    referenceId?: string;
+}
+
+/**
+ * Lists the application's active API-key subscriptions (classic
+ * `ApplicationService.getSubscriptionsPage` with ACCEPTED/PENDING/PAUSED + API_KEY).
+ */
+export async function listApplicationApiKeySubscriptions(
+    envId: string,
+    applicationId: string,
+): Promise<ApplicationApiKeySubscriptionRef[]> {
+    const res = await apimFetchJsonV1Env<{ data?: ApplicationApiKeySubscriptionRef[] }>(
+        envId,
+        `/applications/${applicationId}/subscriptions?page=1&size=20&status=ACCEPTED,PENDING,PAUSED&security_types=API_KEY`,
+    );
+    return res.data ?? [];
 }
 
 export async function searchApplications(envId: string, query: string): Promise<ApplicationPage> {
@@ -202,7 +322,7 @@ export async function searchApplications(envId: string, query: string): Promise<
             name: app.name,
             description: app.description,
             type: app.type,
-            apiKeyMode: app.apiKeyMode,
+            apiKeyMode: app.apiKeyMode ?? app.api_key_mode,
             primaryOwner: app.primaryOwner ?? (app.owner ? { displayName: app.owner.displayName } : undefined),
         }),
     );

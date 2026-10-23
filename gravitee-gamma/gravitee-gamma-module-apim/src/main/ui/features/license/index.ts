@@ -21,3 +21,4 @@ export {
     type FeatureUpgradeContent,
 } from './apimFeatures';
 export { RequireFeatureLicense } from './RequireFeatureLicense';
+export { useFederationEnabled } from './useFederationEnabled';

@@ -13,10 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { useHasFeature } from '@gravitee/gamma-modules-sdk';
 import { Button, Skeleton } from '@gravitee/graphene-core';
 import { ArrowLeftIcon } from '@gravitee/graphene-core/icons';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
+
+import { useHasFeature } from '@gravitee/gamma-modules-sdk';
 
 import { RoleForm, type RoleFormSubmitValues } from '../features/roles/components/RoleForm';
 import { useCreateRole, useUpdateRole } from '../features/roles/hooks/useRoleMutations';
@@ -67,11 +68,6 @@ export function RoleFormPage() {
         return <SectionError message="Failed to load this role. Please refresh and try again." />;
     }
 
-    // EXPLORER/AI_WORKSPACE have no permissions-by-scope entry (Angular's getPermissionsByScope throws for
-    // them, so Classic's create form never renders for these scopes at all). Rendering an empty, still-usable
-    // matrix here is new capability, not a port of existing behavior — flag it as such in review, since it's
-    // a product decision (whether custom roles should be creatable in these scopes) rather than a parity fix.
-    // See PR discussion; do not treat this comment's presence alone as product sign-off.
     const permissionNames = isPermissionEligibleScope(scope) ? (permissionsByScopes?.[scope] ?? []) : [];
     const systemRoleEditionEnabled = Boolean(settings?.management?.systemRoleEdition?.enabled);
     const isReadOnly = isRoleReadOnly(role ?? { scope, name: roleName ?? '', system: false }, systemRoleEditionEnabled);
@@ -105,7 +101,7 @@ export function RoleFormPage() {
             <div>
                 <Button variant="ghost" size="sm" className="-ml-2 mb-3 text-muted-foreground" onClick={goBack}>
                     <ArrowLeftIcon className="size-4" aria-hidden />
-                    Back to roles
+                    Back to Roles
                 </Button>
                 <h1 className="text-2xl font-semibold tracking-tight">
                     {isEditMode ? 'Update' : 'Create'} role in the {ROLE_SCOPE_LABELS[scope]} scope

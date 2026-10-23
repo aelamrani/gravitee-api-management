@@ -17,4 +17,16 @@
 export const integrationKeys = {
     all: ['environment-integrations'] as const,
     list: (envId: string, page: number, perPage: number) => [...integrationKeys.all, 'list', envId, page, perPage] as const,
+    detail: (envId: string, integrationId: string) => [...integrationKeys.all, 'detail', envId, integrationId] as const,
+    permissions: (envId: string, integrationId: string) => [...integrationKeys.all, 'permissions', envId, integrationId] as const,
+    federatedApis: (envId: string, integrationId: string) => [...integrationKeys.all, 'federated-apis', envId, integrationId] as const,
+    federatedApisList: (envId: string, integrationId: string, page: number, perPage: number) =>
+        [...integrationKeys.federatedApis(envId, integrationId), 'list', page, perPage] as const,
+    preview: (envId: string, integrationId: string) => [...integrationKeys.all, 'preview', envId, integrationId] as const,
+    members: (envId: string, integrationId: string) => [...integrationKeys.all, 'members', envId, integrationId] as const,
+    groupMembership: (envId: string, integrationId: string, groupId: string) =>
+        [...integrationKeys.all, 'group-membership', envId, integrationId, groupId] as const,
+    groups: (envId: string, groupIdsKey: string) => [...integrationKeys.all, 'groups', envId, groupIdsKey] as const,
+    environmentGroups: (envId: string) => [...integrationKeys.all, 'environment-groups', envId] as const,
+    roles: () => [...integrationKeys.all, 'roles'] as const,
 } as const;

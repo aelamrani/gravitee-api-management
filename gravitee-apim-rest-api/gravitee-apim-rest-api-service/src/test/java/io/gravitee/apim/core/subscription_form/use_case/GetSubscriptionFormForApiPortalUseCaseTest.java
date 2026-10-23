@@ -34,8 +34,10 @@ import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationApiVisib
 import io.gravitee.apim.core.portal_page.model.PortalNavigationApi;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItem;
 import io.gravitee.apim.core.portal_page.model.PortalNavigationItemId;
+import io.gravitee.apim.core.subscription_form.domain_service.SubscriptionFormResolutionDomainService;
 import io.gravitee.apim.core.subscription_form.exception.SubscriptionFormNotFoundException;
 import io.gravitee.apim.core.subscription_form.model.SubscriptionForm;
+import io.gravitee.apim.core.subscription_form.model.SubscriptionFormId;
 import io.gravitee.apim.infra.domain_service.subscription_form.SubscriptionFormSchemaGeneratorImpl;
 import java.util.List;
 import java.util.Map;
@@ -76,7 +78,12 @@ class GetSubscriptionFormForApiPortalUseCaseTest {
             apiQueryService
         );
         var visibility = new PortalNavigationApiVisibilityDomainService(navQueryService, apiMembershipDomainService);
-        useCase = new GetSubscriptionFormForApiPortalUseCase(visibility, queryService, schemaGenerator, elResolver);
+        useCase = new GetSubscriptionFormForApiPortalUseCase(
+            visibility,
+            new SubscriptionFormResolutionDomainService(queryService),
+            schemaGenerator,
+            elResolver
+        );
     }
 
     @Test
@@ -141,8 +148,27 @@ class GetSubscriptionFormForApiPortalUseCaseTest {
     @Test
     void should_throw_when_form_disabled() {
         navQueryService.initWith(List.of(publishedApiNavItem(API_ID, PortalVisibility.PUBLIC)));
-        SubscriptionForm disabledForm = SubscriptionFormFixtures.aSubscriptionFormBuilder().environmentId(ENV_ID).enabled(false).build();
+        SubscriptionForm disabledForm = SubscriptionFormFixtures.aSubscriptionFormBuilder()
+            .environmentId(ENV_ID)
+            .enabled(false)
+            .apiIds(List.of(API_ID))
+            .build();
         queryService.initWith(List.of(disabledForm));
+
+        var input = GetSubscriptionFormForApiPortalUseCase.Input.builder().environmentId(ENV_ID).apiId(API_ID).userId(null).build();
+
+        assertThatThrownBy(() -> useCase.execute(input)).isInstanceOf(SubscriptionFormNotFoundException.class);
+    }
+
+    @Test
+    void should_throw_when_the_api_has_no_dedicated_form() {
+        navQueryService.initWith(List.of(publishedApiNavItem(API_ID, PortalVisibility.PUBLIC)));
+        var formOfAnotherApi = SubscriptionFormFixtures.aSubscriptionFormBuilder()
+            .environmentId(ENV_ID)
+            .enabled(true)
+            .apiIds(List.of("another-api"))
+            .build();
+        queryService.initWith(List.of(formOfAnotherApi));
 
         var input = GetSubscriptionFormForApiPortalUseCase.Input.builder().environmentId(ENV_ID).apiId(API_ID).userId(null).build();
 
@@ -153,6 +179,7 @@ class GetSubscriptionFormForApiPortalUseCaseTest {
         return SubscriptionFormFixtures.aSubscriptionFormBuilder()
             .environmentId(ENV_ID)
             .enabled(true)
+            .apiIds(List.of(API_ID))
             .gmdContent(
                 io.gravitee.apim.core.gravitee_markdown.GraviteeMarkdown.of(
                     "<gmd-select fieldKey=\"env\" options=\"{#api.metadata['envs']}:Prod,Test\"/>"

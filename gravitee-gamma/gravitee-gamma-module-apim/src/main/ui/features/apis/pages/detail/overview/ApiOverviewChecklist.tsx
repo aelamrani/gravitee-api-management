@@ -19,6 +19,7 @@ import { OverviewChecklistCard, type OverviewChecklistItem } from '../../../../.
 import { useChecklistOverrides } from '../../../../../shared/hooks/useChecklistOverrides';
 import type { AlertTrigger, ApiDetailDto } from '../../../types';
 import type { MembersResponse } from '../../../types/members.types';
+import { hasTcpListeners } from '../../../utils/apiHttpProxy';
 import { hasDefaultEndpointGroupBackendSecurityConfigured } from '../../../utils/endpointGroupBackendSecurity';
 
 function buildChecklistItems(
@@ -30,26 +31,34 @@ function buildChecklistItems(
     const hasBackendSecurity = hasDefaultEndpointGroupBackendSecurityConfigured(api);
     const memberCount = membersData?.pagination?.totalCount ?? 0;
     const hasAlerts = Boolean(alertsData?.length);
+    const isTcp = hasTcpListeners(api);
 
     return [
         {
             id: 'endpoint-security',
             label: 'Configure backend security on your endpoint group',
-            tooltip: 'Set up SSL/TLS, proxy authentication, or upstream headers on the default endpoint group shared configuration.',
+            tooltip: isTcp
+                ? 'Set up SSL/TLS or SOCKS proxy authentication on the default TCP endpoint group shared configuration.'
+                : 'Set up SSL/TLS, proxy authentication, or upstream headers on the default endpoint group shared configuration.',
             to: '../endpoints/list?editGroup=0&step=configuration',
             icon: LockIcon,
             actionLabel: 'Open configuration',
             done: itemDone(hasBackendSecurity, 'endpoint-security'),
         },
-        {
-            id: 'security-policies',
-            label: 'Apply security policies',
-            tooltip: 'Use the Policy Studio to add rate limiting, transformations, or custom security policies to your API flows.',
-            to: '../policy-studio',
-            icon: WorkflowIcon,
-            actionLabel: 'Open Policy Studio',
-            done: itemDone(false, 'security-policies'),
-        },
+        ...(isTcp
+            ? []
+            : [
+                  {
+                      id: 'security-policies',
+                      label: 'Apply security policies',
+                      tooltip:
+                          'Use the Policy Studio to add rate limiting, transformations, or custom security policies to your API flows.',
+                      to: '../policy-studio',
+                      icon: WorkflowIcon,
+                      actionLabel: 'Open Policy Studio',
+                      done: itemDone(false, 'security-policies'),
+                  },
+              ]),
         {
             id: 'alerts',
             label: 'Set up alerts',

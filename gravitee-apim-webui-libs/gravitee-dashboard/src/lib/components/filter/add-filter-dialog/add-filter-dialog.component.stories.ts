@@ -114,6 +114,14 @@ const SAMPLE_DEFINITIONS: FilterDefinition[] = [
     operators: ['EQ'],
     apiTypes: ['HTTP_PROXY'],
   },
+  {
+    name: 'URI',
+    label: 'Request URI',
+    type: 'STRING',
+    operators: ['STARTS_WITH'],
+    apiTypes: ['HTTP_PROXY'],
+    signals: ['LOGS'],
+  },
 ];
 
 const MOCK_VALUES_BY_FILTER: Record<string, { value: string; label: string; id: string }[]> = {
@@ -193,7 +201,6 @@ function makeDirectRenderProviders(data: AddFilterDialogData = {}, valuesProvide
       provide: MatDialogRef,
       useValue: {
         close: (result?: FilterCondition) => {
-          // eslint-disable-next-line no-console
           console.log('[story] dialog closed with', result);
         },
       },

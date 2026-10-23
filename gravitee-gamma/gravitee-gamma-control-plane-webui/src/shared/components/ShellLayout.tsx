@@ -13,36 +13,46 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import {
-    AppContextBar,
-    AppLayout,
-    AppSidebar,
-    ContentHeader,
-    LayoutSlotsProvider,
-    TopNavUser,
-    useLayoutSlots,
-} from '@gravitee/graphene-core';
+import { useToHref } from '@gravitee/gamma-modules-sdk/routing';
+import { AppContextBar, AppLayout, AppSidebar, ContentHeader, LayoutSlotsProvider, useLayoutSlots } from '@gravitee/graphene-core';
 import { Globe } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Suspense, useCallback, useMemo } from 'react';
+import { Suspense, useCallback, useEffect, useMemo } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { ContentSkeleton } from './ContentSkeleton';
-import { useLogout, useUser } from '../../features/auth';
+import { UserMenu } from './UserMenu';
+import { useAvatarCacheBust, useLogout, useUser } from '../../features/auth';
 import { useEnvironmentStore } from '../../features/environment/environment.store';
-import { useEnvHrid, getPrimaryHrid } from '../../features/environment/environment.utils';
-import type { GammaModule } from '../../features/modules';
-import { HOME_ICON, MODULE_ICONS } from '../../features/modules';
+import { getPrimaryHrid } from '../../features/environment/environment.utils';
+import { useCurrentEnvHrid } from '../../features/environment/useCurrentEnvHrid';
+import {
+    PORTALS_MODULE_ID,
+    HOME_ICON,
+    MODULE_ICONS,
+    buildPortalNextEditorUrl,
+    findModuleProduct,
+    getModuleLabel,
+    isAccountModule,
+    modulePath,
+    orderByCatalog,
+    type GammaModule,
+} from '../../features/modules';
+import { currentUserAvatarUrl } from '../../pages/my-account/myAccount.mapping';
 import { PendingTasksBadge } from '../../pages/tasks';
+import { useBootstrapStore } from '../config/bootstrap.store';
 import { buildPathnameAfterEnvironmentChange, pathSegmentsAfterEnvironment } from '../config/routes';
 
 const GAMMA_APP_KEY = 'gamma-console';
+const DOCUMENT_TITLE_SUFFIX = 'Gravitee Gamma';
 
 const hostAppDefinition = {
     key: GAMMA_APP_KEY,
     label: 'Home',
+    // Only shown when Home sits in the grid, next to a pinned Account Management.
     description: 'Overview and quick actions',
     icon: <HOME_ICON className="size-5" />,
+    pinned: true,
 };
 
 function moduleIcon(moduleId: string): ReactNode {
@@ -50,29 +60,47 @@ function moduleIcon(moduleId: string): ReactNode {
     return Icon ? <Icon className="size-5" /> : <Globe size={20} />;
 }
 
-const MODULE_DESCRIPTIONS: Record<string, { label: string; description: string }> = {
-    aim: { label: 'Agent Management', description: 'Govern AI agents, MCPs, and LLMs' },
-    apim: { label: 'API Management', description: 'Design, deploy, and govern HTTP APIs' },
-    platform: { label: 'Platform Management', description: 'Apps, subscriptions, and usage' },
-    portals: { label: 'Developer Portals', description: 'Design and manage developer portal experiences' },
-    authz: { label: 'Authorization Management', description: 'Fine-grained authorization policies' },
-    esm: { label: 'Event Stream Management', description: 'Manage Kafka clusters, services, and event mesh' },
-    edge: { label: 'Edge Management', description: 'Monitor and manage Edge Daemons' },
-};
+function appPath(appKey: string, envHrid: string, modules: readonly GammaModule[]): string {
+    const module = modules.find(m => m.id === appKey);
+    return module ? modulePath(module, envHrid) : `/environments/${envHrid}/home`;
+}
 
-function buildAppDefinitions(modules: readonly GammaModule[]) {
+function buildAppDefinitions(modules: readonly GammaModule[], appHref: (appKey: string) => string | undefined) {
+    const accountModule = modules.find(isAccountModule);
+    // Home is environment-scoped: next to the account module it is one more app of the grid.
+    const pinnedAccountModule = accountModule
+        ? [
+              {
+                  key: accountModule.id,
+                  label: getModuleLabel(accountModule.id, accountModule.name),
+                  icon: moduleIcon(accountModule.id),
+                  href: appHref(accountModule.id),
+                  pinned: true,
+              },
+          ]
+        : [];
     return [
-        hostAppDefinition,
-        ...modules.map(m => ({
-            key: m.id,
-            label: MODULE_DESCRIPTIONS[m.id]?.label ?? m.name,
-            description: MODULE_DESCRIPTIONS[m.id]?.description ?? m.name,
-            icon: moduleIcon(m.id),
-        })),
+        ...pinnedAccountModule,
+        { ...hostAppDefinition, href: appHref(GAMMA_APP_KEY), pinned: !accountModule },
+        ...orderByCatalog(modules.filter(m => m !== accountModule)).map(m => {
+            const product = findModuleProduct(m.id);
+            return {
+                key: m.id,
+                label: product?.label ?? m.name,
+                description: product?.tagline ?? m.name,
+                icon: moduleIcon(m.id),
+                href: appHref(m.id),
+            };
+        }),
     ];
 }
 
 function resolveActiveAppKey(pathname: string, envHrid: string, modules: readonly GammaModule[]): string {
+    const first = pathname.split('/').filter(Boolean)[0];
+    const accountModule = modules.find(m => isAccountModule(m) && m.id === first);
+    if (accountModule) {
+        return accountModule.id;
+    }
     const rest = pathSegmentsAfterEnvironment(pathname, envHrid);
     if (rest.length === 0) {
         return GAMMA_APP_KEY;
@@ -88,18 +116,60 @@ function resolveActiveAppKey(pathname: string, envHrid: string, modules: readonl
     return GAMMA_APP_KEY;
 }
 
+/** Most specific first, so a tab truncated by the browser still shows which page it holds. */
+function buildDocumentTitle(breadcrumbLabels: readonly string[], appLabel: string | undefined): string {
+    const segments = [...breadcrumbLabels].reverse();
+    if (appLabel) {
+        segments.push(appLabel);
+    }
+    return [...segments, DOCUMENT_TITLE_SUFFIX].join(' · ');
+}
+
+function useDocumentTitle(title: string) {
+    useEffect(() => {
+        const previousTitle = document.title;
+        document.title = title;
+        return () => {
+            document.title = previousTitle;
+        };
+    }, [title]);
+}
+
 function ShellLayoutInner({ modules }: { readonly modules: readonly GammaModule[] }) {
     const user = useUser();
     const logout = useLogout();
     const navigate = useNavigate();
-    const envHrid = useEnvHrid();
     const { pathname } = useLocation();
     const { slots } = useLayoutSlots();
+    const cacheBust = useAvatarCacheBust();
+    const config = useBootstrapStore(s => s.config);
 
     const environments = useEnvironmentStore(s => s.environments);
+    const envHrid = useCurrentEnvHrid();
 
-    const apps = useMemo(() => buildAppDefinitions(modules), [modules]);
+    const toHref = useToHref();
+    const consoleUrl = config?.consoleUrl;
+    const apps = useMemo(
+        () =>
+            buildAppDefinitions(modules, appKey => {
+                if (appKey === PORTALS_MODULE_ID) {
+                    return consoleUrl ? buildPortalNextEditorUrl(consoleUrl, envHrid) : undefined;
+                }
+                return toHref(appPath(appKey, envHrid, modules));
+            }),
+        [consoleUrl, modules, toHref, envHrid],
+    );
     const activeAppKey = useMemo(() => resolveActiveAppKey(pathname, envHrid, modules), [pathname, envHrid, modules]);
+    const isAccountScoped = modules.some(m => m.id === activeAppKey && isAccountModule(m));
+
+    // Home is the host, not a product: its pages are titled by their breadcrumbs alone.
+    const activeAppLabel = activeAppKey === GAMMA_APP_KEY ? undefined : apps.find(app => app.key === activeAppKey)?.label;
+    useDocumentTitle(
+        buildDocumentTitle(
+            slots.breadcrumbs.map(crumb => crumb.label),
+            activeAppLabel,
+        ),
+    );
 
     const envItems = useMemo(
         () => environments.map(env => ({ key: getPrimaryHrid(env), label: env.name ?? getPrimaryHrid(env) })),
@@ -108,13 +178,15 @@ function ShellLayoutInner({ modules }: { readonly modules: readonly GammaModule[
 
     const handleAppChange = useCallback(
         (key: string) => {
-            if (key === GAMMA_APP_KEY) {
-                navigate(`/environments/${envHrid}/home`);
+            if (key === PORTALS_MODULE_ID) {
+                if (config?.consoleUrl) {
+                    window.open(buildPortalNextEditorUrl(config.consoleUrl, envHrid), '_blank', 'noopener,noreferrer');
+                }
                 return;
             }
-            navigate(`/environments/${envHrid}/${key}`);
+            navigate(appPath(key, envHrid, modules));
         },
-        [envHrid, navigate],
+        [config?.consoleUrl, envHrid, modules, navigate],
     );
 
     // `search` and `hash` are dropped along with the sub-path -- they carry filters and tabs that
@@ -155,7 +227,7 @@ function ShellLayoutInner({ modules }: { readonly modules: readonly GammaModule[
                             apps={apps}
                             activeAppKey={activeAppKey}
                             onAppChange={handleAppChange}
-                            environments={envItems}
+                            environments={isAccountScoped ? undefined : envItems}
                             activeEnvironmentKey={envHrid}
                             onEnvironmentChange={handleEnvironmentChange}
                         />
@@ -166,7 +238,17 @@ function ShellLayoutInner({ modules }: { readonly modules: readonly GammaModule[
                         user ? (
                             <div className="flex items-center gap-3">
                                 <PendingTasksBadge />
-                                <TopNavUser name={user.displayName} email={user.email} onSignOut={handleSignOut} />
+                                <UserMenu
+                                    name={user.displayName}
+                                    email={user.email}
+                                    avatarSrc={
+                                        user.id && config
+                                            ? currentUserAvatarUrl(config.managementBaseURL, config.organizationId, user.id, cacheBust)
+                                            : undefined
+                                    }
+                                    onMyAccount={() => navigate(`/environments/${envHrid}/my-account`)}
+                                    onSignOut={handleSignOut}
+                                />
                             </div>
                         ) : undefined
                     }

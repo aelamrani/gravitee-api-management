@@ -332,7 +332,7 @@ public class IntegrationResourceTest extends AbstractResourceTest {
             var updatedDescription = "updated-description";
             var integration = List.<io.gravitee.apim.core.integration.model.Integration>of(IntegrationFixture.anApiIntegration());
             integrationCrudServiceInMemory.initWith(integration);
-            givenExistingGroup(List.of(Group.builder().id(groupId).name("group-name").build()));
+            givenExistingGroup(List.of(Group.builder().id(groupId).environmentId(ENVIRONMENT).name("group-name").build()));
 
             var updateIntegration = new io.gravitee.rest.api.management.v2.rest.model.UpdateIntegration()
                 .name(updatedName)
@@ -443,7 +443,11 @@ public class IntegrationResourceTest extends AbstractResourceTest {
             apiCrudServiceInMemory.initWith(List.of(ApiFixtures.aFederatedApi()));
 
             Response response = target.request().delete();
-            assertThat(response).hasStatus(HttpStatusCode.BAD_REQUEST_400);
+            assertThat(response)
+                .hasStatus(HttpStatusCode.BAD_REQUEST_400)
+                .asError()
+                .hasHttpStatus(HttpStatusCode.BAD_REQUEST_400)
+                .hasMessage("Associated APIs found for federation with id: " + INTEGRATION_ID);
         }
 
         @Test
@@ -493,7 +497,7 @@ public class IntegrationResourceTest extends AbstractResourceTest {
                 .hasStatus(200)
                 .asEntity(IngestedApisResponse.class)
                 .extracting(IngestedApisResponse::getPagination)
-                .isEqualTo(new Pagination().page(2).perPage(10).pageItemsCount(10).pageCount(2).totalCount(15L));
+                .isEqualTo(new Pagination().page(2).perPage(10).pageItemsCount(5).pageCount(2).totalCount(15L));
         }
 
         @Test

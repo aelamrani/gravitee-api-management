@@ -21,6 +21,7 @@ import static io.gravitee.repository.management.model.Group.AuditEvent.GROUP_DEL
 import static io.gravitee.repository.management.model.Group.AuditEvent.GROUP_UPDATED;
 import static io.gravitee.rest.api.model.permissions.RolePermissionAction.CREATE;
 import static io.gravitee.rest.api.model.permissions.RolePermissionAction.DELETE;
+import static io.gravitee.rest.api.model.permissions.RolePermissionAction.READ;
 import static io.gravitee.rest.api.model.permissions.RolePermissionAction.UPDATE;
 
 import io.gravitee.common.event.EventManager;
@@ -116,7 +117,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import lombok.CustomLog;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
@@ -542,7 +542,6 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
     }
 
     @Override
-    @NotNull
     public GroupEntity findById(ExecutionContext executionContext, String groupId) {
         try {
             log.debug("findById {}", groupId);
@@ -651,6 +650,83 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
         } catch (Throwable e) {
             log.error("An error occurs while trying to update group", e);
         }
+    }
+
+    @Override
+    public Set<String> findGroupIdsAttachedToUserResources(ExecutionContext executionContext, String userId) {
+        if (userId == null || userId.isBlank()) {
+            return Set.of();
+        }
+        try {
+            Set<String> groupIds = new HashSet<>();
+            Set<String> apiIds = membershipService.getReferenceIdsByMemberAndReference(
+                MembershipMemberType.USER,
+                userId,
+                MembershipReferenceType.API
+            );
+            if (apiIds != null && !apiIds.isEmpty()) {
+                apiRepository
+                    .search(
+                        new ApiCriteria.Builder().environmentId(executionContext.getEnvironmentId()).ids(apiIds).build(),
+                        ApiFieldFilter.defaultFields()
+                    )
+                    .stream()
+                    .map(Api::getGroups)
+                    .filter(groups -> groups != null)
+                    .forEach(groupIds::addAll);
+            }
+            Set<String> applicationIds = membershipService.getReferenceIdsByMemberAndReference(
+                MembershipMemberType.USER,
+                userId,
+                MembershipReferenceType.APPLICATION
+            );
+            if (applicationIds != null && !applicationIds.isEmpty()) {
+                applicationRepository
+                    .findByIds(applicationIds)
+                    .stream()
+                    .filter(application -> executionContext.getEnvironmentId().equals(application.getEnvironmentId()))
+                    .map(io.gravitee.repository.management.model.Application::getGroups)
+                    .filter(groups -> groups != null)
+                    .forEach(groupIds::addAll);
+            }
+            return groupIds;
+        } catch (TechnicalException ex) {
+            throw new TechnicalManagementException(
+                "An error occurs while trying to find groups attached to resources of user " + userId,
+                ex
+            );
+        }
+    }
+
+    @Override
+    public Set<String> retainGroupsTheCallerMayAssign(
+        ExecutionContext executionContext,
+        String userId,
+        Set<String> requested,
+        Set<String> alreadyOnResource
+    ) {
+        if (requested == null || requested.isEmpty()) {
+            return requested;
+        }
+        if (
+            permissionService.hasPermission(
+                executionContext,
+                userId,
+                RolePermission.ENVIRONMENT_GROUP,
+                executionContext.getEnvironmentId(),
+                READ
+            )
+        ) {
+            return requested;
+        }
+        Set<String> allowed = new HashSet<>();
+        if (alreadyOnResource != null) {
+            allowed.addAll(alreadyOnResource);
+        }
+        if (userId != null && !userId.isBlank()) {
+            findByUserAndEnvironment(userId, executionContext.getEnvironmentId()).forEach(group -> allowed.add(group.getId()));
+        }
+        return requested.stream().filter(allowed::contains).collect(Collectors.toSet());
     }
 
     @Override
@@ -1270,22 +1346,6 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
     }
 
     private void verifyUserCanBeDeletedFromGroup(ExecutionContext executionContext, String groupId, String username) {
-        RoleEntity apiPORole = getPrimaryOwnerRoleOrThrow(executionContext, RoleScope.API);
-        RoleEntity apiProductPORole = getPrimaryOwnerRoleOrThrow(executionContext, RoleScope.API_PRODUCT);
-
-        Set<MembershipEntity> groupApiPrimaryOwnerMemberships = membershipService.getMembershipsByMemberAndReferenceAndRole(
-            MembershipMemberType.GROUP,
-            groupId,
-            MembershipReferenceType.API,
-            apiPORole.getId()
-        );
-        Set<MembershipEntity> groupApiProductPrimaryOwnerMemberships = membershipService.getMembershipsByMemberAndReferenceAndRole(
-            MembershipMemberType.GROUP,
-            groupId,
-            MembershipReferenceType.API_PRODUCT,
-            apiProductPORole.getId()
-        );
-
         Set<RoleEntity> userRolesInGroup = membershipService.getRoles(
             MembershipReferenceType.GROUP,
             groupId,
@@ -1293,11 +1353,13 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
             username
         );
 
-        if (!groupApiPrimaryOwnerMemberships.isEmpty() && userHasPrimaryOwnerRoleForScope(userRolesInGroup, RoleScope.API)) {
-            throw new StillPrimaryOwnerException(groupApiPrimaryOwnerMemberships.size(), ApiPrimaryOwnerMode.GROUP);
+        long ownedApiCount = countPrimaryOwnerMemberships(executionContext, groupId, RoleScope.API);
+        if (ownedApiCount > 0 && userHasPrimaryOwnerRoleForScope(userRolesInGroup, RoleScope.API)) {
+            throw new StillPrimaryOwnerException(ownedApiCount, ApiPrimaryOwnerMode.GROUP);
         }
-        if (!groupApiProductPrimaryOwnerMemberships.isEmpty() && userHasPrimaryOwnerRoleForScope(userRolesInGroup, RoleScope.API_PRODUCT)) {
-            throw new StillApiProductPrimaryOwnerException(groupApiProductPrimaryOwnerMemberships.size());
+        long ownedApiProductCount = countPrimaryOwnerMemberships(executionContext, groupId, RoleScope.API_PRODUCT);
+        if (ownedApiProductCount > 0 && userHasPrimaryOwnerRoleForScope(userRolesInGroup, RoleScope.API_PRODUCT)) {
+            throw new StillApiProductPrimaryOwnerException(ownedApiProductCount);
         }
     }
 
@@ -1312,13 +1374,22 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
             .orElseThrow(() -> new TechnicalManagementException(scope.name() + " System Role 'PRIMARY_OWNER' not found."));
     }
 
-    /**
-     * Refuses to delete the group if it still holds the {@code PRIMARY_OWNER} role for the given
-     * scope on at least one reference (API or API Product), to prevent orphan PO memberships.
-     */
-    private void assertGroupIsNotPrimaryOwner(ExecutionContext executionContext, String groupId, RoleScope scope) {
+    @Override
+    public void assertGroupIsNotPrimaryOwner(ExecutionContext executionContext, String groupId, RoleScope scope) {
+        if (scope != RoleScope.API && scope != RoleScope.API_PRODUCT) {
+            throw new IllegalArgumentException("scope must be API or API_PRODUCT");
+        }
+        long count = countPrimaryOwnerMemberships(executionContext, groupId, scope);
+        if (count > 0) {
+            throw scope == RoleScope.API
+                ? new StillPrimaryOwnerException(count, ApiPrimaryOwnerMode.GROUP)
+                : new StillApiProductPrimaryOwnerException(count);
+        }
+    }
+
+    private long countPrimaryOwnerMemberships(ExecutionContext executionContext, String groupId, RoleScope scope) {
         RoleEntity poRole = getPrimaryOwnerRoleOrThrow(executionContext, scope);
-        long count = membershipService
+        return membershipService
             .getMembershipsByMemberAndReferenceAndRole(
                 MembershipMemberType.GROUP,
                 groupId,
@@ -1326,11 +1397,6 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
                 poRole.getId()
             )
             .size();
-        if (count > 0) {
-            throw scope == RoleScope.API
-                ? new StillPrimaryOwnerException(count, ApiPrimaryOwnerMode.GROUP)
-                : new StillApiProductPrimaryOwnerException(count);
-        }
     }
 
     private boolean userHasPrimaryOwnerRoleForScope(Set<RoleEntity> userRoles, RoleScope scope) {
@@ -1339,6 +1405,9 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
 
     @Override
     public void deleteUserFromGroup(ExecutionContext executionContext, String groupId, String username) {
+        // Reject a group outside the current environment before any read or write happens.
+        GroupEntity existingGroup = this.findById(executionContext, groupId);
+
         //check if user exist
         this.userService.findById(executionContext, username);
 
@@ -1360,7 +1429,6 @@ public class GroupServiceImpl extends AbstractService implements GroupService {
             username
         );
 
-        GroupEntity existingGroup = this.findById(executionContext, groupId);
         if (existingGroup.getApiPrimaryOwner() != null && existingGroup.getApiPrimaryOwner().equals(username)) {
             updateApiPrimaryOwner(groupId, username);
         }

@@ -13,7 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { categoryOf, countByCategory, formatRelativeTime, type ResolveEnvHrid, resolveArea, sortTasks, toTaskView } from './tasks.mapping';
+import {
+    categoryOf,
+    countByCategory,
+    formatRelativeTime,
+    promotionDataOf,
+    type ResolveEnvHrid,
+    resolveArea,
+    sortTasks,
+    toTaskView,
+} from './tasks.mapping';
 import type { TaskEntity, TaskMetadata, TaskView } from './tasks.types';
 
 function makeTaskView(overrides: Partial<TaskView> = {}): TaskView {
@@ -179,7 +188,7 @@ describe('toTaskView', () => {
         expect(view.to).toBe('/environments/prod/apim/apis/api-legacy/consumers/sub-api-legacy');
     });
 
-    it('builds a review task linking to the API page', () => {
+    it('builds a review task that opens the API straight into its review sheet', () => {
         const entity: TaskEntity = { type: 'IN_REVIEW', created_at: 1, data: { referenceId: 'api-http' } };
 
         const view = toTaskView(entity, metadata, resolveEnvHrid);
@@ -187,7 +196,7 @@ describe('toTaskView', () => {
         expect(view.category).toBe('API_REVIEW');
         expect(view.title).toBe('Flight Status API');
         expect(view.subtitle).toBe('Ready to be reviewed');
-        expect(view.to).toBe('/environments/prod/apim/apis/api-http');
+        expect(view.to).toBe('/environments/prod/apim/apis/api-http?review');
         expect(view.toModuleId).toBe('apim');
     });
 
@@ -281,6 +290,176 @@ describe('toTaskView', () => {
         expect(view.title).toBe('Loyalty API');
         expect(view.subtitle).toBe('Staging → Production');
         expect(view.to).toBe('/environments/prod/apim/apis/api-9');
+    });
+
+    it('links a promotion into the target environment, which is not necessarily the current one', () => {
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: {
+                promotionId: 'promo-2',
+                apiName: 'Loyalty API',
+                sourceEnvironmentName: 'Production',
+                targetEnvironmentName: 'Staging',
+                targetApiId: 'api-9',
+                targetEnvironmentId: 'env-2-id',
+            },
+        };
+
+        const view = toTaskView(entity, {}, resolveEnvHrid);
+
+        expect(view.to).toBe('/environments/staging/apim/apis/api-9');
+    });
+
+    it('links to the target environment module root when the API has not been promoted there yet', () => {
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: {
+                promotionId: 'promo-3',
+                apiName: 'Loyalty API',
+                sourceEnvironmentName: 'Production',
+                targetEnvironmentName: 'Staging',
+                targetEnvironmentId: 'env-2-id',
+            },
+        };
+
+        const view = toTaskView(entity, {}, resolveEnvHrid);
+
+        expect(view.to).toBe('/environments/staging/apim');
+    });
+
+    // Every promotion is reviewed in API Management, whatever type the promoted API is: the payload carries
+    // `apiType` for other consumers, and the row deliberately ignores it.
+    it.each([['llm-proxy'], ['mcp-proxy'], ['a2a-proxy'], ['message'], ['native'], ['proxy'], ['LLM-PROXY'], ['not-a-type']])(
+        'routes a promotion of a %s api to apim, badge included',
+        apiType => {
+            const entity: TaskEntity = {
+                type: 'PROMOTION_APPROVAL',
+                created_at: 1,
+                data: {
+                    promotionId: 'promo-4',
+                    apiName: 'Loyalty API',
+                    sourceEnvironmentName: 'Staging',
+                    targetEnvironmentName: 'Production',
+                    targetApiId: 'api-9',
+                    targetEnvironmentId: 'env-2-id',
+                    apiType,
+                },
+            };
+
+            const view = toTaskView(entity, {}, resolveEnvHrid);
+
+            expect(view.area.label).toBe('API Management');
+            expect(view.toModuleId).toBe('apim');
+            expect(view.to).toBe('/environments/staging/apim/apis/api-9');
+        },
+    );
+
+    it('sends a first-time promotion to the apim module root, whatever type the payload claims', () => {
+        // Nothing has been promoted there yet, so there is no API to open — but the module is still apim.
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: {
+                promotionId: 'promo-5',
+                apiName: 'Loyalty Agent',
+                sourceEnvironmentName: 'Staging',
+                targetEnvironmentName: 'Production',
+                targetEnvironmentId: 'env-2-id',
+                apiType: 'llm-proxy',
+            },
+        };
+
+        const view = toTaskView(entity, {}, resolveEnvHrid);
+
+        expect(view.area.label).toBe('API Management');
+        expect(view.to).toBe('/environments/staging/apim');
+    });
+
+    it('falls back to the current environment when the payload names no target environment', () => {
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: {
+                promotionId: 'promo-6',
+                apiName: 'Loyalty API',
+                sourceEnvironmentName: 'Staging',
+                targetEnvironmentName: 'Production',
+                targetApiId: 'api-9',
+            },
+        };
+
+        const view = toTaskView(entity, {}, resolveEnvHrid);
+
+        expect(view.to).toBe('/environments/prod/apim/apis/api-9');
+    });
+});
+
+describe('promotionDataOf', () => {
+    it('extracts the typed promotion review fields from a PROMOTION_APPROVAL task', () => {
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: {
+                promotionId: 'promo-1',
+                apiName: 'Loyalty API',
+                sourceEnvironmentName: 'Staging',
+                targetEnvironmentName: 'Production',
+                targetApiId: 'api-9',
+                isApiUpdate: true,
+                authorDisplayName: 'Ada Lovelace',
+                authorEmail: 'ada@example.com',
+                authorPicture: 'https://example.com/ada.png',
+            },
+        };
+
+        expect(promotionDataOf(entity)).toEqual({
+            promotionId: 'promo-1',
+            apiName: 'Loyalty API',
+            sourceEnvironmentName: 'Staging',
+            targetEnvironmentName: 'Production',
+            targetApiId: 'api-9',
+            isApiUpdate: true,
+            authorDisplayName: 'Ada Lovelace',
+            authorEmail: 'ada@example.com',
+            authorPicture: 'https://example.com/ada.png',
+        });
+    });
+
+    it('defaults isApiUpdate to false and omits targetApiId when the task has none', () => {
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: {
+                promotionId: 'promo-2',
+                apiName: 'Loyalty API',
+                sourceEnvironmentName: 'Staging',
+                targetEnvironmentName: 'Production',
+                authorDisplayName: 'Ada Lovelace',
+            },
+        };
+
+        const data = promotionDataOf(entity);
+
+        expect(data?.isApiUpdate).toBe(false);
+        expect(data?.targetApiId).toBeUndefined();
+    });
+
+    it('returns undefined for a non-promotion task', () => {
+        const entity: TaskEntity = { type: 'SUBSCRIPTION_APPROVAL', created_at: 1, data: {} };
+
+        expect(promotionDataOf(entity)).toBeUndefined();
+    });
+
+    it('returns undefined when required fields are missing', () => {
+        const entity: TaskEntity = {
+            type: 'PROMOTION_APPROVAL',
+            created_at: 1,
+            data: { promotionId: 'promo-1' },
+        };
+
+        expect(promotionDataOf(entity)).toBeUndefined();
     });
 });
 

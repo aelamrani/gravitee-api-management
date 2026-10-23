@@ -17,6 +17,7 @@
 import type { Analytics } from './analytics';
 import type { PlanSecurity } from './plan';
 import type { ApiResource } from './resource';
+import type { ResponseTemplatesMap } from './responseTemplate';
 
 export interface PathToVerify {
     path: string;
@@ -35,6 +36,7 @@ export interface VerifyApiHostsResponse {
 
 export interface HttpPath {
     path: string;
+    host?: string;
     overrideAccess?: boolean;
 }
 
@@ -52,7 +54,12 @@ export interface Cors {
     exposeHeaders?: string[];
     allowCredentials?: boolean;
     maxAge?: number;
+    allowPrivateNetwork?: boolean;
     runPolicies?: boolean;
+}
+
+export interface RequestValidation {
+    rejectNullByte?: boolean;
 }
 
 export interface HttpListener {
@@ -61,6 +68,7 @@ export interface HttpListener {
     hosts?: VirtualHost[];
     entrypoints?: { type: string }[];
     cors?: Cors;
+    requestValidation?: RequestValidation;
 }
 
 export interface HttpEndpoint {
@@ -139,6 +147,19 @@ export type ApiState = 'CLOSED' | 'INITIALIZED' | 'STARTED' | 'STOPPED' | 'STOPP
 export type ApiDeploymentState = 'NEED_REDEPLOY' | 'DEPLOYED';
 export type ApiLifecycleState = 'ARCHIVED' | 'CREATED' | 'DEPRECATED' | 'PUBLISHED' | 'UNPUBLISHED';
 export type ApiVisibility = 'PUBLIC' | 'PRIVATE';
+/** Review status of the API when the environment has API Review enabled; absent on APIs created while it was off. */
+export type ApiWorkflowState = 'DRAFT' | 'IN_REVIEW' | 'REQUEST_FOR_CHANGES' | 'REVIEW_OK';
+
+export type ApiOrigin = 'MANAGEMENT' | 'KUBERNETES' | 'INTEGRATION';
+
+/**
+ * `origin === 'INTEGRATION'` alone cannot tell a FEDERATED row from a FEDERATED_AGENT row — both carry it —
+ * so branch on `ApiListItem.definitionVersion` instead (see `isFederatedApiListItem` in `utils/federatedApi.ts`).
+ */
+export type ApiListOriginContext =
+    | { origin: 'INTEGRATION'; integrationId?: string; integrationName?: string; provider?: string }
+    | { origin: Exclude<ApiOrigin, 'INTEGRATION'> }
+    | { origin?: undefined };
 
 export type DuplicateFilteredField = 'GROUPS' | 'MEMBERS' | 'PAGES' | 'PLANS';
 
@@ -148,12 +169,26 @@ export interface DuplicateApiOptions {
     version: string;
     filteredFields?: DuplicateFilteredField[];
 }
-export type ApiType = 'PROXY' | 'MESSAGE' | 'NATIVE';
+
+export interface PromotionTarget {
+    id: string;
+    name: string;
+    description?: string;
+}
+
+export type PromotionStatus = 'CREATED' | 'TO_BE_VALIDATED' | 'ACCEPTED' | 'REJECTED' | 'ERROR';
+
+export interface Promotion {
+    status: PromotionStatus;
+    targetEnvCockpitId: string;
+}
+export type ApiType = 'PROXY' | 'MESSAGE' | 'NATIVE' | 'MCP_PROXY' | 'LLM_PROXY';
 
 export interface ApiListListener {
     type: string;
     paths?: { path: string; host?: string }[];
-    hosts?: VirtualHost[];
+    /** TCP listeners store host strings. HTTP virtual hosts store `{ host, path }`. */
+    hosts?: Array<string | VirtualHost>;
     host?: string;
     port?: number;
 }
@@ -164,7 +199,7 @@ export interface ApiListItem {
     apiVersion: string;
     description?: string;
     type: ApiType;
-    definitionVersion: 'V4' | 'V2';
+    definitionVersion: 'V4' | 'V2' | 'FEDERATED' | 'FEDERATED_AGENT';
     state?: ApiState;
     deploymentState?: ApiDeploymentState;
     lifecycleState?: ApiLifecycleState;
@@ -172,7 +207,10 @@ export interface ApiListItem {
     listeners?: ApiListListener[];
     /** Sharding tags assigned to this API (controls gateway deployment). */
     tags?: string[];
+    /** Category keys. Classic resolves these to names for the list column. */
+    categories?: string[];
     primaryOwner?: { id?: string; displayName?: string; email?: string };
+    originContext?: ApiListOriginContext;
     picture?: string | null;
     _links?: {
         pictureUrl?: string;
@@ -196,6 +234,8 @@ export interface ApiSearchQuery {
     query?: string;
     ids?: string[];
     statuses?: string[];
+    tags?: string[];
+    categories?: string[];
     published?: string[];
     visibilities?: string[];
     apiTypes?: string[];
@@ -263,9 +303,19 @@ export interface EndpointGroupHeader {
     value: string;
 }
 
+export interface EndpointGroupTcp {
+    connectTimeout?: number;
+    reconnectAttempts?: number;
+    reconnectInterval?: number;
+    idleTimeout?: number;
+    readIdleTimeout?: number;
+    writeIdleTimeout?: number;
+}
+
 export interface EndpointGroupSharedConfiguration {
     proxy?: EndpointGroupProxy;
     http?: EndpointGroupHttp;
+    tcp?: EndpointGroupTcp;
     ssl?: EndpointGroupSsl;
     headers?: EndpointGroupHeader[];
 }
@@ -281,6 +331,7 @@ export interface HealthCheckConfiguration {
     target?: string;
     overrideEndpointPath?: boolean;
     headers?: HealthCheckHeader[];
+    body?: string;
     assertion?: string;
     successThreshold?: number;
     failureThreshold?: number;
@@ -301,7 +352,7 @@ export interface EndpointDto {
     name: string;
     type: string;
     weight?: number;
-    backup?: boolean;
+    secondary?: boolean;
     inheritConfiguration?: boolean;
     configuration?: { target?: string | TcpTarget; [key: string]: unknown };
     tenants?: string[];
@@ -342,8 +393,9 @@ export interface ApiDetailDto {
     deploymentState?: ApiDeploymentState;
     type?: ApiType;
     apiVersion?: string;
-    definitionVersion?: 'V4' | 'V4_NATIVE';
+    definitionVersion?: 'V4' | 'V4_NATIVE' | 'FEDERATED' | 'FEDERATED_AGENT';
     lifecycleState?: ApiLifecycleState;
+    workflowState?: ApiWorkflowState;
     visibility?: ApiVisibility;
     tags?: string[];
     labels?: string[];
@@ -365,6 +417,7 @@ export interface ApiDetailDto {
     properties?: Property[];
     /** API-level resources (cache, OAuth2 providers, …) consumed by policies at runtime. */
     resources?: ApiResource[];
+    responseTemplates?: ResponseTemplatesMap;
 
     services?: { dynamicProperty?: DynamicPropertyConfig };
     analytics?: Analytics;
@@ -377,6 +430,7 @@ export interface ApiDetailDto {
         origin?: 'MANAGEMENT' | 'KUBERNETES';
         syncFrom?: string;
     };
+    originContext?: ApiListOriginContext;
 }
 
 export interface ApiEvent {
@@ -510,4 +564,20 @@ export interface Tenant {
 
 export interface ExposedEntrypoint {
     value: string;
+}
+
+// ─── API Review ───────────────────────────────────────────────────────────────
+
+/** Manual rule defined on the environment (Classic `QualityRule`); reviewers tick these when deciding. */
+export interface QualityRule {
+    id: string;
+    name: string;
+    description: string;
+}
+
+/** Whether a reviewer ticked a manual rule on a given API (Classic `ApiQualityRule`). */
+export interface ApiQualityRuleCheck {
+    api: string;
+    quality_rule: string;
+    checked: boolean;
 }

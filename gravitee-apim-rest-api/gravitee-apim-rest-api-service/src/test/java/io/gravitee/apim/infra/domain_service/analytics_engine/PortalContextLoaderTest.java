@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import io.gravitee.apim.core.analytics.model.ApiDataKind;
 import io.gravitee.apim.core.audit.model.AuditActor;
 import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.portal.model.PortalArea;
@@ -31,6 +32,8 @@ import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.repository.management.api.ApiRepository;
 import io.gravitee.repository.management.model.Api;
 import io.gravitee.rest.api.model.application.ApplicationListItem;
+import io.gravitee.rest.api.model.permissions.RolePermission;
+import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.service.ApplicationService;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -133,6 +136,18 @@ class PortalContextLoaderTest {
         return app;
     }
 
+    private void givenAnalyticsReadableApplications(String... applicationIds) {
+        when(
+            applicationService.findIdsByUserAndPermission(
+                any(),
+                eq(NON_ADMIN_USER_ID),
+                isNull(),
+                eq(RolePermission.APPLICATION_ANALYTICS),
+                eq(RolePermissionAction.READ)
+            )
+        ).thenReturn(Set.of(applicationIds));
+    }
+
     @Nested
     class AdminUser {
 
@@ -145,7 +160,7 @@ class PortalContextLoaderTest {
         void should_load_context_with_all_apis_and_empty_applications() {
             when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_1, REPO_API_2, REPO_API_3));
 
-            var context = contextLoader.load(auditInfo(ADMIN_USER_ID));
+            var context = contextLoader.load(auditInfo(ADMIN_USER_ID), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactlyInAnyOrder("id1", "id2", "id3");
             assertThat(context.apiNamesById()).isEqualTo(
@@ -162,6 +177,7 @@ class PortalContextLoaderTest {
                 Map.of(ApiType.PROXY, Set.of("id1"), ApiType.MESSAGE, Set.of("id2"), ApiType.LLM_PROXY, Set.of("id3"))
             );
             assertThat(context.applicationNamesById()).isEmpty();
+            assertThat(context.restrictedToApplicationIds()).isEmpty();
             assertThat(context.executionContext().getOrganizationId()).isEqualTo(ORG_ID);
             assertThat(context.executionContext().getEnvironmentId()).isEqualTo(ENV_ID);
             verify(visibilityDomainService, never()).resolveVisibleItems(any(), any());
@@ -173,7 +189,7 @@ class PortalContextLoaderTest {
         void should_return_empty_when_repository_is_empty() {
             when(apiRepository.search(any(), any())).thenReturn(Collections.emptyList());
 
-            var context = contextLoader.load(auditInfo(ADMIN_USER_ID));
+            var context = contextLoader.load(auditInfo(ADMIN_USER_ID), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).isEmpty();
             assertThat(context.apiNamesById()).isEmpty();
@@ -186,7 +202,7 @@ class PortalContextLoaderTest {
             var apiWithoutType = Api.builder().id("id-no-type").name("no-type-api").build();
             when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_1, apiWithoutType));
 
-            var context = contextLoader.load(auditInfo(ADMIN_USER_ID));
+            var context = contextLoader.load(auditInfo(ADMIN_USER_ID), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactlyInAnyOrder("id1", "id-no-type");
             assertThat(context.apiIdsByType()).isEqualTo(Map.of(ApiType.PROXY, Set.of("id1")));
@@ -208,14 +224,31 @@ class PortalContextLoaderTest {
             when(applicationService.findByUser(any(), eq(NON_ADMIN_USER_ID))).thenReturn(
                 Set.of(appItem("app1", "My App"), appItem("app2", "Another App"))
             );
+            givenAnalyticsReadableApplications("app1", "app2");
 
-            var context = contextLoader.load(auditInfo(NON_ADMIN_USER_ID));
+            var context = contextLoader.load(auditInfo(NON_ADMIN_USER_ID), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactlyInAnyOrder("id2", "id3");
             assertThat(context.apiNamesById()).isEqualTo(Map.of("id2", "api2", "id3", "api3"));
             assertThat(context.applicationNamesById()).isEqualTo(Map.of("app1", "My App", "app2", "Another App"));
+            assertThat(context.restrictedToApplicationIds()).contains(Set.of("app1", "app2"));
             verify(visibilityDomainService).resolveVisibleItems(ENV_ID, NON_ADMIN_USER_ID);
             verify(applicationService).findByUser(any(), eq(NON_ADMIN_USER_ID));
+        }
+
+        @Test
+        void should_leave_out_the_applications_whose_analytics_the_user_may_not_read() {
+            when(visibilityDomainService.resolveVisibleItems(ENV_ID, NON_ADMIN_USER_ID)).thenReturn(List.of(navApi("id2")));
+            when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_2));
+            when(applicationService.findByUser(any(), eq(NON_ADMIN_USER_ID))).thenReturn(
+                Set.of(appItem("app1", "My App"), appItem("app2", "Another App"))
+            );
+            givenAnalyticsReadableApplications("app1");
+
+            var context = contextLoader.load(auditInfo(NON_ADMIN_USER_ID), ApiDataKind.AGGREGATES);
+
+            assertThat(context.restrictedToApplicationIds()).contains(Set.of("app1"));
+            assertThat(context.applicationNamesById()).isEqualTo(Map.of("app1", "My App", "app2", "Another App"));
         }
 
         @Test
@@ -223,12 +256,13 @@ class PortalContextLoaderTest {
             when(visibilityDomainService.resolveVisibleItems(ENV_ID, NON_ADMIN_USER_ID)).thenReturn(Collections.emptyList());
             when(applicationService.findByUser(any(), eq(NON_ADMIN_USER_ID))).thenReturn(Collections.emptySet());
 
-            var context = contextLoader.load(auditInfo(NON_ADMIN_USER_ID));
+            var context = contextLoader.load(auditInfo(NON_ADMIN_USER_ID), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).isEmpty();
             assertThat(context.apiNamesById()).isEmpty();
             assertThat(context.apiIdsByType()).isEmpty();
             assertThat(context.applicationNamesById()).isEmpty();
+            assertThat(context.restrictedToApplicationIds()).contains(Set.of());
             verify(apiRepository, never()).search(any(), any());
             verify(applicationService).findByUser(any(), eq(NON_ADMIN_USER_ID));
         }
@@ -238,10 +272,11 @@ class PortalContextLoaderTest {
             when(visibilityDomainService.resolveVisibleItems(ENV_ID)).thenReturn(List.of(navApi("id1")));
             when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_1));
 
-            var context = contextLoader.load(auditInfo(null));
+            var context = contextLoader.load(auditInfo(null), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactly("id1");
             assertThat(context.applicationNamesById()).isEmpty();
+            assertThat(context.restrictedToApplicationIds()).contains(Set.of());
             verify(visibilityDomainService).resolveVisibleItems(ENV_ID);
             verify(visibilityDomainService, never()).resolveVisibleItems(any(), any());
             verify(applicationService, never()).findByUser(any(), any());
@@ -252,10 +287,11 @@ class PortalContextLoaderTest {
             when(visibilityDomainService.resolveVisibleItems(ENV_ID)).thenReturn(List.of(navApi("id1")));
             when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_1));
 
-            var context = contextLoader.load(auditInfo("  "));
+            var context = contextLoader.load(auditInfo("  "), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactly("id1");
             assertThat(context.applicationNamesById()).isEmpty();
+            assertThat(context.restrictedToApplicationIds()).contains(Set.of());
             verify(visibilityDomainService).resolveVisibleItems(ENV_ID);
             verify(visibilityDomainService, never()).resolveVisibleItems(any(), any());
             verify(applicationService, never()).findByUser(any(), any());
@@ -274,10 +310,11 @@ class PortalContextLoaderTest {
         void should_be_treated_as_admin_and_load_all_apis_in_environment() {
             when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_1, REPO_API_2));
 
-            var context = contextLoader.load(auditInfo(ADMIN_USER_ID));
+            var context = contextLoader.load(auditInfo(ADMIN_USER_ID), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactlyInAnyOrder("id1", "id2");
             assertThat(context.applicationNamesById()).isEmpty();
+            assertThat(context.restrictedToApplicationIds()).isEmpty();
             verify(visibilityDomainService, never()).resolveVisibleItems(any(), any());
             verify(visibilityDomainService, never()).resolveVisibleItems(any());
             verify(applicationService, never()).findByUser(any(), any());
@@ -300,10 +337,11 @@ class PortalContextLoaderTest {
             when(visibilityDomainService.resolveVisibleItems(ENV_ID)).thenReturn(List.of(navApi("id1")));
             when(apiRepository.search(any(), any())).thenReturn(List.of(REPO_API_1));
 
-            var context = contextLoader.load(auditInfo(null));
+            var context = contextLoader.load(auditInfo(null), ApiDataKind.AGGREGATES);
 
             assertThat(context.authorizedApiIds()).containsExactly("id1");
             assertThat(context.applicationNamesById()).isEmpty();
+            assertThat(context.restrictedToApplicationIds()).contains(Set.of());
             verify(visibilityDomainService).resolveVisibleItems(ENV_ID);
             verify(visibilityDomainService, never()).resolveVisibleItems(any(), any());
             verify(applicationService, never()).findByUser(any(), any());

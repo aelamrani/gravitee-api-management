@@ -378,6 +378,39 @@ describe('EnvLogsComponent', () => {
     expect(logs().length).toBe(0);
   }));
 
+  it('should show the loader instead of previous results while a new search is pending', fakeAsync(async () => {
+    initComponent(MOCK_RESPONSE);
+
+    onRefresh();
+    fixture.detectChanges();
+    tick(1);
+    fixture.detectChanges();
+
+    const table = await loader.getHarness(EnvLogsTableHarness);
+    expect(await table.getRowsData()).toEqual([]);
+    expect(fixture.nativeElement.querySelector('env-logs-table gio-loader')).toBeTruthy();
+
+    flushSearch(MOCK_RESPONSE);
+  }));
+
+  it('should not keep previous results when a later search fails', fakeAsync(async () => {
+    initComponent(MOCK_RESPONSE);
+
+    onRefresh();
+    fixture.detectChanges();
+    tick(1);
+    httpTestingController
+      .expectOne({ method: 'POST', url: SEARCH_URL })
+      .flush('Gateway Timeout', { status: 500, statusText: 'Internal Server Error' });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('gio-banner-error').textContent).toContain('Request failed: 500 Internal Server Error');
+    expect(await loader.getHarnessOrNull(EnvLogsTableHarness)).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Try widening your timeframe');
+    expect(logs().length).toBe(0);
+    expect(paginationWithTotal().totalCount).toBe(0);
+  }));
+
   describe('mapToEnvLog edge cases', () => {
     it('should display dashes when method, uri, and gatewayResponseTime are missing', fakeAsync(() => {
       const response: SearchLogsResponse = {
@@ -680,15 +713,12 @@ describe('EnvLogsComponent', () => {
       req.flush(EMPTY_RESPONSE);
     }));
 
-    it('should send the HTTP Path filter under its catalog name', fakeAsync(() => {
-      // The console used to rewrite HTTP_PATH to the engine's URI spelling. That translation now lives in the
-      // Management API, which aliases the catalog names — so the console forwards what the catalog published.
-      // EQ is the only operator the catalog advertises for HTTP_PATH; the engine refuses IN over a path.
-      setupWithFilter('HTTP_PATH', 'HTTP Path', ['/v1/test/test2'], 'EQ');
+    it('should send the Request URI filter under its catalog name and operator', fakeAsync(() => {
+      setupWithFilter('URI', 'Request URI', ['/v1/test/test2'], 'STARTS_WITH');
 
       const req = httpTestingController.expectOne({ method: 'POST', url: SEARCH_URL });
       expect(req.request.body.filters).toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'HTTP_PATH', operator: 'EQ', value: '/v1/test/test2' })]),
+        expect.arrayContaining([expect.objectContaining({ name: 'URI', operator: 'STARTS_WITH', value: '/v1/test/test2' })]),
       );
       req.flush(EMPTY_RESPONSE);
     }));
@@ -777,6 +807,32 @@ describe('EnvLogsComponent', () => {
     it('should reflect totalCount from the backend response', fakeAsync(() => {
       initComponent(MOCK_RESPONSE);
       expect(paginationWithTotal().totalCount).toBe(1);
+    }));
+
+    it('should keep the total while another page of the same search is loading', fakeAsync(() => {
+      initComponent(MOCK_RESPONSE);
+
+      onPaginationUpdated({ index: 2, size: 10 });
+      fixture.detectChanges();
+      tick(1);
+
+      expect(loading()).toBe(true);
+      expect(paginationWithTotal().totalCount).toBe(1);
+
+      flushSearch(EMPTY_RESPONSE, `${CONSTANTS_TESTING.env.v2BaseURL}/logs/search?page=2&perPage=10`);
+    }));
+
+    it('should clear the total while a search with different filters is loading', fakeAsync(() => {
+      initComponent(MOCK_RESPONSE);
+
+      store().add({ field: 'API', label: 'API', operator: 'IN', values: ['api-1'] });
+      fixture.detectChanges();
+      tick(1);
+
+      expect(loading()).toBe(true);
+      expect(paginationWithTotal().totalCount).toBe(0);
+
+      flushSearch(MOCK_RESPONSE);
     }));
 
     it('should navigate to page 2 and request correct page from backend', fakeAsync(() => {

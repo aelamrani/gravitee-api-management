@@ -15,8 +15,10 @@
  */
 package io.gravitee.gamma.rest.infra.adapter;
 
+import io.gravitee.apim.core.analytics.model.ApiDataKind;
 import io.gravitee.apim.core.analytics.query_service.AnalyticsQueryService;
 import io.gravitee.apim.core.api.crud_service.ApiCrudService;
+import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api_product.model.ApiProduct;
 import io.gravitee.apim.core.api_product.query_service.ApiProductQueryService;
 import io.gravitee.apim.core.application.crud_service.ApplicationCrudService;
@@ -69,7 +71,6 @@ import io.gravitee.rest.api.service.exceptions.ApplicationNotFoundException;
 import io.gravitee.rest.api.service.exceptions.InstanceNotFoundException;
 import io.gravitee.rest.api.service.exceptions.PlanNotFoundException;
 import io.gravitee.rest.api.service.exceptions.TechnicalManagementException;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
@@ -99,6 +100,15 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @RequiredArgsConstructor
 public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPort {
 
+    /** Label of a request that went through no API Product, on the search rows and the detail alike. */
+    private static final String STANDALONE_API_PRODUCT_NAME = "Standalone API";
+
+    /**
+     * Additional-metrics key the log search rows read their MCP method from
+     * ({@code ConnectionLogAdapter.MCP_PROXY_METHOD_KEY}), repeated here so the detail agrees with its row.
+     */
+    private static final String MCP_PROXY_METHOD_KEY = "keyword_mcp-proxy_method";
+
     /**
      * Inclusive HTTP status bounds, sourced from the unified catalog ({@link StaticFilters#HTTP_STATUS})
      * so the adapter and the advertised filter range never drift apart. Used both to validate incoming
@@ -122,27 +132,27 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
     @Override
     public List<AccessibleApi> loadAccessibleApis(String organizationId, String environmentId) {
         var auditInfo = currentAuditInfo(organizationId, environmentId);
-        var userContext = userContextLoader.loadApis(new UserContext(auditInfo));
+        var userContext = userContextLoader.loadApis(new UserContext(auditInfo), ApiDataKind.PER_REQUEST);
 
         return userContext
             .apis()
             .orElseGet(Collections::emptyList)
             .stream()
-            .map(api -> new AccessibleApi(api.getId(), api.getName(), toGammaApiType(api.getType())))
+            .map(api -> new AccessibleApi(api.getId(), api.getName(), ApiTypeAdapter.toObservability(api.getType())))
             .toList();
     }
 
     @Override
     public Optional<AccessibleApi> loadAccessibleApi(String organizationId, String environmentId, String apiId) {
         var auditInfo = currentAuditInfo(organizationId, environmentId);
-        var userContext = userContextLoader.loadApi(new UserContext(auditInfo), apiId);
+        var userContext = userContextLoader.loadApi(new UserContext(auditInfo), apiId, ApiDataKind.PER_REQUEST);
 
         return userContext
             .apis()
             .orElseGet(Collections::emptyList)
             .stream()
             .findFirst()
-            .map(api -> new AccessibleApi(api.getId(), api.getName(), toGammaApiType(api.getType())));
+            .map(api -> new AccessibleApi(api.getId(), api.getName(), ApiTypeAdapter.toObservability(api.getType())));
     }
 
     @Override
@@ -190,15 +200,14 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
         // Read by id rather than through loadAccessibleApi: that path enumerates every API the caller
         // can reach only to test one id, and the resource already ran checkApiLogReadPermissionOrCollapse
         // on this one. The environment filter is kept because the by-id read has no scope of its own,
-        // and toGammaApiType because the wire names differ from the definition enum (PROXY -> HTTP_PROXY).
-        var apiType = apiCrudService
-            .findById(apiId)
-            .filter(api -> api.belongsToEnvironment(environmentId))
-            .map(api -> toGammaApiType(api.getType()))
+        // and ApiTypeAdapter because the wire names differ from the definition enum (PROXY -> HTTP_PROXY).
+        var api = apiCrudService.findById(apiId).filter(candidate -> candidate.belongsToEnvironment(environmentId));
+        var apiType = api
+            .map(found -> ApiTypeAdapter.toObservability(found.getType()))
             .map(Enum::name)
             .orElse(null);
 
-        var builder = LogDetail.builder().requestId(requestId).apiId(apiId).apiType(apiType);
+        var builder = LogDetail.builder().requestId(requestId).apiId(apiId).apiName(api.map(Api::getName).orElse(null)).apiType(apiType);
 
         metricsOpt.ifPresent(metrics -> {
             builder
@@ -208,7 +217,11 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
                 .uri(metrics.getUri())
                 .status(metrics.getStatus())
                 .endpoint(metrics.getEndpoint())
+                .entrypointId(metrics.getEntrypointId())
                 .host(metrics.getHost())
+                .mcpMethod(mcpMethodOf(metrics.getAdditionalMetrics()))
+                .apiProductId(metrics.getApiProductId())
+                .apiProductName(resolveApiProductName(environmentId, metrics.getApiProductId()))
                 .planId(metrics.getPlanId())
                 .subscriptionId(metrics.getSubscriptionId())
                 .applicationId(metrics.getApplicationId())
@@ -276,6 +289,27 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
         });
 
         return Optional.of(builder.build());
+    }
+
+    private static String mcpMethodOf(Map<String, Object> additionalMetrics) {
+        return additionalMetrics != null && additionalMetrics.get(MCP_PROXY_METHOD_KEY) instanceof String mcpMethod ? mcpMethod : null;
+    }
+
+    /**
+     * Mirrors {@link #enrichWithNames}: a request outside any API Product is labelled "Standalone API",
+     * and the lookup is scoped to the environment.
+     */
+    private String resolveApiProductName(String environmentId, String apiProductId) {
+        if (apiProductId == null) {
+            return STANDALONE_API_PRODUCT_NAME;
+        }
+        return apiProductQueryService
+            .findByEnvironmentIdAndIdIn(environmentId, Set.of(apiProductId))
+            .stream()
+            .map(ApiProduct::getName)
+            .filter(Objects::nonNull)
+            .findFirst()
+            .orElse(null);
     }
 
     private record ResolvedNames(String planName, String applicationName, String gatewayHostname, String gatewayIp) {}
@@ -457,6 +491,9 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
         builder.statusRanges(statusRanges);
         builder.statusCodeGroups(statusCodeGroups);
         builder.entrypointScope(toPlatformScope(query.entrypointScope()));
+        if (query.trafficScope() != null) {
+            builder.trafficScope(new SearchLogsFilters.TrafficScope(query.trafficScope().apiIds(), query.trafficScope().entrypointIds()));
+        }
         builder.requestIds(requestIds);
         builder.transactionIds(transactionIds);
         builder.errorKeys(errorKeys);
@@ -490,10 +527,11 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
             .resourceIds(valuesOf(query.conditions(), StaticFilters.AUTHZ_RESOURCE_ID.filterName()))
             .callers(valuesOf(query.conditions(), StaticFilters.AUTHZ_CALLER.filterName()))
             .statuses(valuesOf(query.conditions(), StaticFilters.AUTHZ_STATUS.filterName()))
-            .operations(valuesOf(query.conditions(), StaticFilters.AUTHZ_OPERATION.filterName()))
+            .indeterminateCauses(valuesOf(query.conditions(), StaticFilters.AUTHZ_INDETERMINATE_CAUSE.filterName()))
+            .errorTypes(valuesOf(query.conditions(), StaticFilters.AUTHZ_ERROR_TYPE.filterName()))
             .targetPdpIds(valuesOf(query.conditions(), StaticFilters.AUTHZ_PDP.filterName()))
             .matchedPolicyNames(valuesOf(query.conditions(), StaticFilters.AUTHZ_MATCHED_POLICY.filterName()))
-            .policyGenerations(policyGenerationsOf(query.conditions()))
+            .policyGenerations(valuesOf(query.conditions(), StaticFilters.AUTHZ_POLICY_VERSION.filterName()))
             .requestIds(valuesOf(query.conditions(), StaticFilters.REQUEST_ID.filterName()))
             .reasonContains(firstValueOf(query.conditions(), StaticFilters.AUTHZ_REASON.filterName()))
             .build();
@@ -546,26 +584,6 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
             .orElse(null);
     }
 
-    /**
-     * `policy-generation` is a long in the index, so a non-numeric value reaches Elasticsearch as a
-     * malformed term and fails the shard. Refuse it here, the way {@link #parseHttpStatus} does.
-     *
-     * <p>The value is passed on unchanged rather than normalised: Elasticsearch already coerces
-     * decimal forms such as {@code "3.0"} to the matching generation, and rewriting them here would
-     * reject input that works today. This only rules out what cannot be a number at all.
-     */
-    private static Set<String> policyGenerationsOf(List<FilterCondition> conditions) {
-        Set<String> values = valuesOf(conditions, StaticFilters.AUTHZ_POLICY_VERSION.filterName());
-        for (String value : values) {
-            try {
-                new BigDecimal(value.trim());
-            } catch (NumberFormatException e) {
-                throw new ValidationDomainException("Invalid policy version value: " + value);
-            }
-        }
-        return values;
-    }
-
     private LogEntry mapDecisionToLogEntry(AuthzDecisionLog decision, Map<String, ApiReference> apisById) {
         var apiRef = apisById != null ? apisById.get(decision.apiId()) : null;
         return LogEntry.builder()
@@ -579,12 +597,14 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
                 AuthzDecision.builder()
                     .eventId(decision.eventId())
                     .decision(decision.decision())
+                    .outcome(decision.outcome())
+                    .enforced(decision.enforced())
+                    .indeterminateCause(decision.indeterminateCause())
                     .status(decision.status())
                     .caller(decision.caller())
-                    .operation(decision.operation())
                     .targetPdpId(decision.targetPdpId())
                     .policyGeneration(decision.policyGeneration())
-                    .matchedPolicyNames(decision.matchedPolicyNames())
+                    .matchedRules(matchedRulesOf(decision.matchedRules()))
                     .reasons(decision.reasons())
                     .subjectType(decision.subjectType())
                     .subjectId(decision.subjectId())
@@ -594,12 +614,21 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
                     .batchId(decision.batchId())
                     .batchIndex(decision.batchIndex())
                     .batchSize(decision.batchSize())
-                    .searchType(decision.searchType())
-                    .resultCount(decision.resultCount())
                     .durationNanos(decision.durationNanos())
+                    .errorType(decision.errorType())
                     .build()
             )
             .build();
+    }
+
+    private static List<AuthzDecision.MatchedRule> matchedRulesOf(List<AuthzDecisionLog.MatchedRule> matchedRules) {
+        if (matchedRules == null) {
+            return null;
+        }
+        return matchedRules
+            .stream()
+            .map(rule -> new AuthzDecision.MatchedRule(rule.id(), rule.name(), rule.version(), rule.effect()))
+            .toList();
     }
 
     private LogEntry mapToLogEntry(BaseConnectionLog log, Map<String, ApiReference> apisById) {
@@ -768,7 +797,9 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
                     .planName(lookup(planNameById, entry.planId()))
                     .applicationName(lookup(appNameById, entry.applicationId()))
                     .gatewayHostname(lookup(gatewayHostnameById, entry.gateway()))
-                    .apiProductName(entry.apiProductId() == null ? "Standalone API" : lookup(apiProductNameById, entry.apiProductId()))
+                    .apiProductName(
+                        entry.apiProductId() == null ? STANDALONE_API_PRODUCT_NAME : lookup(apiProductNameById, entry.apiProductId())
+                    )
                     .build()
             )
             .toList();
@@ -881,24 +912,6 @@ public class ObservabilityLogsDataPortAdapter implements ObservabilityLogsDataPo
             .environmentId(environmentId)
             .actor(actor)
             .build();
-    }
-
-    private static io.gravitee.gamma.rest.core.observability.filter.model.ApiType toGammaApiType(
-        io.gravitee.definition.model.v4.ApiType definitionType
-    ) {
-        if (definitionType == null) {
-            return null;
-        }
-        return switch (definitionType) {
-            case PROXY -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.HTTP_PROXY;
-            case MESSAGE -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.MESSAGE;
-            case LLM_PROXY -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.LLM;
-            case MCP_PROXY -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.MCP;
-            case A2A_PROXY -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.A2A;
-            case NATIVE -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.NATIVE;
-            case EDGE -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.EDGE;
-            case AUTHZ -> io.gravitee.gamma.rest.core.observability.filter.model.ApiType.AUTHZ;
-        };
     }
 
     /**

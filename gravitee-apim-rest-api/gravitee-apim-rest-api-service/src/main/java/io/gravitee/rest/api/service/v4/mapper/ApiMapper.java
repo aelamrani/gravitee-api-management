@@ -533,20 +533,7 @@ public class ApiMapper {
             apiDefinition.setAnalytics(updateApiEntity.getAnalytics());
             apiDefinition.setFailover(updateApiEntity.getFailover());
             if (updateApiEntity.getProperties() != null) {
-                apiDefinition.setProperties(
-                    updateApiEntity
-                        .getProperties()
-                        .stream()
-                        .map(propertyEntity ->
-                            new Property(
-                                propertyEntity.getKey(),
-                                propertyEntity.getValue(),
-                                propertyEntity.isEncrypted(),
-                                propertyEntity.isDynamic()
-                            )
-                        )
-                        .toList()
-                );
+                apiDefinition.setProperties(toDefinitionProperties(updateApiEntity.getProperties()));
             }
             apiDefinition.setResources(updateApiEntity.getResources());
             apiDefinition.setFlowExecution(updateApiEntity.getFlowExecution());
@@ -623,13 +610,7 @@ public class ApiMapper {
             apiDefinition.setAnalytics(apiEntity.getAnalytics());
             apiDefinition.setFailover(apiEntity.getFailover());
             if (apiEntity.getProperties() != null) {
-                apiDefinition.setProperties(
-                    apiEntity
-                        .getProperties()
-                        .stream()
-                        .map(propertyEntity -> new Property(propertyEntity.getKey(), propertyEntity.getValue()))
-                        .toList()
-                );
+                apiDefinition.setProperties(toDefinitionProperties(apiEntity.getProperties()));
             }
             apiDefinition.setResources(apiEntity.getResources());
             apiDefinition.setFlowExecution(apiEntity.getFlowExecution());
@@ -645,5 +626,12 @@ public class ApiMapper {
             log.error(API_DEFINITION_UNEXPECTED_ERROR_MESSAGE, jse);
             throw new TechnicalManagementException("An error occurs while trying to parse API definition " + jse);
         }
+    }
+
+    private static List<Property> toDefinitionProperties(List<? extends Property> properties) {
+        return properties
+            .stream()
+            .map(property -> new Property(property.getKey(), property.getValue(), property.isEncrypted(), property.isDynamic()))
+            .toList();
     }
 }

@@ -85,7 +85,7 @@ class CreateOrUpdatePortalUseCaseTest {
             portalCrudService,
             new PortalNavigationSyncDomainService(
                 navQueryService,
-                new AutomationManagedNavigationItemsQueryService(portalListingCrudService, pageContentQueryService, navQueryService),
+                new AutomationManagedNavigationItemsQueryService(portalListingCrudService, navQueryService),
                 new NavigationSyncPlanExecutor(navCrudService, navQueryService, pageContentCrudService),
                 mock(PortalNavigationItemValidatorService.class)
             ),
@@ -307,30 +307,24 @@ class CreateOrUpdatePortalUseCaseTest {
         assertThat(output.portal()).isEqualTo(portal);
     }
 
+    private static Theme aTheme(String id, ThemeType type, boolean enabled) {
+        return Theme.builder()
+            .id(id)
+            .name("name")
+            .type(type)
+            .referenceId(AUDIT_INFO.environmentId())
+            .referenceType(Theme.ReferenceType.ENVIRONMENT)
+            .enabled(enabled)
+            .build();
+    }
+
     @Test
     void should_wire_active_theme_and_enable_it_when_active_theme_hrid_set() {
         var themeHrid = "brand-theme";
         var themeId = io.gravitee.rest.api.service.common.HRIDToUUID.portalTheme().context(AUDIT_INFO).hrid(themeHrid).id();
         var otherThemeId = "11111111-1111-1111-1111-111111111111";
         themeCrudService.initWith(
-            List.of(
-                io.gravitee.apim.core.theme.model.Theme.builder()
-                    .id(themeId)
-                    .name("Brand")
-                    .type(io.gravitee.apim.core.theme.model.ThemeType.PORTAL_NEXT)
-                    .referenceType(io.gravitee.apim.core.theme.model.Theme.ReferenceType.ENVIRONMENT)
-                    .referenceId(AUDIT_INFO.environmentId())
-                    .enabled(false)
-                    .build(),
-                io.gravitee.apim.core.theme.model.Theme.builder()
-                    .id(otherThemeId)
-                    .name("Other")
-                    .type(io.gravitee.apim.core.theme.model.ThemeType.PORTAL_NEXT)
-                    .referenceType(io.gravitee.apim.core.theme.model.Theme.ReferenceType.ENVIRONMENT)
-                    .referenceId(AUDIT_INFO.environmentId())
-                    .enabled(true)
-                    .build()
-            )
+            List.of(aTheme(themeId, ThemeType.PORTAL_NEXT, false), aTheme(otherThemeId, ThemeType.PORTAL_NEXT, true))
         );
         var portal = PortalFixtures.aPortal();
 
@@ -356,17 +350,7 @@ class CreateOrUpdatePortalUseCaseTest {
         var existingActiveThemeId = "22222222-2222-2222-2222-222222222222";
         var portal = PortalFixtures.aPortal();
         portalCrudService.initWith(List.of(portal.withActiveThemeId(existingActiveThemeId)));
-        themeCrudService.initWith(
-            List.of(
-                Theme.builder()
-                    .id(existingActiveThemeId)
-                    .type(ThemeType.PORTAL_NEXT)
-                    .referenceType(Theme.ReferenceType.ENVIRONMENT)
-                    .referenceId(AUDIT_INFO.environmentId())
-                    .enabled(true)
-                    .build()
-            )
-        );
+        themeCrudService.initWith(List.of(aTheme(existingActiveThemeId, ThemeType.PORTAL_NEXT, true)));
 
         var output = useCase.execute(new CreateOrUpdatePortalUseCase.Input(AUDIT_INFO, portal));
 
@@ -376,5 +360,30 @@ class CreateOrUpdatePortalUseCaseTest {
             .singleElement()
             .extracting(Theme::isEnabled)
             .isEqualTo(false);
+    }
+
+    @Test
+    void should_reactivate_another_existing_theme_when_active_theme_is_cleared() {
+        var clearedThemeId = "22222222-2222-2222-2222-222222222222";
+        var otherThemeId = "33333333-3333-3333-3333-333333333333";
+        var portal = PortalFixtures.aPortal();
+        portalCrudService.initWith(List.of(portal.withActiveThemeId(clearedThemeId)));
+        themeCrudService.initWith(
+            List.of(aTheme(clearedThemeId, ThemeType.PORTAL_NEXT, true), aTheme(otherThemeId, ThemeType.PORTAL_NEXT, false))
+        );
+
+        var output = useCase.execute(new CreateOrUpdatePortalUseCase.Input(AUDIT_INFO, portal));
+
+        assertThat(output.portal().getActiveThemeId()).isNull();
+        assertThat(themeCrudService.storage())
+            .filteredOn(t -> t.getId().equals(clearedThemeId))
+            .singleElement()
+            .extracting(Theme::isEnabled)
+            .isEqualTo(false);
+        assertThat(themeCrudService.storage())
+            .filteredOn(t -> t.getId().equals(otherThemeId))
+            .singleElement()
+            .extracting(Theme::isEnabled)
+            .isEqualTo(true);
     }
 }

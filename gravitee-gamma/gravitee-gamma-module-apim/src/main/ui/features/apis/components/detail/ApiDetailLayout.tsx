@@ -37,67 +37,89 @@ import {
 } from '@gravitee/graphene-core';
 import { CircleCheckIcon, CircleStopIcon, CircleXIcon, TriangleAlertIcon } from '@gravitee/graphene-core/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useId, useState } from 'react';
-import { Navigate, Outlet, useParams } from 'react-router-dom';
+import { useEffect, useId, useMemo, useState } from 'react';
+import { Navigate, Outlet, useLocation, useParams, useSearchParams } from 'react-router-dom';
 
 import {
     API_PROXY_NAV_GROUPS,
     ApiDetailSidebarNav,
+    FEDERATED_ALLOWED_PATHS,
     withApiScoreEnabled,
+    withApiAlertPermission,
+    withDocumentationPermission,
+    withFederatedRestrictions,
     withMetadataPermission,
+    withObservabilityLinks,
+    withResponseTemplatesPermission,
+    withDeploymentPermissions,
     withTcpRestrictions,
 } from './ApiDetailSidebarNav';
+import { ApiReviewBanner } from './ApiReviewBanner';
+import { ApiReviewSheet } from './ApiReviewSheet';
+import { ConfirmDialog } from '../../../../shared/components';
 import { useDetailBasePath } from '../../../../shared/hooks/useDetailBasePath';
+import { notify } from '../../../../shared/notify';
 import { ApiDetailContext } from '../../context/ApiDetailContext';
 import { useApiDetail } from '../../hooks/useApiDetail';
 import { useApiPermissions } from '../../hooks/useApiPermissions';
+import { useApiReviewEnabled } from '../../hooks/useApiReviewEnabled';
 import { useApiScoreEnabled } from '../../hooks/useApiScoreEnabled';
+import { useAskForReviewDialog } from '../../hooks/useAskForReviewDialog';
 import { deployApi } from '../../services/apis';
 import type { ApiDetailDto } from '../../types';
-import { hasTcpListeners } from '../../utils/apiHttpProxy';
+import { API_ALERT_PAGE_PERMISSIONS } from '../../utils/alertPermissions';
+import { buildApiDashboardHref, buildApiLogsHref } from '../../utils/analyticsDeepLink';
+import { getApiProxyTypeLabel, hasTcpListeners, supportsResponseTemplates } from '../../utils/apiHttpProxy';
+import { isForbiddenError } from '../../utils/apiRequestError';
+import { apiReviewBannerCopy, canAskForReview, isAwaitingReviewerDecision, isReviewClearedForLifecycle } from '../../utils/apiReview';
+import { isFederatedAgentApi, isFederatedApi } from '../../utils/federatedApi';
 import { apiDetailKeys } from '../../utils/queryKeys';
 
 /** Classic console caps the deployment label at 32 characters. */
 const DEPLOYMENT_LABEL_MAX_LENGTH = 32;
 
-function StateIndicator({ state, deploymentState }: { state: ApiDetailDto['state']; deploymentState?: string }) {
-    if (state === 'STARTED' && deploymentState === 'NEED_REDEPLOY') {
-        return (
-            <Badge
-                className="gap-1 h-5 px-1.5 text-xs font-medium border-transparent"
-                style={{ backgroundColor: 'color-mix(in oklab, var(--color-warning) 12%, transparent)', color: 'var(--color-warning)' }}
-            >
-                <TriangleAlertIcon className="size-3" />
-                Out of sync
-            </Badge>
-        );
-    }
+/** Tasks & Approvals opens the API with this query parameter so the reviewer lands straight in the review sheet. */
+export const OPEN_REVIEW_SEARCH_PARAM = 'review';
 
-    switch (state) {
-        case 'STARTED':
-            return (
-                <Badge className="gap-1 h-5 px-1.5 text-xs font-medium bg-success/10 text-success border-transparent">
-                    <CircleCheckIcon className="size-3" />
-                    Started
+function apiBreadcrumbs(name: string | undefined, isLoading: boolean, isError: boolean): { label: string }[] {
+    if (isError) return [];
+    if (name) return [{ label: name.length > 40 ? `${name.slice(0, 40).trimEnd()}…` : name }];
+    if (isLoading) return [{ label: 'Loading…' }];
+    return [];
+}
+
+function StateIndicator({ state, deploymentState }: { state: ApiDetailDto['state']; deploymentState?: string }) {
+    const lifecycle =
+        state === 'STARTED' ? (
+            <Badge variant="success" className="gap-1 h-5 px-1.5 text-xs font-medium">
+                <CircleCheckIcon className="size-3" />
+                Started
+            </Badge>
+        ) : state === 'STOPPED' ? (
+            <Badge variant="secondary" className="gap-1 h-5 px-1.5 text-xs font-medium">
+                <CircleStopIcon className="size-3" />
+                Stopped
+            </Badge>
+        ) : state === 'CLOSED' ? (
+            <Badge variant="outline" className="gap-1 h-5 px-1.5 text-xs font-medium">
+                <CircleXIcon className="size-3" />
+                Closed
+            </Badge>
+        ) : null;
+
+    if (!lifecycle && deploymentState !== 'NEED_REDEPLOY') return null;
+
+    return (
+        <span className="flex flex-wrap gap-1">
+            {lifecycle}
+            {deploymentState === 'NEED_REDEPLOY' ? (
+                <Badge variant="warning" className="gap-1 h-5 px-1.5 text-xs font-medium">
+                    <TriangleAlertIcon className="size-3" />
+                    Out of sync
                 </Badge>
-            );
-        case 'STOPPED':
-            return (
-                <Badge variant="secondary" className="gap-1 h-5 px-1.5 text-xs font-medium">
-                    <CircleStopIcon className="size-3" />
-                    Stopped
-                </Badge>
-            );
-        case 'CLOSED':
-            return (
-                <Badge variant="outline" className="gap-1 h-5 px-1.5 text-xs font-medium text-muted-foreground">
-                    <CircleXIcon className="size-3" />
-                    Closed
-                </Badge>
-            );
-        default:
-            return null;
-    }
+            ) : null}
+        </span>
+    );
 }
 
 function ApiAvatar({ api }: { api: ApiDetailDto }) {
@@ -182,6 +204,18 @@ function DeployConfirmDialog({
     );
 }
 
+function ApiDetailContentSkeleton() {
+    return (
+        <div className="space-y-6 p-6" aria-busy="true" aria-live="polite">
+            <div className="space-y-2">
+                <Skeleton className="h-8 w-48 rounded" />
+                <Skeleton className="h-4 w-64 rounded" />
+            </div>
+            <Skeleton className="h-72 rounded-xl" />
+        </div>
+    );
+}
+
 function ApiInfoHeader({ api, isLoading }: { api: ApiDetailDto | null; isLoading: boolean }) {
     if (isLoading) {
         return (
@@ -240,7 +274,7 @@ function ApiInfoHeader({ api, isLoading }: { api: ApiDetailDto | null; isLoading
             <div className="flex flex-wrap items-center gap-1">
                 {api.type ? (
                     <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5">
-                        {api.type === 'PROXY' ? (hasTcpListeners(api) ? 'TCP Proxy' : 'HTTP Proxy') : 'Event-driven'}
+                        {api.type === 'PROXY' ? getApiProxyTypeLabel(api) : 'Event-driven'}
                     </Badge>
                 ) : null}
                 {api.apiVersion ? (
@@ -253,18 +287,46 @@ function ApiInfoHeader({ api, isLoading }: { api: ApiDetailDto | null; isLoading
     );
 }
 
+function firstChildSegment(pathname: string, basePath: string): string {
+    return pathname.slice(basePath.length).split('/')[1] ?? '';
+}
+
 export function ApiDetailLayout() {
     const { apiId } = useParams<{ apiId: string }>();
     const env = useEnvironment();
     const basePath = useDetailBasePath('apis', apiId);
-    const { data: api, isLoading, isError } = useApiDetail(apiId);
+    const { data: api, isLoading, isPending, isError, error } = useApiDetail(apiId);
+    const { pathname, search } = useLocation();
+    const routeAllowedForFederated = FEDERATED_ALLOWED_PATHS.has(firstChildSegment(pathname, basePath));
+
+    useEffect(() => {
+        if (!isError) return;
+        if (isForbiddenError(error)) {
+            console.warn('[ApiDetail] User lacks permission to read API', apiId, error);
+        } else {
+            console.error('[ApiDetail] Failed to load API', apiId, error);
+        }
+    }, [isError, error, apiId]);
+
+    const isAgent = isFederatedAgentApi(api);
     const { permissionsReady } = useApiPermissions(apiId);
+    const sidebarNavReady = permissionsReady && Boolean(api);
     const canDeploy = useHasPermission({ anyOf: ['api-definition-u'] });
+    const isApiReviewer = useHasPermission({ anyOf: ['api-reviews-u'] });
     const canReadMetadata = useHasPermission({ anyOf: ['api-metadata-r'] });
+    const canReadDefinition = useHasPermission({ anyOf: ['api-definition-r'] });
+    const canReadEvents = useHasPermission({ anyOf: ['api-event-r'] });
+    const canReadDocumentation = useHasPermission({ anyOf: ['api-documentation-r'] });
+    const canReadResponseTemplates = useHasPermission({ anyOf: ['api-response_templates-r'] });
+    const canAccessAlerts = useHasPermission({ anyOf: [...API_ALERT_PAGE_PERMISSIONS] });
+    const showResponseTemplates = Boolean(api) && canReadResponseTemplates && supportsResponseTemplates(api);
     const { enabled: apiScoreEnabled } = useApiScoreEnabled();
+    const { enabled: apiReviewEnabled } = useApiReviewEnabled();
     const queryClient = useQueryClient();
+    const [searchParams, setSearchParams] = useSearchParams();
     const [contextExpanded, setContextExpanded] = useState(true);
     const [showDeployDialog, setShowDeployDialog] = useState(false);
+    const [showReviewSheet, setShowReviewSheet] = useState(false);
 
     const deployMutation = useMutation({
         mutationFn: (deploymentLabel?: string) => {
@@ -277,12 +339,76 @@ export function ApiDetailLayout() {
                 queryClient.invalidateQueries({ queryKey: apiDetailKeys.detail(env.id, apiId) });
             }
         },
+        onError: (error: unknown) => {
+            setShowDeployDialog(false);
+            notify.error(error, 'An error occurred while deploying the API.');
+        },
     });
 
-    const showDeployBanner = !isError && api?.deploymentState === 'NEED_REDEPLOY' && canDeploy;
-    const navGroups = withApiScoreEnabled(
-        withMetadataPermission(withTcpRestrictions(API_PROXY_NAV_GROUPS, hasTcpListeners(api)), canReadMetadata),
-        apiScoreEnabled,
+    const askForReview = useAskForReviewDialog(apiId);
+
+    const workflowState = api?.workflowState;
+    const reviewClearsLifecycle = isReviewClearedForLifecycle(apiReviewEnabled, workflowState);
+    // Memoized: it feeds useLayoutConfig's dependency list, and a fresh object every render re-registers the layout forever.
+    const reviewBannerCopy = useMemo(() => {
+        if (isError || !api || !apiReviewEnabled || !permissionsReady) return null;
+
+        return apiReviewBannerCopy({
+            workflowState,
+            isReviewer: isApiReviewer,
+            canAsk: canDeploy && !isFederatedApi(api) && canAskForReview(apiReviewEnabled, workflowState),
+        });
+    }, [isError, api, apiReviewEnabled, permissionsReady, workflowState, isApiReviewer, canDeploy]);
+    // Deploying while a review is pending would bypass the reviewer, so the out-of-sync banner waits for the review.
+    const showDeployBanner = !isError && api?.deploymentState === 'NEED_REDEPLOY' && canDeploy && reviewClearsLifecycle;
+
+    const openReviewRequested = searchParams.has(OPEN_REVIEW_SEARCH_PARAM);
+    const canOpenReviewFromLink =
+        Boolean(api) && permissionsReady && isApiReviewer && isAwaitingReviewerDecision(apiReviewEnabled, workflowState);
+    useEffect(() => {
+        if (!openReviewRequested || !canOpenReviewFromLink) return;
+        setShowReviewSheet(true);
+        setSearchParams(
+            prev => {
+                if (!prev.has(OPEN_REVIEW_SEARCH_PARAM)) return prev;
+                const next = new URLSearchParams(prev);
+                next.delete(OPEN_REVIEW_SEARCH_PARAM);
+                return next;
+            },
+            { replace: true },
+        );
+    }, [openReviewRequested, canOpenReviewFromLink, setSearchParams]);
+    // The observability section hangs off the module root, one level above `/apis/:apiId`.
+    const moduleRoot = basePath.slice(0, basePath.lastIndexOf('/apis/'));
+    const navGroups = withFederatedRestrictions(
+        withDeploymentPermissions(
+            withApiAlertPermission(
+                withDocumentationPermission(
+                    withMetadataPermission(
+                        withTcpRestrictions(
+                            withObservabilityLinks(
+                                withResponseTemplatesPermission(
+                                    withApiScoreEnabled(API_PROXY_NAV_GROUPS, apiScoreEnabled),
+                                    showResponseTemplates,
+                                ),
+                                apiId
+                                    ? {
+                                          dashboardHref: buildApiDashboardHref(moduleRoot, apiId),
+                                          logsHref: buildApiLogsHref(moduleRoot, apiId),
+                                      }
+                                    : {},
+                            ),
+                            hasTcpListeners(api),
+                        ),
+                        canReadMetadata,
+                    ),
+                    canReadDocumentation,
+                ),
+                canAccessAlerts,
+            ),
+            { canReadEvents, canReadDefinition },
+        ),
+        isFederatedApi(api),
     );
 
     useLayoutConfig(
@@ -290,30 +416,48 @@ export function ApiDetailLayout() {
             viewMode: 'context',
             contextExpanded,
             contextSidebar: (
-                <ContextSidebar header={<ApiInfoHeader api={api ?? null} isLoading={isLoading} />}>
-                    <ApiDetailSidebarNav groups={navGroups} basePath={basePath} permissionsReady={permissionsReady} />
+                <ContextSidebar header={<ApiInfoHeader api={isError || isAgent ? null : (api ?? null)} isLoading={isLoading} />}>
+                    {isError || isAgent ? null : (
+                        <ApiDetailSidebarNav groups={navGroups} basePath={basePath} permissionsReady={sidebarNavReady} />
+                    )}
                 </ContextSidebar>
             ),
             leading: <ContextToggleButton expanded={contextExpanded} onToggle={() => setContextExpanded(v => !v)} />,
-            breadcrumbs: [
-                { label: 'API Proxies', href: `${basePath.slice(0, basePath.lastIndexOf('/apis/'))}${'/apis'}` },
-                { label: api?.name ? (api.name.length > 40 ? `${api.name.slice(0, 40).trimEnd()}…` : api.name) : 'Loading…' },
-            ],
-            banner: showDeployBanner ? (
-                <DeployBanner onDeploy={() => setShowDeployDialog(true)} isPending={deployMutation.isPending} />
-            ) : null,
+            breadcrumbs: [{ label: 'API Proxies', href: `${moduleRoot}/apis` }, ...apiBreadcrumbs(api?.name, isLoading, isError)],
+            banner:
+                reviewBannerCopy || showDeployBanner ? (
+                    <div>
+                        {reviewBannerCopy ? (
+                            <ApiReviewBanner
+                                copy={reviewBannerCopy}
+                                isPending={askForReview.isPending}
+                                onAskForReview={askForReview.openDialog}
+                                onReview={() => setShowReviewSheet(true)}
+                            />
+                        ) : null}
+                        {showDeployBanner ? (
+                            <DeployBanner onDeploy={() => setShowDeployDialog(true)} isPending={deployMutation.isPending} />
+                        ) : null}
+                    </div>
+                ) : null,
             bannerSticky: true,
         },
         [
             contextExpanded,
             api,
             isLoading,
+            isError,
             basePath,
-            permissionsReady,
+            sidebarNavReady,
             showDeployBanner,
             deployMutation.isPending,
+            reviewBannerCopy,
+            askForReview.isPending,
             canReadMetadata,
+            canReadDocumentation,
+            showResponseTemplates,
             apiScoreEnabled,
+            canAccessAlerts,
         ],
     );
 
@@ -325,21 +469,43 @@ export function ApiDetailLayout() {
         );
     }
 
+    if (isAgent) {
+        return (
+            <div className="flex items-center justify-center p-8">
+                <p className="text-sm text-muted-foreground">This API type is not available in API Proxies.</p>
+            </div>
+        );
+    }
+
+    if (isFederatedApi(api) && !routeAllowedForFederated) return <Navigate to={{ pathname: `${basePath}/general`, search }} replace />;
+
     return (
         <ApiDetailContext.Provider value={{ api: api ?? null, isLoading, permissionsReady }}>
-            <Outlet />
+            {isPending && !routeAllowedForFederated ? <ApiDetailContentSkeleton /> : <Outlet />}
             <DeployConfirmDialog
                 open={showDeployDialog}
                 isPending={deployMutation.isPending}
                 onConfirm={label => deployMutation.mutate(label || undefined)}
                 onOpenChange={setShowDeployDialog}
             />
+            {apiId ? <ApiReviewSheet apiId={apiId} open={showReviewSheet} onOpenChange={setShowReviewSheet} /> : null}
+            <ConfirmDialog {...askForReview.dialogProps} />
         </ApiDetailContext.Provider>
     );
 }
 
 export function ApiDetailIndexRedirect() {
     const { apiId } = useParams<{ apiId: string }>();
+    const { search } = useLocation();
     const basePath = useDetailBasePath('apis', apiId);
-    return <Navigate to={`${basePath}/overview`} replace />;
+    const { data: api, isPending } = useApiDetail(apiId);
+
+    // A `replace` redirect cannot be undone once it has fired, so redirecting before the API is known
+    // would strand a federated API on `overview` — a route its nav does not contain. `isPending`, not
+    // `isLoading`: the query is disabled until the environment resolves, and a disabled query reports
+    // `isLoading: false` with no data.
+    if (isPending) return null;
+
+    // Keep the query string: Tasks & Approvals deep-links to the API root with `?review`.
+    return <Navigate to={{ pathname: `${basePath}/${isFederatedApi(api) ? 'general' : 'overview'}`, search }} replace />;
 }

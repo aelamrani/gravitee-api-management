@@ -58,6 +58,9 @@ paths:
       description: |-
         Get v2 and v4 API analytics response status counts. Response statuses are grouped by endpoint and status code hundreds.
 
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getDashboardResponseStatusCodes
       responses:
         "200":
@@ -71,10 +74,13 @@ paths:
         - $ref: "#/components/parameters/to"
       tags:
         - Environment Analytics
-      summary: Get all v4 APIs with hits count per API sorted by mostly requested
+      summary: Get v2 and v4 APIs with hits count per API sorted by mostly requested
       description: |-
-        Get v4 API analytics top hits counts. All APIs are sorted starting from the most requested ones.
+        Get v2 and v4 API analytics top hits counts. APIs are sorted starting from the most requested ones.
 
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getDashboardTopHits
       responses:
         "200":
@@ -93,6 +99,9 @@ paths:
         Get analytics for v2 & v4 APIs regarding number of requests, requests per second and response max, min and average times for 
         specified time range. Analytics contains data only for HTTP GET, HTTP POST and HTTP PROXY entrypoints.
 
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getDashboardRequestResponseTime
       responses:
         "200":
@@ -110,7 +119,9 @@ paths:
       description: |-
         Get Environment Analytics average response time over time
         
-        User must have the API_ANALYTICS[READ] permission.
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getEnvironmentResponseTimeOverTime
       responses:
         "200":
@@ -126,7 +137,9 @@ paths:
       description: |-
         Get Environment analytics response status counts over time.
         
-        User must have the API_ANALYTICS[READ] permission.
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getEnvironmentResponseStatusOvertime
       responses:
         "200":
@@ -144,7 +157,9 @@ paths:
       description: |-
         Get Environment Analytics for top applications by the request count
         
-        User must have the API_ANALYTICS[READ] permission.
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getEnvironmentTopAppByRequestCount
       responses:
         "200":
@@ -162,7 +177,9 @@ paths:
       description: |-
         Get Environment Analytics for top failed v2 and v4 APIs 
         
-        User must have the API_ANALYTICS[READ] permission.
+        The result covers every API of the environment for a user with the ENVIRONMENT_PLATFORM[READ] permission, organization
+        administrators included; otherwise only the APIs the user is a member of, directly or through a group, with the
+        API_ANALYTICS[READ] permission. A user who can read no API gets an empty result.
       operationId: getEnvironmentTopFailedApis
       responses:
         "200":
@@ -335,6 +352,8 @@ paths:
       description: |-
         Returns every API of the environment, including those that have never been evaluated —
         those come back without a score. Use `apiTypes` to restrict the result to some API types.
+
+        User must have the ENVIRONMENT_API[READ] permission.
       parameters:
         - $ref: "#/components/parameters/pageParam"
         - $ref: "#/components/parameters/perPageParam"
@@ -350,6 +369,7 @@ paths:
         - Scoring
       summary: Get Scoring Environment Overview
       operationId: getScoringEnvironmentOverview
+      description: User must have the ENVIRONMENT_API[READ] permission.
       responses:
         "200":
           description: Scoring overview of the environment
@@ -365,6 +385,7 @@ paths:
         - Scoring
         - Rulesets
       summary: Create a new ruleset at environment level
+      description: User must have the ENVIRONMENT_API[CREATE] permission.
       operationId: createEnvironmentRuleset
       requestBody:
         content:
@@ -382,6 +403,7 @@ paths:
         - Scoring
         - Rulesets
       summary: Get all rulesets at environment level
+      description: User must have the ENVIRONMENT_API[READ] permission.
       operationId: getEnvironmentRulesets
       responses:
         "200":
@@ -394,6 +416,7 @@ paths:
         - Scoring
         - Rulesets
       summary: Delete a ruleset
+      description: User must have the ENVIRONMENT_API[DELETE] permission.
       operationId: deleteEnvironmentRuleset
       parameters:
         - $ref: "#/components/parameters/rulesetId"
@@ -407,6 +430,7 @@ paths:
         - Scoring
         - Rulesets
       summary: Get a specific ruleset
+      description: User must have the ENVIRONMENT_API[READ] permission.
       operationId: getEnvironmentRuleset
       parameters:
         - $ref: "#/components/parameters/rulesetId"
@@ -424,6 +448,7 @@ paths:
         - Scoring
         - Rulesets
       summary: Update ruleset
+      description: User must have the ENVIRONMENT_API[UPDATE] permission.
       operationId: updateEnvironmentRuleset
       parameters:
         - $ref: "#/components/parameters/rulesetId"
@@ -448,6 +473,7 @@ paths:
         - Scoring
         - Functions
       summary: Create a new scoring function at environment level
+      description: User must have the ENVIRONMENT_API[CREATE] permission to import a new function, or ENVIRONMENT_API[UPDATE] to replace an existing function with the same name.
       operationId: createEnvironmentScoringFunction
       requestBody:
         content:
@@ -465,6 +491,7 @@ paths:
         - Scoring
         - Functions
       summary: Get all functions at environment level
+      description: User must have the ENVIRONMENT_API[READ] permission.
       operationId: getEnvironmentScoringFunctions
       responses:
         "200":
@@ -477,6 +504,7 @@ paths:
         - Scoring
         - Functions
       summary: Delete a scoring function
+      description: User must have the ENVIRONMENT_API[DELETE] permission.
       operationId: deleteEnvironmentScoringFunction
       parameters:
         - $ref: "#/components/parameters/scoringFunctionName"
@@ -581,6 +609,9 @@ paths:
         `PENDING`: the gateway keeps serving the previous configuration, and the emptied
         configuration cannot be deployed until at least one backend is added back (the deploy
         endpoint rejects virtual clusters without backends).
+
+        Kafka cluster: removing a connection a started API uses (directly, or through a deployed
+        virtual cluster) is rejected with 409 `cluster.inUse`. Stopped APIs never block.
       operationId: updateCluster
       requestBody:
         content:
@@ -595,6 +626,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Cluster"
+        "409":
+          description: |-
+            The configuration removes a connection that started APIs use. `technicalCode` is
+            `cluster.inUse` and `parameters` maps the id of each of those APIs to its name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         default:
           $ref: "#/components/responses/Error"
     delete:
@@ -609,6 +648,14 @@ paths:
       responses:
         "204":
           description: Cluster deleted
+        "409":
+          description: |-
+            Started APIs still use the cluster. `technicalCode` is `cluster.inUse` and `parameters`
+            maps the id of each of those APIs to its name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         default:
           $ref: "#/components/responses/Error"
   /clusters/{clusterId}/_deploy:
@@ -633,6 +680,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: |-
+            The cluster removes, from the version deployed at the gateway, a connection that started
+            APIs use. `technicalCode` is `cluster.inUse` and `parameters` maps the id of each of those
+            APIs to its name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         default:
           $ref: "#/components/responses/Error"
   /clusters/{clusterId}/_undeploy:
@@ -645,9 +701,11 @@ paths:
       description: |-
         Undeploy the cluster from the gateway. Sets lifecycle state to UNDEPLOYED.
 
-        A Kafka virtual cluster cannot be undeployed while a started Kafka Native API is bound to it
-        (via a `native-kafka-virtual-cluster` endpoint): the request is rejected with 400 so the
-        started API is never left pointing at an undeployed cluster.
+        A cluster cannot be undeployed while a started API uses it: a Kafka Native API (through a
+        `native-kafka-cluster` or `native-kafka-virtual-cluster` endpoint), a Message API (through a
+        `kafka` endpoint in `CLUSTER` mode), or a Kafka Native API using a deployed virtual cluster with
+        a backend on it. The request is rejected with 409 so a started API is never left pointing at an
+        undeployed cluster. Stopped APIs never block.
       operationId: undeployCluster
       responses:
         "200":
@@ -656,14 +714,49 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Cluster"
-        "400":
+        "409":
           description: |-
-            The Kafka virtual cluster cannot be undeployed because one or more started Kafka Native
-            APIs are bound to it. Stop those APIs first.
+            Started APIs use the cluster. Stop them first. `technicalCode` is `cluster.inUse` and
+            `parameters` maps the id of each of those APIs to its name.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /clusters/{clusterId}/started-apis:
+    parameters:
+      - $ref: "#/components/parameters/clusterId"
+    get:
+      tags:
+        - Clusters
+      summary: List the started APIs that block a change of a cluster
+      description: |-
+        User must have the CLUSTER_DEFINITION[READ] permission.
+
+        The started APIs that use the cluster, sorted by name: a Kafka Native API (through a
+        `native-kafka-cluster` or `native-kafka-virtual-cluster` endpoint), a Message API (through a `kafka`
+        endpoint in `CLUSTER` mode), or a Kafka Native API using a deployed virtual cluster with a backend on it.
+        They block undeploying or deleting the cluster. With `connectionCrossId`, only the started APIs using
+        one of these connections: they block removing them. Stopped APIs are never listed.
+      operationId: getClusterStartedApis
+      parameters:
+        - name: connectionCrossId
+          in: query
+          required: false
+          description: Cross ids of the connections about to be removed. Comma-separate several connections (`?connectionCrossId=main,spare`).
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: The started APIs that block the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterStartedApisResponse"
         default:
           $ref: "#/components/responses/Error"
   /clusters/{clusterId}/groups:
@@ -811,6 +904,8 @@ paths:
       summary: Generate Expression Language
       description: |-
         Generate Expression Language.
+
+        User must have the ENVIRONMENT_API[READ] permission. Generate calls are rate-limited per user on each Management API node.
       operationId: generateEl
       requestBody:
         content:
@@ -821,6 +916,17 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/GenerateExpressionLanguageResponse"
+        "429":
+          description: Too many Newt AI requests for this user
+          headers:
+            Retry-After:
+              description: Seconds until this user's window resets on this Management API node
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         default:
           $ref: "#/components/responses/Error"
 
@@ -923,7 +1029,9 @@ paths:
       tags:
         - Portal Pages
       summary: Get portal page content
-      description: User must have the ENVIRONMENT_DOCUMENTATION[read] permission.
+      description: |-
+        Get portal page content belonging to the current organization and environment.
+        User must have the ENVIRONMENT_DOCUMENTATION[read] permission.
       operationId: getPortalPageContent
       parameters:
         - name: portalPageContentId
@@ -935,6 +1043,12 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/PortalPageContentResponse"
+        "404":
+          description: The content does not exist in the current organization and environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         default:
           $ref: "#/components/responses/Error"
     put:
@@ -992,7 +1106,9 @@ paths:
       tags:
         - Portal Navigation Items
       summary: Get portal navigation items
-      description: User must have the ENVIRONMENT_DOCUMENTATION[read] permission.
+      description: |
+        User must have the ENVIRONMENT_DOCUMENTATION[read] permission.
+        Returns the rendered navigation hierarchy. API-owned documentation roots may be displayed under an API navigation item with rendered parentId and rootId values, while retaining their navigation item and page content IDs.
       operationId: getPortalNavigationItems
       parameters:
         - $ref: '#/components/parameters/portalArea'
@@ -1028,7 +1144,11 @@ paths:
       tags:
         - Portal Navigation Items
       summary: Create a portal navigation item
-      description: User must have the ENVIRONMENT_DOCUMENTATION[update] permission.
+      description: |
+        User must have the ENVIRONMENT_DOCUMENTATION[update] permission.
+        PAGE, FOLDER, and LINK items created under a standalone API navigation item or an API-owned documentation folder inherit the API documentation owner.
+        An API navigation item is standalone only when it has no API Product ancestor, including through intermediate folders.
+        An API-owned documentation root created under a standalone API navigation item is returned with the same rendered parentId and rootId values as GET for that selected navigation item. Its navigation item and page content IDs are unchanged. The stored root remains API-owned with no parentId and its own ID as rootId; items created under an API-owned documentation folder retain that folder as their parent.
       operationId: createPortalNavigationItem
       requestBody:
         content:
@@ -1038,7 +1158,7 @@ paths:
         required: true
       responses:
         "201":
-          description: Portal navigation item created. Newly created items are unpublished by default.
+          description: Portal navigation item created in the selected navigation context. Newly created items are unpublished by default.
           content:
             application/json:
               schema:
@@ -1069,7 +1189,11 @@ paths:
       tags:
         - Portal Navigation Items
       summary: Create portal navigation items in bulk
-      description: User must have the ENVIRONMENT_DOCUMENTATION[update] permission.
+      description: |
+        User must have the ENVIRONMENT_DOCUMENTATION[update] permission.
+        PAGE, FOLDER, and LINK items inherit API documentation ownership from a standalone API navigation item or an API-owned documentation folder, including a parent created in the same request. Parents must precede their children in the request.
+        An API navigation item is standalone only when it has no API Product ancestor, including through intermediate folders.
+        An API-owned documentation root created under a standalone API navigation item is returned with the same rendered parentId and rootId values as GET for that selected navigation item, including when the parent is created in the same request. Its navigation item and page content IDs are unchanged. The stored root remains API-owned with no parentId and its own ID as rootId; items created under an API-owned documentation folder retain that folder as their parent.
       operationId: createPortalNavigationItemsInBulk
       requestBody:
         content:
@@ -1174,6 +1298,10 @@ paths:
         When publishing a container, descendants are published only if `propagatePublishToChildren=true`.
         If `propagatePublishToChildren` is omitted or false, only the selected item is published.
         When unpublishing a container, descendants are always unpublished according to the business rule; `propagatePublishToChildren` is ignored and may be omitted.
+        Descendants include physically nested navigation items and, for APIs outside an API Product, API-owned documentation and its nested items.
+        APIs inside an API Product propagate publication only through their physically nested documentation; matching an API ID does not propagate publication between standalone and product contexts.
+        Traversal continues through intermediate containers that already have the target publication status.
+        Publication propagation does not change documentation ownership, hierarchy, ordering, or visibility.
       operationId: updatePortalNavigationItem
       parameters:
         - name: navId
@@ -1191,6 +1319,7 @@ paths:
             If omitted or false, publishing affects only the selected item.
             If true, publishing also affects descendants.
             Ignored for unpublish; container descendants are always unpublished according to the business rule.
+            For APIs outside an API Product, descendants also include API-owned documentation. APIs inside an API Product retain their independent documentation publication lifecycle.
           required: false
           schema:
             type: boolean
@@ -1391,12 +1520,97 @@ paths:
     get:
       tags:
         - Subscription Forms
-      summary: Get subscription form for environment
+      summary: List the subscription forms of the environment
       description: |-
-        Get the subscription form for the environment. Returns the form definition used
-        by API consumers when subscribing to APIs in the Developer Portal.
-        
-        User must have the ENVIRONMENT_SETTINGS[READ] permission.
+        List the catalog of subscription forms of the environment, sorted by name. Each API consumer
+        subscribing in the Developer Portal sees the form mapped to the API, if any.
+
+        User must have the ENVIRONMENT_METADATA[READ] permission.
+      operationId: listSubscriptionForms
+      responses:
+        "200":
+          description: Subscription forms of the environment
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SubscriptionForm"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags:
+        - Subscription Forms
+      summary: Create a subscription form
+      description: |-
+        Add a form to the environment catalog. The form is created disabled.
+
+        User must have the ENVIRONMENT_METADATA[CREATE] permission.
+      operationId: createSubscriptionForm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSubscriptionForm"
+      responses:
+        "201":
+          description: Subscription form created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionForm"
+        "400":
+          description: Invalid name or GMD content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A subscription form with the same name already exists in this environment, or another form already claims one of the APIs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /subscription-forms/_template:
+    get:
+      tags:
+        - Subscription Forms
+      summary: Get the subscription form template
+      description: |-
+        The Gravitee Markdown definition a new subscription form starts from.
+
+        User must have the ENVIRONMENT_METADATA[READ] permission.
+      operationId: getSubscriptionFormTemplate
+      responses:
+        "200":
+          description: The template definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionFormTemplate"
+        default:
+          $ref: "#/components/responses/Error"
+  /subscription-forms/{subscriptionFormId}:
+    parameters:
+      - name: subscriptionFormId
+        in: path
+        required: true
+        description: The unique ID of the subscription form
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags:
+        - Subscription Forms
+      summary: Get a subscription form
+      description: |-
+        Get one form of the catalog, whether enabled or not, with the option lists of its dynamic fields
+        resolved without API context.
+
+        User must have the ENVIRONMENT_METADATA[READ] permission.
       operationId: getSubscriptionForm
       responses:
         "200":
@@ -1406,34 +1620,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/SubscriptionForm"
         "404":
-          description: No subscription form exists for this environment
+          description: No subscription form exists with this ID
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         default:
           $ref: "#/components/responses/Error"
-  /subscription-forms/{subscriptionFormId}:
     put:
       tags:
         - Subscription Forms
       summary: Update subscription form
       description: |-
-        Update the existing subscription form. The form content is defined using Gravitee Markdown (GMD)
-        syntax with form components.
-        
-        Note: This operation does NOT change the enabled state. Use _enable/_disable endpoints for that.
-        
-        User must have the ENVIRONMENT_SETTINGS[UPDATE] permission.
+        Update the name and definition of a subscription form. The form content is defined using
+        Gravitee Markdown (GMD) syntax with form components.
+
+        Note: This operation does NOT change the enabled state. Use the _enable and _disable endpoints for it.
+
+        User must have the ENVIRONMENT_METADATA[UPDATE] permission.
       operationId: updateSubscriptionForm
-      parameters:
-        - name: subscriptionFormId
-          in: path
-          required: true
-          description: The unique ID of the subscription form
-          schema:
-            type: string
-            format: uuid
       requestBody:
         required: true
         content:
@@ -1448,11 +1653,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/SubscriptionForm"
         "400":
-          description: Invalid or unsafe GMD content
+          description: Invalid name or unsafe GMD content
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "404":
+          description: No subscription form exists with this ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another subscription form of this environment already has this name, or already claims one of the APIs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      tags:
+        - Subscription Forms
+      summary: Delete a subscription form
+      description: |-
+        Remove a form from the catalog, with its definition and its API mappings: its APIs no longer have a
+        subscription form.
+
+        User must have the ENVIRONMENT_METADATA[DELETE] permission.
+      operationId: deleteSubscriptionForm
+      responses:
+        "204":
+          description: Subscription form deleted
         "404":
           description: No subscription form exists with this ID
           content:
@@ -1469,10 +1701,10 @@ paths:
       description: |-
         Enable the subscription form to make it visible to API consumers in the Developer Portal.
         When enabled, the form will be displayed during the API subscription process.
-        
+
         This operation is idempotent - enabling an already enabled form returns success.
-        
-        User must have the ENVIRONMENT_SETTINGS[UPDATE] permission.
+
+        User must have the ENVIRONMENT_METADATA[UPDATE] permission.
       operationId: enableSubscriptionForm
       parameters:
         - name: subscriptionFormId
@@ -1505,10 +1737,10 @@ paths:
       description: |-
         Disable the subscription form to hide it from API consumers in the Developer Portal.
         When disabled, the form will not be displayed during the API subscription process.
-        
+
         This operation is idempotent - disabling an already disabled form returns success.
-        
-        User must have the ENVIRONMENT_SETTINGS[UPDATE] permission.
+
+        User must have the ENVIRONMENT_METADATA[UPDATE] permission.
       operationId: disableSubscriptionForm
       parameters:
         - name: subscriptionFormId
@@ -1718,7 +1950,9 @@ components:
           $ref: "#/components/schemas/BaseOriginContext"
         steps:
           type: array
-          description: The list of steps (policies) in the shared policy group
+          description: |-
+            The list of steps (policies) in the shared policy group.
+            Only returned to a caller with the `SHARED_POLICY_GROUP` `UPDATE` permission on the environment.
           items:
             $ref: "#/components/schemas/StepV4"
         phase:
@@ -1817,6 +2051,23 @@ components:
         configuration:
           type: object
       required: [ "type", "name", "configuration" ]
+    ClusterStartedApisResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClusterStartedApi"
+    ClusterStartedApi:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/ApiType"
+      required: [ "id", "name", "type" ]
     Cluster:
       type: object
       properties:
@@ -2747,7 +2998,8 @@ components:
             portalPageContentId:
               type: string
               format: uuid
-              description: The UUID of the portal page content
+              deprecated: true
+              description: Ignored. A new page content is always created for the page.
               example: 00f8c9e7-78fc-4907-b8c9-e778fc790750
             contentType:
               $ref: "#/components/schemas/PortalPageContentType"
@@ -2872,7 +3124,10 @@ components:
         parentId:
           type: string
           format: uuid
-          description: The parent ID of the navigation item, if not provided item is moved to the root level
+          description: >-
+            The parent ID of the navigation item. If omitted, the item is moved to the root level of its existing owner.
+            For API-owned pages, folders, and links, an API navigation item referencing the same API represents that API's
+            documentation root. Sending its ID preserves API ownership and does not physically attach the document to that navigation item.
           example: 00f8c9e7-78fc-4907-b8c9-e778fc790750
         published:
           type: boolean
@@ -3195,6 +3450,10 @@ components:
           format: uuid
           description: Unique identifier of the subscription form
           example: 550e8400-e29b-41d4-a716-446655440000
+        name:
+          type: string
+          description: Display name of the form, unique within the environment
+          example: Partner onboarding
         gmdContent:
           type: string
           description: |-
@@ -3209,6 +3468,12 @@ components:
           type: boolean
           description: Whether the form is enabled and visible to API consumers in the Developer Portal
           example: false
+        apiIds:
+          type: array
+          description: Identifiers of the APIs this form is dedicated to. An API is mapped to at most one form.
+          items:
+            type: string
+          example: [ "6c530064-0b2c-4004-9300-640b2ca00499" ]
         resolvedOptions:
           type: object
           description: |-
@@ -3221,12 +3486,59 @@ components:
               type: string
       required:
         - id
+        - name
         - gmdContent
         - enabled
+        - apiIds
+    SubscriptionFormTemplate:
+      type: object
+      description: The Gravitee Markdown definition a new subscription form starts from
+      properties:
+        gmdContent:
+          type: string
+          description: Gravitee Markdown (GMD) content of the template
+      required:
+        - gmdContent
+    CreateSubscriptionForm:
+      type: object
+      description: Payload for adding a subscription form to the environment catalog
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Display name of the form, unique within the environment
+          example: Partner onboarding
+        gmdContent:
+          type: string
+          minLength: 1
+          description: |-
+            Gravitee Markdown (GMD) content defining the form.
+            Supports form components like gmd-input, gmd-textarea, gmd-select, gmd-checkbox, gmd-radio.
+            
+            Content is validated for security - malicious HTML/scripts will be rejected.
+          example: |
+            # Subscription Information
+            
+            <gmd-input name="consumer_company_name" label="Company Name" required="true"/>
+        apiIds:
+          type: array
+          description: Identifiers of the APIs this form is dedicated to. Each must belong to the environment and to no other form.
+          items:
+            type: string
+      required:
+        - name
+        - gmdContent
     UpdateSubscriptionForm:
       type: object
       description: Payload for updating a subscription form
       properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Display name of the form, unique within the environment
+          example: Partner onboarding
         gmdContent:
           type: string
           minLength: 1
@@ -3240,8 +3552,21 @@ components:
             
             <gmd-input name="consumer_company_name" label="Company Name" required="true"/>
             <gmd-textarea name="consumer_use_case" label="Use Case" required="true"/>
+        apiIds:
+          type: array
+          # nullable: without it the generated model defaults an absent list to an empty one, which would unmap
+          # every API; kept null, it is rejected with a 400 by the @NotNull that 'required' still generates.
+          nullable: true
+          description: |-
+            Identifiers of the APIs this form is dedicated to, replacing the current ones like the name and the
+            definition. Required: an empty list unmaps every API. Each must belong to the environment and to no
+            other form.
+          items:
+            type: string
       required:
+        - name
         - gmdContent
+        - apiIds
 
   parameters:
     pageParam:

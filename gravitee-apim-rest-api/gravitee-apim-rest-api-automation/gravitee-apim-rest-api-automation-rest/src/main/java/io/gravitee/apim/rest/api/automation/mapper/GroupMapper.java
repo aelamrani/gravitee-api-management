@@ -20,12 +20,15 @@ import io.gravitee.apim.core.group.model.crd.GroupCRDSpec;
 import io.gravitee.apim.core.group.model.crd.GroupCRDStatus;
 import io.gravitee.apim.core.member.model.RoleScope;
 import io.gravitee.apim.rest.api.automation.model.Errors;
+import io.gravitee.apim.rest.api.automation.model.GroupDefaultMemberRoles;
 import io.gravitee.apim.rest.api.automation.model.GroupMember;
 import io.gravitee.apim.rest.api.automation.model.GroupSpec;
 import io.gravitee.apim.rest.api.automation.model.GroupState;
 import io.gravitee.rest.api.management.v2.rest.mapper.CollectionFactory;
+import io.gravitee.rest.api.model.GroupEntity;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.mapstruct.Mapper;
@@ -44,6 +47,11 @@ public interface GroupMapper {
 
     @Mapping(target = "id", ignore = true)
     @Mapping(target = "origin", expression = "java(io.gravitee.definition.model.Origin.KUBERNETES.name())")
+    @Mapping(target = "defaultMemberRoles", qualifiedByName = "defaultMemberRolesToMap")
+    @Mapping(target = "apiRole", ignore = true)
+    @Mapping(target = "applicationRole", ignore = true)
+    @Mapping(target = "apiProductRole", ignore = true)
+    @Mapping(target = "ignoreMembers", ignore = true)
     GroupCRDSpec groupSpecToGroupCRDSpec(GroupSpec groupSpec);
 
     @Mapping(target = "id", ignore = true)
@@ -74,7 +82,12 @@ public interface GroupMapper {
     @Mapping(target = "memberCount", ignore = true)
     void mapSpecToState(GroupSpec spec, @MappingTarget GroupState state);
 
-    default GroupState groupToGroupState(Group group, Set<GroupCRDSpec.Member> members, ExecutionContext executionContext) {
+    default GroupState groupToGroupState(
+        Group group,
+        Set<GroupCRDSpec.Member> members,
+        GroupDefaultMemberRoles defaultMemberRoles,
+        ExecutionContext executionContext
+    ) {
         var state = new GroupState(
             group.getId(),
             executionContext.getEnvironmentId(),
@@ -84,6 +97,7 @@ public interface GroupMapper {
         );
         mapGroupToState(group, state);
         state.setMembers(members != null ? members.stream().map(this::memberToGroupMember).toList() : null);
+        state.setDefaultMemberRoles(defaultMemberRoles);
         return state;
     }
 
@@ -93,8 +107,46 @@ public interface GroupMapper {
     @Mapping(target = "errors", ignore = true)
     @Mapping(target = "memberCount", ignore = true)
     @Mapping(target = "members", ignore = true)
+    @Mapping(target = "defaultMemberRoles", ignore = true)
     @Mapping(target = "notifyMembers", expression = "java(!group.isDisableMembershipNotifications())")
     void mapGroupToState(Group group, @MappingTarget GroupState state);
+
+    /**
+     * An absent object means "not declared": the group's default roles are left untouched. A declared one is the whole
+     * set; its unset scopes are cleared.
+     */
+    @Named("defaultMemberRolesToMap")
+    default Map<RoleScope, String> defaultMemberRolesToMap(GroupDefaultMemberRoles roles) {
+        if (roles == null) {
+            return null;
+        }
+        var map = new java.util.LinkedHashMap<RoleScope, String>();
+        if (roles.getApi() != null) {
+            map.put(RoleScope.API, roles.getApi());
+        }
+        if (roles.getApplication() != null) {
+            map.put(RoleScope.APPLICATION, roles.getApplication());
+        }
+        if (roles.getApiProduct() != null) {
+            map.put(RoleScope.API_PRODUCT, roles.getApiProduct());
+        }
+        return map;
+    }
+
+    /**
+     * The group's default roles as APIM holds them; an empty object when it has none, so that a client that declared
+     * {} reads back what it sent.
+     */
+    @Named("groupEntityToDefaultMemberRoles")
+    default GroupDefaultMemberRoles groupEntityToDefaultMemberRoles(GroupEntity group) {
+        var roles = Optional.ofNullable(group)
+            .map(GroupEntity::getRoles)
+            .orElse(Map.<io.gravitee.rest.api.model.permissions.RoleScope, String>of());
+        return new GroupDefaultMemberRoles()
+            .api(roles.get(io.gravitee.rest.api.model.permissions.RoleScope.API))
+            .application(roles.get(io.gravitee.rest.api.model.permissions.RoleScope.APPLICATION))
+            .apiProduct(roles.get(io.gravitee.rest.api.model.permissions.RoleScope.API_PRODUCT));
+    }
 
     @Named("stringMapToRoleScopeMap")
     default Map<RoleScope, String> stringMapToRoleScopeMap(Map<String, String> roles) {

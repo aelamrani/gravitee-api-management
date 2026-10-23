@@ -94,6 +94,7 @@ public class ApiNotificationSettingsResource extends AbstractResource {
             throw new ForbiddenAccessException();
         }
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        config.setOrganizationId(executionContext.getOrganizationId());
         if (
             config.getConfigType().equals(NotificationConfigType.GENERIC) && hasPermission(executionContext, API_NOTIFICATION, api, CREATE)
         ) {
@@ -155,7 +156,7 @@ public class ApiNotificationSettingsResource extends AbstractResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Permissions({ @Permission(value = API_NOTIFICATION, acls = DELETE) })
     public Response deleteApiNotificationSettings(@PathParam("notificationId") String notificationId) {
-        genericNotificationConfigService.delete(notificationId);
+        genericNotificationConfigService.delete(notificationId, NotificationReferenceType.API, api);
         return Response.noContent().build();
     }
 

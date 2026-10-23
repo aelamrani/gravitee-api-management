@@ -196,7 +196,7 @@ public interface ApiAdapter {
         try {
             return GraviteeJacksonMapper.getInstance().readValue(api.getDefinition(), clazz);
         } catch (IOException ioe) {
-            log.error("Unexpected error while deserializing V4 API definition", ioe);
+            log.error("Unexpected error while deserializing {} definition of API {}", clazz.getSimpleName(), api.getId(), ioe);
             return null;
         }
     }

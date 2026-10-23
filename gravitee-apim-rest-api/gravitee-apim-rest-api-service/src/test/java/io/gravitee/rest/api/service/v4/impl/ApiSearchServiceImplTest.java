@@ -23,6 +23,7 @@ import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -39,6 +40,7 @@ import io.gravitee.repository.management.api.search.ApiCriteria;
 import io.gravitee.repository.management.api.search.ApiFieldFilter;
 import io.gravitee.repository.management.model.Api;
 import io.gravitee.repository.management.model.ApiLifecycleState;
+import io.gravitee.repository.management.model.Integration;
 import io.gravitee.repository.management.model.LifecycleState;
 import io.gravitee.repository.management.model.Visibility;
 import io.gravitee.repository.management.model.flow.FlowReferenceType;
@@ -46,6 +48,8 @@ import io.gravitee.rest.api.model.CategoryEntity;
 import io.gravitee.rest.api.model.PrimaryOwnerEntity;
 import io.gravitee.rest.api.model.UserEntity;
 import io.gravitee.rest.api.model.api.ApiQuery;
+import io.gravitee.rest.api.model.context.OriginContext;
+import io.gravitee.rest.api.model.federation.FederatedApiEntity;
 import io.gravitee.rest.api.model.v4.api.ApiEntity;
 import io.gravitee.rest.api.model.v4.api.GenericApiEntity;
 import io.gravitee.rest.api.service.CategoryService;
@@ -323,6 +327,37 @@ public class ApiSearchServiceImplTest {
     }
 
     @Test
+    public void should_enrich_federated_api_origin_context_with_integration_name_and_provider() throws TechnicalException {
+        Api federatedApi = new Api();
+        federatedApi.setId(API_ID);
+        federatedApi.setDefinitionVersion(DefinitionVersion.FEDERATED);
+        federatedApi.setEnvironmentId("DEFAULT");
+        federatedApi.setOrigin(Api.ORIGIN_INTEGRATION);
+        federatedApi.setIntegrationId("integration-id");
+
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(federatedApi));
+        UserEntity userEntity = new UserEntity();
+        userEntity.setId("user");
+        when(primaryOwnerService.getPrimaryOwner(any(), eq(API_ID))).thenReturn(new PrimaryOwnerEntity(userEntity));
+        when(integrationRepository.findByIntegrationId("integration-id")).thenReturn(
+            Optional.of(Integration.builder().id("integration-id").name("AWS Gateway Prod").provider("aws-api-gateway").build())
+        );
+
+        final GenericApiEntity genericApi = apiSearchService.findGenericById(
+            GraviteeContext.getExecutionContext(),
+            API_ID,
+            false,
+            false,
+            false
+        );
+
+        assertThat(genericApi).isInstanceOf(FederatedApiEntity.class);
+        assertThat(((FederatedApiEntity) genericApi).getOriginContext()).isEqualTo(
+            new OriginContext.Integration("integration-id", "AWS Gateway Prod", "aws-api-gateway")
+        );
+    }
+
+    @Test
     public void shouldFindV2GenericApiWithNoDefinitionVersion() throws TechnicalException {
         Api api = new Api();
         api.setId(API_ID);
@@ -383,6 +418,27 @@ public class ApiSearchServiceImplTest {
     }
 
     @Test
+    void should_not_find_generic_api_from_another_environment() throws TechnicalException {
+        api.setEnvironmentId("other-environment");
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.of(api));
+
+        assertThrows(ApiNotFoundException.class, () ->
+            apiSearchService.findGenericById(GraviteeContext.getExecutionContext(), API_ID, false, false, false)
+        );
+        verifyNoInteractions(primaryOwnerService, integrationRepository);
+    }
+
+    @Test
+    void should_not_enrich_missing_generic_api() throws TechnicalException {
+        when(apiRepository.findById(API_ID)).thenReturn(Optional.empty());
+
+        assertThrows(ApiNotFoundException.class, () ->
+            apiSearchService.findGenericById(GraviteeContext.getExecutionContext(), API_ID, false, false, false)
+        );
+        verifyNoInteractions(primaryOwnerService, integrationRepository);
+    }
+
+    @Test
     public void shouldNotFindBecauseNotExists() throws TechnicalException {
         assertThrows(ApiNotFoundException.class, () -> {
             when(apiRepository.findById(API_ID)).thenReturn(Optional.empty());
@@ -409,6 +465,29 @@ public class ApiSearchServiceImplTest {
 
         boolean exists = apiSearchService.exists(API_ID);
         assertThat(exists).isTrue();
+    }
+
+    @Test
+    public void shouldStillReturnTheApisThatHaveAPrimaryOwnerWhenOneDoesNot() {
+        final Api owned = new Api();
+        owned.setId("owned");
+        final Api orphan = new Api();
+        orphan.setId("orphan");
+        when(apiRepository.search(any(ApiCriteria.class), eq(ApiFieldFilter.allFields()))).thenReturn(List.of(owned, orphan));
+
+        UserEntity admin = new UserEntity();
+        admin.setId("admin");
+        when(primaryOwnerService.getPrimaryOwners(any(), any())).thenReturn(Map.of("owned", new PrimaryOwnerEntity(admin)));
+
+        final Set<GenericApiEntity> found = apiSearchService.findGenericByEnvironmentAndIdIn(
+            GraviteeContext.getExecutionContext(),
+            Set.of("owned", "orphan")
+        );
+
+        // Only the API with no identified primary owner is dropped. Filtering on every requested id instead
+        // emptied the whole answer, and callers that read absence as "the API is gone" then saw all of them go.
+        assertEquals(1, found.size());
+        assertEquals("owned", found.iterator().next().getId());
     }
 
     @Test

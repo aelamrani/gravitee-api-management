@@ -20,6 +20,7 @@ import { cloneDeep, filter, forEach } from 'lodash';
 
 import DictionaryService from '../../../services/dictionary.service';
 import NotificationService from '../../../services/notification.service';
+import { ENCRYPTED_VALUE_MASK } from '../../../shared/utils/encrypted-value-mask.util';
 
 class DictionaryController {
   private dictionary: any;
@@ -147,18 +148,15 @@ class DictionaryController {
 
   update() {
     if (!this.updateMode) {
-      this.DictionaryService.create(this.dictionary).then((response: any) => {
+      return this.DictionaryService.create(this.dictionary).then((response: any) => {
         this.NotificationService.show('Dictionary ' + this.dictionary.name + ' has been created');
         this.ngRouter.navigate(['../', response.data.id], { relativeTo: this.activatedRoute });
       });
-    } else {
-      this.DictionaryService.update(this.dictionary).then(response => {
-        this.NotificationService.show('Dictionary ' + this.dictionary.name + ' has been updated');
-        this.dictionary = response.data;
-        this.dictProperties = this.computeProperties();
-        this.propertiesDirty = false;
-      });
     }
+    return this.saveDictionary(
+      server => ({ ...server, ...this.editedGeneral() }),
+      () => this.editedProperties(),
+    ).then(() => this.NotificationService.show('Dictionary ' + this.dictionary.name + ' has been updated'));
   }
 
   delete() {
@@ -166,7 +164,7 @@ class DictionaryController {
       .show({
         controller: 'DialogConfirmController',
         controllerAs: 'ctrl',
-        template: require('html-loader!../../../components/dialog/confirmWarning.dialog.html').default, // eslint-disable-line @typescript-eslint/no-var-requires
+        template: require('html-loader!../../../components/dialog/confirmWarning.dialog.html').default, // eslint-disable-line @typescript-eslint/no-require-imports
         clickOutsideToClose: true,
         locals: {
           title: 'Are you sure you want to delete this dictionary?',
@@ -184,29 +182,23 @@ class DictionaryController {
   }
 
   deploy() {
-    this.DictionaryService.deploy(this.dictionary).then(response => {
+    return this.DictionaryService.deploy(this.dictionary).then(response => {
       this.NotificationService.show('Dictionary ' + this.dictionary.name + ' has been deployed');
-      this.dictionary = response.data;
-      this.dictProperties = this.computeProperties();
-      this.propertiesDirty = false;
+      this.applyServerState(response, this.editedSections());
     });
   }
 
   start() {
-    this.DictionaryService.start(this.dictionary).then(response => {
+    return this.DictionaryService.start(this.dictionary).then(response => {
       this.NotificationService.show('Dictionary ' + this.dictionary.name + ' has been started');
-      this.dictionary = response.data;
-      this.dictProperties = this.computeProperties();
-      this.propertiesDirty = false;
+      this.applyServerState(response, this.editedSections());
     });
   }
 
   stop() {
-    this.DictionaryService.stop(this.dictionary).then(response => {
+    return this.DictionaryService.stop(this.dictionary).then(response => {
       this.NotificationService.show('Dictionary ' + this.dictionary.name + ' has been stopped');
-      this.dictionary = response.data;
-      this.dictProperties = this.computeProperties();
-      this.propertiesDirty = false;
+      this.applyServerState(response, this.editedSections());
     });
   }
 
@@ -219,8 +211,11 @@ class DictionaryController {
       .show({
         controller: 'DialogDictionaryAddPropertyController',
         controllerAs: 'dialogDictionaryAddPropertyCtrl',
-        template: require('html-loader!./add-property.dialog.html').default, // eslint-disable-line @typescript-eslint/no-var-requires
+        template: require('html-loader!./add-property.dialog.html').default, // eslint-disable-line @typescript-eslint/no-require-imports
         clickOutsideToClose: true,
+        locals: {
+          existingKeys: Object.keys(this.dictionary.properties || {}),
+        },
       })
       .then(property => {
         if (this.dictionary.properties === undefined) {
@@ -229,6 +224,9 @@ class DictionaryController {
 
         if (property) {
           this.dictionary.properties[property.key] = property.value;
+          if (property.encryptable) {
+            this.encryptProperty(property.key);
+          }
           ++this.query.total;
           this.propertiesDirty = true;
         }
@@ -241,11 +239,15 @@ class DictionaryController {
   editProperty(event, key, value) {
     event.stopPropagation();
 
+    if (!this.isValueEditableKey(key)) {
+      return;
+    }
+
     return this.$mdDialog
       .show({
         controller: 'DialogDictionaryEditPropertyController',
         controllerAs: 'dialogDictionaryEditPropertyCtrl',
-        template: require('html-loader!./edit-property.dialog.html').default, // eslint-disable-line @typescript-eslint/no-var-requires
+        template: require('html-loader!./edit-property.dialog.html').default, // eslint-disable-line @typescript-eslint/no-require-imports
         clickOutsideToClose: true,
         locals: {
           key,
@@ -264,6 +266,9 @@ class DictionaryController {
 
   deleteProperty(key) {
     delete this.dictionary.properties[key];
+    if (this.dictionary.propertyOptions) {
+      delete this.dictionary.propertyOptions[key];
+    }
     --this.query.total;
     this.dictProperties = this.computeProperties();
     this.propertiesDirty = true;
@@ -279,12 +284,52 @@ class DictionaryController {
   }
 
   saveProperties() {
-    this.DictionaryService.update(this.dictionary).then(response => {
-      this.NotificationService.show('Properties has been updated');
-      this.dictionary = response.data;
-      this.dictProperties = this.computeProperties();
+    return this.saveDictionary(
+      server => ({ ...server, ...this.editedProperties() }),
+      () => this.editedGeneral(),
+    ).then(() => {
       this.propertiesDirty = false;
+      this.NotificationService.show('Properties has been updated');
     });
+  }
+
+  /**
+   * Deploy, start and stop save neither form, so the caller keeps whatever is still being edited
+   * (both sections for those three, only the other one for a form save) while the server copy
+   * becomes the new snapshot.
+   */
+  private applyServerState(response, stillEditing) {
+    this.initialDictionary = cloneDeep(response.data);
+    this.dictionary = { ...this.initialDictionary, ...stillEditing };
+    this.dictProperties = this.computeProperties();
+    this.query.total = Object.keys(this.dictionary.properties || {}).length;
+  }
+
+  private editedGeneral() {
+    return {
+      name: this.dictionary.name,
+      description: this.dictionary.description,
+      provider: this.dictionary.provider,
+      trigger: this.dictionary.trigger,
+      encryption: this.dictionary.encryption,
+    };
+  }
+
+  private editedProperties() {
+    return this.dictionary.type === 'MANUAL'
+      ? { properties: this.dictionary.properties, propertyOptions: this.dictionary.propertyOptions }
+      : { propertyOptions: this.dictionary.propertyOptions };
+  }
+
+  private editedSections() {
+    return { ...this.editedGeneral(), ...this.editedProperties() };
+  }
+
+  // No properties-only endpoint exists, so a form writes its own section onto a fresh read.
+  private saveDictionary(change, keepEditing) {
+    return this.DictionaryService.get(this.dictionary.id).then(response =>
+      this.DictionaryService.update(change(response.data)).then(saved => this.applyServerState(saved, keepEditing())),
+    );
   }
 
   toggleSelectAll(selectAll) {
@@ -322,10 +367,91 @@ class DictionaryController {
     return Object.entries((this.dictionary && this.dictionary.properties) || {}).map(entry => {
       const result: any = {};
       result.key = entry[0];
-      result.value = entry[1];
+      result.encrypted = this.isEncrypted(entry[0]);
+      result.encryptable = this.isEncryptable(entry[0]);
+      result.value = this.isMaskedKey(entry[0]) ? ENCRYPTED_VALUE_MASK : entry[1];
       return result;
     });
   };
+
+  isMasked(entry) {
+    return this.isMaskedKey(entry.key);
+  }
+
+  isValueEditable(entry) {
+    return this.isValueEditableKey(entry.key);
+  }
+
+  isEncrypted(key: string) {
+    return this.propertyOption(key).encrypted === true;
+  }
+
+  isEncryptable(key: string) {
+    return this.propertyOption(key).encryptable === true;
+  }
+
+  encryptProperty(key: string) {
+    this.setPropertyOption(key, { encryptable: true });
+  }
+
+  undoEncryptProperty(key: string) {
+    if (this.isEncrypted(key)) {
+      return;
+    }
+    delete this.propertyOptions()[key];
+    this.dictProperties = this.computeProperties();
+    this.propertiesDirty = true;
+  }
+
+  renewProperty(event, key: string) {
+    event.stopPropagation();
+
+    return this.$mdDialog
+      .show({
+        controller: 'DialogDictionaryEditPropertyController',
+        controllerAs: 'dialogDictionaryEditPropertyCtrl',
+        template: require('html-loader!./edit-property.dialog.html').default, // eslint-disable-line @typescript-eslint/no-require-imports
+        clickOutsideToClose: true,
+        locals: {
+          key,
+          value: '',
+        },
+      })
+      .then(property => {
+        if (property) {
+          this.dictionary.properties[key] = property.value;
+          this.setPropertyOption(key, { ...this.propertyOption(key), encryptable: true });
+          this.dictProperties = this.computeProperties();
+          this.propertiesDirty = true;
+        }
+      })
+      .catch(() => {});
+  }
+
+  private isMaskedKey(key: string) {
+    return this.isEncrypted(key) || this.isEncryptable(key);
+  }
+
+  private isValueEditableKey(key: string) {
+    return this.dictionary.type === 'MANUAL' && !this.isMaskedKey(key);
+  }
+
+  private propertyOptions() {
+    if (this.dictionary.propertyOptions === undefined) {
+      this.dictionary.propertyOptions = {};
+    }
+    return this.dictionary.propertyOptions;
+  }
+
+  private setPropertyOption(key: string, options) {
+    this.propertyOptions()[key] = options;
+    this.dictProperties = this.computeProperties();
+    this.propertiesDirty = true;
+  }
+
+  private propertyOption(key: string) {
+    return this.dictionary?.propertyOptions?.[key] || {};
+  }
 
   getHttpMethods() {
     return ['GET', 'DELETE', 'PATCH', 'POST', 'PUT', 'OPTIONS', 'TRACE', 'HEAD'];

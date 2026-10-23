@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.gravitee.apim.core.analytics_engine.model.FilterValuesPage;
@@ -26,13 +27,16 @@ import io.gravitee.apim.core.analytics_engine.use_case.GetFilterValuesUseCase;
 import io.gravitee.apim.core.analytics_engine.use_case.ResolveFilterLabelsUseCase;
 import io.gravitee.apim.core.exception.ValidationDomainException;
 import io.gravitee.gamma.rest.core.observability.filter.exception.FilterCatalogDriftException;
+import io.gravitee.gamma.rest.core.observability.filter.model.ApiType;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterValue;
+import io.gravitee.gamma.rest.core.observability.filter.port.service_provider.ObservabilityFilterDataPort.ResolveRequest;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 @DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
 class ObservabilityFilterDataPortAdapterTest {
@@ -41,7 +45,8 @@ class ObservabilityFilterDataPortAdapterTest {
     private final ResolveFilterLabelsUseCase resolveFilterLabelsUseCase = mock(ResolveFilterLabelsUseCase.class);
     private final ObservabilityFilterDataPortAdapter adapter = new ObservabilityFilterDataPortAdapter(
         getFilterValuesUseCase,
-        resolveFilterLabelsUseCase
+        resolveFilterLabelsUseCase,
+        new EntrypointScopeProviderAdapter()
     );
 
     /** Two {@code FilterValue} records, one per catalog: the platform one is spelled out here, once. */
@@ -57,7 +62,7 @@ class ObservabilityFilterDataPortAdapterTest {
             )
         );
 
-        var page = adapter.listKeywordValues("ENTRYPOINT", null, null, null, 1, 10, Set.of());
+        var page = adapter.listKeywordValues("ENTRYPOINT", null, null, null, 1, 10, Set.of(), null);
 
         assertThat(page.data()).containsExactly(new FilterValue("mcp-studio", null), new FilterValue("api-1", "Petstore"));
         assertThat(page.totalElements()).isEqualTo(7L);
@@ -71,7 +76,7 @@ class ObservabilityFilterDataPortAdapterTest {
             new ValidationDomainException("Filter not found", Map.of("filterName", "ENTRYPOINT"))
         );
 
-        assertThatThrownBy(() -> adapter.listKeywordValues("ENTRYPOINT", null, null, null, 1, 10, Set.of()))
+        assertThatThrownBy(() -> adapter.listKeywordValues("ENTRYPOINT", null, null, null, 1, 10, Set.of(), null))
             .isInstanceOf(FilterCatalogDriftException.class)
             .hasMessageContaining("ENTRYPOINT");
     }
@@ -83,8 +88,73 @@ class ObservabilityFilterDataPortAdapterTest {
             new UnsupportedOperationException("No ES field mapping for filter: NATIVE_TOPIC")
         );
 
-        assertThatThrownBy(() -> adapter.listKeywordValues("NATIVE_TOPIC", null, null, null, 1, 10, Set.of()))
+        assertThatThrownBy(() -> adapter.listKeywordValues("NATIVE_TOPIC", null, null, null, 1, 10, Set.of(), null))
             .isInstanceOf(FilterCatalogDriftException.class)
             .hasMessageContaining("NATIVE_TOPIC");
+    }
+
+    @Test
+    void should_scope_value_listing_to_authz_apis_rather_than_dropping_the_kind() {
+        // Dropping an unmapped kind left the set empty, which the platform reads as "every API type".
+        when(getFilterValuesUseCase.execute(any())).thenReturn(
+            new GetFilterValuesUseCase.Output(new FilterValuesPage(List.of(), Map.of(), 0L))
+        );
+
+        adapter.listKeywordValues("API", null, null, null, 1, 10, Set.of(ApiType.AUTHZ), null);
+
+        var captor = ArgumentCaptor.forClass(GetFilterValuesUseCase.Input.class);
+        verify(getFilterValuesUseCase).execute(captor.capture());
+        assertThat(captor.getValue().apiTypes()).containsExactly(io.gravitee.definition.model.v4.ApiType.AUTHZ);
+    }
+
+    /** AIM lists Orders, a PROXY API exposing mcp, through its MCP calls: the platform needs the entrypoints too. */
+    @Test
+    void should_hand_the_platform_the_entrypoints_adding_the_listed_kinds() {
+        when(getFilterValuesUseCase.execute(any())).thenReturn(
+            new GetFilterValuesUseCase.Output(new FilterValuesPage(List.of(), Map.of(), 0L))
+        );
+
+        adapter.listKeywordValues("API", null, null, null, 1, 10, Set.of(ApiType.MCP, ApiType.LLM, ApiType.A2A), null);
+
+        var captor = ArgumentCaptor.forClass(GetFilterValuesUseCase.Input.class);
+        verify(getFilterValuesUseCase).execute(captor.capture());
+        assertThat(captor.getValue().trafficEntrypointIds()).containsExactlyInAnyOrder("mcp", "agent-to-agent");
+    }
+
+    @Test
+    void should_hand_the_platform_the_api_product_the_values_are_scoped_to() {
+        when(getFilterValuesUseCase.execute(any())).thenReturn(
+            new GetFilterValuesUseCase.Output(new FilterValuesPage(List.of(), Map.of(), 0L))
+        );
+
+        adapter.listKeywordValues("APPLICATION", null, null, null, 1, 10, Set.of(), "workspace-1");
+
+        var captor = ArgumentCaptor.forClass(GetFilterValuesUseCase.Input.class);
+        verify(getFilterValuesUseCase).execute(captor.capture());
+        assertThat(captor.getValue().apiProductId()).isEqualTo("workspace-1");
+    }
+
+    @Test
+    void should_hand_the_platform_the_api_product_the_labels_are_scoped_to() {
+        when(resolveFilterLabelsUseCase.execute(any())).thenReturn(new ResolveFilterLabelsUseCase.Output(List.of()));
+
+        adapter.resolveLabels(List.of(new ResolveRequest("APPLICATION", List.of("app-1"))), "workspace-1");
+
+        var captor = ArgumentCaptor.forClass(ResolveFilterLabelsUseCase.Input.class);
+        verify(resolveFilterLabelsUseCase).execute(captor.capture());
+        assertThat(captor.getValue().apiProductId()).isEqualTo("workspace-1");
+    }
+
+    @Test
+    void should_hand_the_platform_no_entrypoint_when_the_types_alone_decide() {
+        when(getFilterValuesUseCase.execute(any())).thenReturn(
+            new GetFilterValuesUseCase.Output(new FilterValuesPage(List.of(), Map.of(), 0L))
+        );
+
+        adapter.listKeywordValues("API", null, null, null, 1, 10, Set.of(ApiType.HTTP_PROXY), null);
+
+        var captor = ArgumentCaptor.forClass(GetFilterValuesUseCase.Input.class);
+        verify(getFilterValuesUseCase).execute(captor.capture());
+        assertThat(captor.getValue().trafficEntrypointIds()).isEmpty();
     }
 }

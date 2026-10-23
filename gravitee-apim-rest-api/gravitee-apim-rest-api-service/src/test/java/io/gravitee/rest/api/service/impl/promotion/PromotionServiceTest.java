@@ -63,6 +63,7 @@ import io.gravitee.rest.api.service.common.GraviteeContext;
 import io.gravitee.rest.api.service.exceptions.BridgeOperationException;
 import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import io.gravitee.rest.api.service.exceptions.PromotionAlreadyInProgressException;
+import io.gravitee.rest.api.service.exceptions.PromotionNotAwaitingValidationException;
 import io.gravitee.rest.api.service.exceptions.PromotionNotFoundException;
 import io.gravitee.rest.api.service.exceptions.TechnicalManagementException;
 import io.gravitee.rest.api.service.v4.ApiSearchService;
@@ -79,6 +80,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 
 /**
@@ -265,12 +267,50 @@ public class PromotionServiceTest {
         verify(promotionRepository, times(1)).update(any());
     }
 
+    // The row the conflict proves exists is not always visible to the next read: on SQL Server the lookup that
+    // missed it before the insert missed it again right after the violation, and the promotion failed with the
+    // very duplicate key this recovery exists to absorb.
+    @Test
+    public void shouldUpdateWhenTheConflictingPromotionIsStillInvisibleToReads() throws TechnicalException {
+        when(promotionRepository.findById(any())).thenReturn(Optional.empty());
+        when(promotionRepository.create(any())).thenThrow(
+            new TechnicalException(
+                "Failed to create promotion",
+                new DuplicateKeyException("Violation of PRIMARY KEY constraint 'pk_apim_promotions'")
+            )
+        );
+        when(promotionRepository.update(any())).thenReturn(getAPromotion());
+
+        promotionService.createOrUpdate(getAPromotionEntity());
+
+        verify(promotionRepository, times(1)).create(any());
+        verify(promotionRepository, times(1)).update(any());
+    }
+
+    // JdbcAbstractCrudRepository.update returns findById(...).orElse(null), so the read that missed the row can
+    // miss it again right after the update wrote it. The recovery must not hand that null back to the caller.
+    @Test
+    public void shouldReturnTheWrittenPromotionWhenTheUpdateReadBackMissesIt() throws TechnicalException {
+        when(promotionRepository.findById(any())).thenReturn(Optional.empty());
+        when(promotionRepository.create(any())).thenThrow(
+            new TechnicalException(
+                "Failed to create promotion",
+                new DuplicateKeyException("Violation of PRIMARY KEY constraint 'pk_apim_promotions'")
+            )
+        );
+        when(promotionRepository.update(any())).thenReturn(null);
+
+        final PromotionEntity result = promotionService.createOrUpdate(getAPromotionEntity());
+
+        assertThat(result.getApiId()).isEqualTo("api#1");
+    }
+
     @Test
     public void shouldRethrowWhenTheCreateFailureIsNotAConflict() throws TechnicalException {
         when(promotionRepository.findById(any())).thenReturn(Optional.empty());
-        when(promotionRepository.create(any())).thenThrow(new DuplicateKeyException("boom"));
+        when(promotionRepository.create(any())).thenThrow(new DataIntegrityViolationException("boom"));
 
-        assertThrows(DuplicateKeyException.class, () -> promotionService.createOrUpdate(getAPromotionEntity()));
+        assertThrows(DataIntegrityViolationException.class, () -> promotionService.createOrUpdate(getAPromotionEntity()));
     }
 
     // JdbcAbstractCrudRepository.create wraps every failure into a checked TechnicalException, so on the JDBC
@@ -323,6 +363,7 @@ public class PromotionServiceTest {
         final Promotion promotion = getAPromotion();
         final EnvironmentEntity targetEnvironment = new EnvironmentEntity();
         targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
 
         when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
         when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
@@ -355,6 +396,7 @@ public class PromotionServiceTest {
         final Promotion promotion = getAPromotion();
         final EnvironmentEntity targetEnvironment = new EnvironmentEntity();
         targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
 
         when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
         when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
@@ -394,10 +436,12 @@ public class PromotionServiceTest {
         final Promotion promotion = getAPromotion();
         final EnvironmentEntity targetEnvironment = new EnvironmentEntity();
         targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
 
         when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
         when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
         when(environmentService.findByCockpitId(any())).thenReturn(targetEnvironment);
+        when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(true);
 
         Page<Promotion> promotionPage = new Page<>(singletonList(promotion), 0, 1, 1);
         when(promotionRepository.search(any(), any(), any())).thenReturn(promotionPage);
@@ -424,6 +468,7 @@ public class PromotionServiceTest {
         final Promotion promotion = getAPromotion();
         final EnvironmentEntity targetEnvironment = new EnvironmentEntity();
         targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
 
         when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
         when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
@@ -459,10 +504,12 @@ public class PromotionServiceTest {
         final Promotion promotion = getAPromotion();
         final EnvironmentEntity targetEnvironment = new EnvironmentEntity();
         targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
 
         when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
         when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
         when(environmentService.findByCockpitId(any())).thenReturn(targetEnvironment);
+        when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(true);
 
         Page<Promotion> promotionPage = new Page<>(singletonList(promotion), 0, 1, 1);
         when(promotionRepository.search(any(), any(), any())).thenReturn(promotionPage);
@@ -487,6 +534,52 @@ public class PromotionServiceTest {
     }
 
     @Test
+    public void shouldNotProcessPromotionWhenTargetEnvironmentBelongsToAnotherOrganization() throws Exception {
+        Promotion promotion = getAPromotion();
+        EnvironmentEntity targetEnvironment = new EnvironmentEntity();
+        targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("another-organization");
+        when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
+        when(environmentService.findByCockpitId(any())).thenReturn(targetEnvironment);
+
+        assertThrows(PromotionNotFoundException.class, () ->
+            promotionService.processPromotion(GraviteeContext.getExecutionContext(), PROMOTION_ID, true)
+        );
+        verify(cockpitPromotionService, never()).processPromotion(any(), any());
+    }
+
+    @Test
+    public void shouldNotProcessPromotionWhenItIsAlreadyProcessed() throws Exception {
+        Promotion promotion = getAPromotion();
+        promotion.setStatus(PromotionStatus.ACCEPTED);
+        EnvironmentEntity targetEnvironment = new EnvironmentEntity();
+        targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
+        when(promotionRepository.findById(any())).thenReturn(Optional.of(promotion));
+        when(environmentService.findByCockpitId(any())).thenReturn(targetEnvironment);
+
+        assertThrows(PromotionNotAwaitingValidationException.class, () ->
+            promotionService.processPromotion(GraviteeContext.getExecutionContext(), PROMOTION_ID, true)
+        );
+        verify(cockpitPromotionService, never()).processPromotion(any(), any());
+    }
+
+    @Test
+    public void shouldNotRejectPromotionWithoutCreateOrUpdateRight() throws Exception {
+        EnvironmentEntity targetEnvironment = new EnvironmentEntity();
+        targetEnvironment.setId("target-env-id");
+        targetEnvironment.setOrganizationId("DEFAULT");
+        when(promotionRepository.findById(any())).thenReturn(Optional.of(getAPromotion()));
+        when(environmentService.findByCockpitId(any())).thenReturn(targetEnvironment);
+        when(permissionService.hasPermission(any(), any(), any(), any())).thenReturn(false);
+
+        assertThrows(ForbiddenAccessException.class, () ->
+            promotionService.processPromotion(GraviteeContext.getExecutionContext(), PROMOTION_ID, false)
+        );
+        verify(cockpitPromotionService, never()).processPromotion(any(), any());
+    }
+
+    @Test
     public void shouldNotProcessPromotionIfPromotionNotFound() throws Exception {
         assertThrows(PromotionNotFoundException.class, () -> {
             when(promotionRepository.findById(any())).thenReturn(Optional.empty());
@@ -500,7 +593,9 @@ public class PromotionServiceTest {
         assertThrows(ForbiddenAccessException.class, () -> {
             when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
             when(promotionRepository.findById(any())).thenReturn(Optional.of(getAPromotion()));
-            when(environmentService.findByCockpitId(any())).thenReturn(new EnvironmentEntity());
+            EnvironmentEntity targetEnvironment = new EnvironmentEntity();
+            targetEnvironment.setOrganizationId("DEFAULT");
+            when(environmentService.findByCockpitId(any())).thenReturn(targetEnvironment);
             when(apiSearchService.exists(any())).thenReturn(true);
             when(apiSearchService.findGenericById(any(), any(), eq(false), eq(false), eq(false))).thenReturn(mock(GenericApiEntity.class));
             Page<Promotion> promotionPage = new Page<>(singletonList(getAPromotion()), 0, 1, 1);
@@ -518,6 +613,7 @@ public class PromotionServiceTest {
             final Promotion promotion = getAPromotion();
             final EnvironmentEntity targetEnvironment = new EnvironmentEntity();
             targetEnvironment.setId("target-env-id");
+            targetEnvironment.setOrganizationId("DEFAULT");
 
             when(objectMapper.readTree(anyString())).thenReturn(mock(ObjectNode.class));
             when(promotionRepository.findById(any())).thenReturn(Optional.of(getAPromotion()));

@@ -20,11 +20,13 @@ import io.gravitee.apim.core.audit.model.AuditInfo;
 import io.gravitee.apim.core.exception.ValidationDomainException;
 import io.gravitee.apim.core.group.crud_service.GroupCrudService;
 import io.gravitee.apim.core.group.domain_service.ValidateGroupCRDDomainService;
+import io.gravitee.apim.core.group.model.Group;
 import io.gravitee.apim.core.group.model.crd.GroupCRDSpec;
 import io.gravitee.apim.core.group.model.crd.GroupCRDStatus;
 import io.gravitee.apim.core.group.query_service.GroupQueryService;
 import io.gravitee.apim.core.member.domain_service.CRDMembersDomainService;
 import io.gravitee.apim.core.validation.Validator;
+import io.gravitee.rest.api.service.exceptions.GroupNotFoundException;
 import java.util.List;
 import lombok.CustomLog;
 
@@ -78,7 +80,7 @@ public class ImportGroupCRDUseCase {
 
         var status = queryService
             .findById(sanitizedInput.spec.getId())
-            .map(existing -> this.update(sanitizedInput))
+            .map(existing -> this.update(sanitizedInput, inEnvironment(existing, sanitizedInput.auditInfo.environmentId())))
             .orElseGet(() -> this.create(sanitizedInput));
 
         status.setErrors(GroupCRDStatus.Errors.fromErrorList(warnings));
@@ -86,25 +88,52 @@ public class ImportGroupCRDUseCase {
         return new Output(status);
     }
 
+    // The id is unique across environments: a group of another environment can be neither updated nor created again
+    private static Group inEnvironment(Group existing, String environmentId) {
+        if (!environmentId.equals(existing.getEnvironmentId())) {
+            throw new GroupNotFoundException(existing.getId());
+        }
+        return existing;
+    }
+
     private GroupCRDStatus create(Input input) {
         crudService.create(input.spec.toGroup(input.auditInfo.environmentId()));
         return syncGroupMemberships(input);
     }
 
-    private GroupCRDStatus update(Input input) {
-        crudService.update(input.spec.toGroup(input.auditInfo.environmentId()));
+    /**
+     * Overlays the fields a CRD manages on the existing group. Settings only the Console manages (role locks, event rules,
+     * invitation settings, primary owners) are kept as they are.
+     */
+    private GroupCRDStatus update(Input input, Group existing) {
+        var spec = input.spec;
+        crudService.update(
+            existing
+                .toBuilder()
+                .name(spec.getName())
+                .hrid(spec.getHrid() != null ? spec.getHrid() : existing.getHrid())
+                .origin(spec.getOrigin())
+                .disableMembershipNotifications(!spec.isNotifyMembers())
+                .build()
+        );
         return syncGroupMemberships(input);
     }
 
     private GroupCRDStatus syncGroupMemberships(Input input) {
-        membersService.updateGroupDefaultRoles(
-            input.auditInfo,
-            input.spec.getId(),
-            input.spec.getApiRole(),
-            input.spec.getApplicationRole(),
-            input.spec.getApiProductRole()
-        );
-        membersService.updateGroupMembers(input.auditInfo, input.spec.getId(), input.spec.getMembers());
+        if (input.spec.getDefaultMemberRoles() != null) {
+            membersService.updateGroupDefaultRoles(input.auditInfo, input.spec.getId(), input.spec.getDefaultMemberRoles());
+        } else {
+            membersService.updateGroupDefaultRoles(
+                input.auditInfo,
+                input.spec.getId(),
+                input.spec.getApiRole(),
+                input.spec.getApplicationRole(),
+                input.spec.getApiProductRole()
+            );
+        }
+        if (!input.spec.isIgnoreMembers()) {
+            membersService.updateGroupMembers(input.auditInfo, input.spec.getId(), input.spec.getMembers());
+        }
         return GroupCRDStatus.builder().id(input.spec.getId()).members(input.spec.getMembers().size()).build();
     }
 }

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import type { TaskArea, TaskCategory, TaskEntity, TaskIconKey, TaskMetadata, TaskType, TaskView } from './tasks.types';
+import type { PromotionReviewData, TaskArea, TaskCategory, TaskEntity, TaskIconKey, TaskMetadata, TaskType, TaskView } from './tasks.types';
 
 const CATEGORY_BY_TYPE: Record<TaskType, TaskCategory> = {
     SUBSCRIPTION_APPROVAL: 'SUBSCRIPTION',
@@ -60,6 +60,9 @@ interface ApiTypeConfig {
 }
 
 const API_MANAGEMENT_AREA: TaskArea = { key: 'apim', label: 'API Management' };
+
+/** Mirrors `OPEN_REVIEW_SEARCH_PARAM` in the apim module's `ApiDetailLayout`. */
+const OPEN_REVIEW_SEARCH_PARAM = 'review';
 const USERS_AREA: TaskArea = { key: 'users', label: 'Users' };
 
 const EVENT_STREAM_AREA: TaskArea = { key: 'esm', label: 'Event Stream Management' };
@@ -115,6 +118,32 @@ export function categoryOf(type: TaskType): TaskCategory {
     return CATEGORY_BY_TYPE[type];
 }
 
+/** Pulls the typed review fields out of a `PROMOTION_APPROVAL` task's untyped `data` bag. */
+export function promotionDataOf(entity: TaskEntity): PromotionReviewData | undefined {
+    if (entity.type !== 'PROMOTION_APPROVAL') {
+        return undefined;
+    }
+    const { data } = entity;
+    const promotionId = str(data.promotionId);
+    const apiName = str(data.apiName);
+    const sourceEnvironmentName = str(data.sourceEnvironmentName);
+    const targetEnvironmentName = str(data.targetEnvironmentName);
+    if (!promotionId || !apiName || !sourceEnvironmentName || !targetEnvironmentName) {
+        return undefined;
+    }
+    return {
+        promotionId,
+        apiName,
+        sourceEnvironmentName,
+        targetEnvironmentName,
+        targetApiId: str(data.targetApiId),
+        isApiUpdate: data.isApiUpdate === true,
+        authorDisplayName: str(data.authorDisplayName) ?? 'Unknown requester',
+        authorEmail: str(data.authorEmail),
+        authorPicture: str(data.authorPicture),
+    };
+}
+
 export function countByCategory(tasks: readonly TaskView[]): Record<TaskCategory, number> {
     const counts = { ...EMPTY_COUNTS };
     for (const task of tasks) {
@@ -164,10 +193,6 @@ function metaField(metadata: TaskMetadata, id: string | undefined, field: string
 
 function envPath(envHrid: string, ...segments: string[]): string {
     return ['/environments', envHrid, ...segments].join('/');
-}
-
-function apimPath(envHrid: string, ...segments: string[]): string {
-    return envPath(envHrid, 'apim', ...segments);
 }
 
 function moduleRoot(envHrid: string, moduleId: string): string {
@@ -242,7 +267,9 @@ export function toTaskView(entity: TaskEntity, metadata: TaskMetadata, resolveEn
             const config = configFor(apiType, undefined);
             const comment = str(data.comment);
             const envHrid = resolveEnvHrid(metaField(metadata, referenceId, 'environmentId'));
-            const to = resolveApiTarget(config, envHrid, referenceId);
+            const target = resolveApiTarget(config, envHrid, referenceId);
+            // The apim module opens its review sheet when the API is reached with this parameter.
+            const to = type === 'IN_REVIEW' && config.moduleId === 'apim' && referenceId ? `${target}?${OPEN_REVIEW_SEARCH_PARAM}` : target;
             return {
                 ...base,
                 id: `${type}:${referenceId}`,
@@ -273,17 +300,23 @@ export function toTaskView(entity: TaskEntity, metadata: TaskMetadata, resolveEn
             const apiName = str(data.apiName) ?? 'API';
             const sourceEnv = str(data.sourceEnvironmentName);
             const targetEnv = str(data.targetEnvironmentName);
-            const targetApiId = str(data.targetApiId);
-            const envHrid = resolveEnvHrid(undefined);
-            const to = targetApiId ? apimPath(envHrid, 'apis', targetApiId) : apimPath(envHrid);
+            // Always apim, whatever `data.apiType` says. A V4 API of any type can be promoted — both promotion
+            // use cases export one without restricting it — so the payload does carry a type, and other
+            // consumers read it. The control plane still sends the reviewer to API Management: promotion is
+            // reviewed there, against the API's definition, not in the module that happens to run it.
+            const config = DEFAULT_CONFIG;
+            // The promoted API lives in the target environment, which is not necessarily the current one:
+            // promotion tasks are listed for every environment of the organization the user may validate in.
+            const envHrid = resolveEnvHrid(str(data.targetEnvironmentId));
+            const to = resolveApiTarget(config, envHrid, str(data.targetApiId));
             return {
                 ...base,
                 id: `PROMOTION_APPROVAL:${promotionId || apiName}`,
-                area: API_MANAGEMENT_AREA,
+                area: config.area,
                 title: apiName,
                 subtitle: sourceEnv && targetEnv ? `${sourceEnv} → ${targetEnv}` : 'Promotion requested',
                 to,
-                toModuleId: 'apim',
+                toModuleId: config.moduleId,
             };
         }
     }

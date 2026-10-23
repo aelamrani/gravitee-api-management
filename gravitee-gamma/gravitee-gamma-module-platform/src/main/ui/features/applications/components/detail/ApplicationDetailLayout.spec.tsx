@@ -13,11 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { permissionService } from '@gravitee/gamma-modules-sdk';
 import { render, screen } from '@testing-library/react';
 import { isValidElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
+
+import { permissionService } from '@gravitee/gamma-modules-sdk';
 
 jest.mock('@gravitee/gamma-modules-sdk', () => ({
     ...jest.requireActual<object>('@gravitee/gamma-modules-sdk'),
@@ -179,6 +180,18 @@ describe('ApplicationDetailLayout', () => {
     it('renders application name in the context sidebar header', () => {
         renderLayout();
         expectContextSidebarMarkup('My Application', 'data-testid="application-detail-sidebar-nav"');
+    });
+
+    it('labels a simple application "Simple" in the header even when its free-text app type is set', () => {
+        mockUseApplicationDetail.mockReturnValue({
+            data: baseApplication({ type: 'SIMPLE', settings: { app: { type: 'iOS' } } }),
+            isLoading: false,
+            isError: false,
+        });
+        renderLayout();
+        const markup = renderToStaticMarkup(capturedLayoutConfig?.contextSidebar);
+        expect(markup).toContain('Simple');
+        expect(markup).not.toContain('Ios');
     });
 
     it('truncates long application names in breadcrumbs', () => {

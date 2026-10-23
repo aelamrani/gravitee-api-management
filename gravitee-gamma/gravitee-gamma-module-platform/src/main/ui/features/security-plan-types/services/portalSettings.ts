@@ -43,13 +43,48 @@ export interface PortalSettingsCors {
     maxAge?: number;
 }
 
+export interface ApplicationTypeEnabled {
+    enabled?: boolean;
+}
+
+export interface PortalSettingsApplication {
+    registration?: { enabled?: boolean };
+    types?: {
+        simple?: ApplicationTypeEnabled;
+        browser?: ApplicationTypeEnabled;
+        web?: ApplicationTypeEnabled;
+        native?: ApplicationTypeEnabled;
+        backend_to_backend?: ApplicationTypeEnabled;
+    };
+}
+
+export interface PortalSettingsApi {
+    primaryOwnerMode?: string;
+    labelsDictionary?: string[];
+    [key: string]: unknown;
+}
+
+export interface PortalSettingsApiProduct {
+    primaryOwnerMode?: string;
+    [key: string]: unknown;
+}
+
+export interface PortalSettingsFeatureToggle {
+    enabled?: boolean;
+}
+
 export interface PortalSettings {
     metadata?: PortalSettingsMetadata;
     cors?: PortalSettingsCors;
+    apiScore?: PortalSettingsFeatureToggle;
+    apiReview?: PortalSettingsFeatureToggle;
     plan?: {
         security?: PlanSecuritySettings;
         [key: string]: unknown;
     };
+    application?: PortalSettingsApplication;
+    api?: PortalSettingsApi;
+    apiProduct?: PortalSettingsApiProduct;
     [key: string]: unknown;
 }
 

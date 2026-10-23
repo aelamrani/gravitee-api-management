@@ -44,9 +44,11 @@ import { InvitationConfirmationComponent } from './registration/invitation-confi
 import { RegistrationConfirmationComponent } from './registration/registration-confirmation/registration-confirmation.component';
 import { ServiceUnavailableComponent } from './service-unavailable/service-unavailable.component';
 import { NavigationPageFullWidthComponent } from '../components/navigation-page-full-width/navigation-page-full-width.component';
+import { aiWorkspacesEnabledGuard } from '../guards/ai-workspaces-enabled.guard';
 import { analyticsEnabledGuard } from '../guards/analytics-enabled.guard';
 import { applicationInvitationsEnabledGuard, applicationMembershipEnabledGuard } from '../guards/application-membership-enabled.guard';
 import { redirectGuard } from '../guards/redirect.guard';
+import { registrationEnabledGuard } from '../guards/registration-enabled.guard';
 import { apiProductResolver } from '../resolvers/api-product.resolver';
 import { apiResolver } from '../resolvers/api.resolver';
 import { applicationPermissionResolver, applicationResolver, applicationTypeResolver } from '../resolvers/application.resolver';
@@ -228,6 +230,20 @@ export const routes: Routes = [
         ],
       },
       {
+        path: 'workspaces',
+        canActivate: [aiWorkspacesEnabledGuard],
+        children: [
+          {
+            path: '',
+            loadComponent: () => import('./dashboard/workspaces/workspaces.component'),
+          },
+          {
+            path: ':workspaceId',
+            loadComponent: () => import('./dashboard/workspaces/workspace-details/workspace-details.component'),
+          },
+        ],
+      },
+      {
         path: 'analytics',
         canActivate: [analyticsEnabledGuard],
         children: [
@@ -313,7 +329,7 @@ export const routes: Routes = [
       {
         path: 'registration',
         component: RegistrationComponent,
-        canActivate: [anonymousGuard],
+        canActivate: [anonymousGuard, registrationEnabledGuard],
       },
       {
         path: 'registration/confirm/:token',

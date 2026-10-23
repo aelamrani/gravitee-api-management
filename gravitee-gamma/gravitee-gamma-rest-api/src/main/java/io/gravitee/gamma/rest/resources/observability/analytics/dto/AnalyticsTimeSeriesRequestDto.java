@@ -15,19 +15,29 @@
  */
 package io.gravitee.gamma.rest.resources.observability.analytics.dto;
 
+import io.gravitee.gamma.rest.resources.RejectUnknownProperties;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.FilterConditionDto;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.SearchLogsRequestDto.TimeRangeDto;
 import java.util.List;
 
 /**
  * POST body for {@code /observability/analytics/time-series}.
+ *
+ * <p>{@code facetSize} is the deprecated name of {@code limit}, with the same meaning; {@code limit} wins
+ * when both are sent.
  */
+@RejectUnknownProperties
 public record AnalyticsTimeSeriesRequestDto(
     TimeRangeDto timeRange,
     List<FilterConditionDto> filters,
     Long interval,
     List<FacetMetricQueryDto> metrics,
     List<String> by,
-    Integer facetSize,
+    Integer limit,
+    @Deprecated Integer facetSize,
     List<NumberRangeDto> ranges
-) {}
+) {
+    public Integer seriesLimit() {
+        return limit != null ? limit : facetSize;
+    }
+}

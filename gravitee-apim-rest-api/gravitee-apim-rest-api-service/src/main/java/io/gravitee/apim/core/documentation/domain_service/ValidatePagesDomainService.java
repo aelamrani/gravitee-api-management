@@ -18,6 +18,7 @@ package io.gravitee.apim.core.documentation.domain_service;
 import io.gravitee.apim.core.DomainService;
 import io.gravitee.apim.core.api.model.crd.PageCRD;
 import io.gravitee.apim.core.audit.model.AuditInfo;
+import io.gravitee.apim.core.documentation.crud_service.PageCrudService;
 import io.gravitee.apim.core.documentation.model.Page;
 import io.gravitee.apim.core.documentation.model.factory.PageModelFactory;
 import io.gravitee.apim.core.utils.StringUtils;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import lombok.CustomLog;
 import lombok.RequiredArgsConstructor;
 
@@ -41,6 +43,7 @@ public class ValidatePagesDomainService implements Validator<ValidatePagesDomain
     private final ValidatePageSourceDomainService pageSourceValidator;
     private final ValidatePageAccessControlsDomainService accessControlsValidator;
     private final DocumentationValidationDomainService validationDomainService;
+    private final PageCrudService pageCrudService;
 
     public record Input(AuditInfo auditInfo, String apiId, String apiHrid, Map<String, PageCRD> pages) implements Validator.Input {
         ValidatePagesDomainService.Input sanitized(Map<String, PageCRD> sanitizedPages) {
@@ -65,8 +68,23 @@ public class ValidatePagesDomainService implements Validator<ValidatePagesDomain
                 page.setReferenceId(input.apiId());
                 page.setHrid(key);
 
+                if (belongsToAnotherReference(page.getId(), input.apiId())) {
+                    errors.add(
+                        Error.severe("invalid documentation page [%s]. Error: page id [%s] does not belong to this API", key, page.getId())
+                    );
+                }
+                if (belongsToAnotherReference(page.getParentId(), input.apiId())) {
+                    errors.add(
+                        Error.severe(
+                            "invalid documentation page [%s]. Error: parent page [%s] does not belong to this API",
+                            key,
+                            page.getParentId()
+                        )
+                    );
+                }
+
                 pageSourceValidator
-                    .validateAndSanitize(new ValidatePageSourceDomainService.Input(key, page.getSource()))
+                    .validateAndSanitize(new ValidatePageSourceDomainService.Input(input.auditInfo.organizationId(), key, page.getSource()))
                     .peek(sanitized -> page.setSource(sanitized.source()), errors::addAll);
 
                 accessControlsValidator
@@ -91,5 +109,16 @@ public class ValidatePagesDomainService implements Validator<ValidatePagesDomain
         });
 
         return Result.ofBoth(input.sanitized(sanitizedPages), errors);
+    }
+
+    // Page ids in a spec are lookup keys: an import only writes pages of the API it imports
+    private boolean belongsToAnotherReference(String pageId, String apiId) {
+        if (pageId == null) {
+            return false;
+        }
+        return pageCrudService
+            .findById(pageId)
+            .map(existing -> existing.getReferenceType() != Page.ReferenceType.API || !Objects.equals(existing.getReferenceId(), apiId))
+            .orElse(false);
     }
 }

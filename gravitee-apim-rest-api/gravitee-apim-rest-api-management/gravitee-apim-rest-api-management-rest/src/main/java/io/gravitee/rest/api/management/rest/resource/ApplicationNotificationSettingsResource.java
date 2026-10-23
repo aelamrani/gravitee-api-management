@@ -82,6 +82,7 @@ public class ApplicationNotificationSettingsResource extends AbstractResource {
             throw new ForbiddenAccessException();
         }
         final ExecutionContext executionContext = GraviteeContext.getExecutionContext();
+        config.setOrganizationId(executionContext.getOrganizationId());
         if (
             config.getConfigType().equals(NotificationConfigType.GENERIC) &&
             hasPermission(executionContext, APPLICATION_NOTIFICATION, application, CREATE)
@@ -141,7 +142,7 @@ public class ApplicationNotificationSettingsResource extends AbstractResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Permissions({ @Permission(value = APPLICATION_NOTIFICATION, acls = DELETE) })
     public Response deleteApplicationNotificationSettings(@PathParam("notificationId") String notificationId) {
-        genericNotificationConfigService.delete(notificationId);
+        genericNotificationConfigService.delete(notificationId, NotificationReferenceType.APPLICATION, application);
         return Response.noContent().build();
     }
 

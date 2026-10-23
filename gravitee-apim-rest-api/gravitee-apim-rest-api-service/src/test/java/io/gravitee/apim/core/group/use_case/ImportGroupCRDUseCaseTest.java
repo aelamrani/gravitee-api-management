@@ -15,6 +15,7 @@
  */
 package io.gravitee.apim.core.group.use_case;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.SoftAssertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,6 +42,7 @@ import io.gravitee.apim.infra.domain_service.group.ValidateGroupCRDDomainService
 import io.gravitee.rest.api.model.RoleEntity;
 import io.gravitee.rest.api.model.context.OriginContext;
 import io.gravitee.rest.api.service.RoleService;
+import io.gravitee.rest.api.service.exceptions.GroupNotFoundException;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -178,6 +180,198 @@ class ImportGroupCRDUseCaseTest {
     }
 
     @Test
+    void should_converge_default_member_roles_on_the_declared_map() {
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.API, "USER");
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.APPLICATION, "USER");
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.API_PRODUCT, "USER");
+        var declared = Map.of(RoleScope.API, "USER", RoleScope.APPLICATION, "USER", RoleScope.API_PRODUCT, "USER");
+
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().defaultMemberRoles(declared).build()));
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().defaultMemberRoles(declared).build()));
+
+        assertSoftly(soft -> {
+            soft.assertThat(membersService.getGroupApiRole(GROUP_ID)).isEqualTo("USER");
+            soft.assertThat(membersService.getGroupApplicationRole(GROUP_ID)).isEqualTo("USER");
+            soft.assertThat(membersService.getGroupApiProductRole(GROUP_ID)).isEqualTo("USER");
+        });
+    }
+
+    @Test
+    void should_clear_default_member_roles_absent_from_the_declared_map() {
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.API, "USER");
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.APPLICATION, "USER");
+        cut.execute(
+            new ImportGroupCRDUseCase.Input(
+                AUDIT_INFO,
+                aGroupSpec().defaultMemberRoles(Map.of(RoleScope.API, "USER", RoleScope.APPLICATION, "USER")).build()
+            )
+        );
+
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().defaultMemberRoles(Map.of(RoleScope.API, "USER")).build()));
+
+        assertSoftly(soft -> {
+            soft.assertThat(membersService.getGroupApiRole(GROUP_ID)).isEqualTo("USER");
+            soft.assertThat(membersService.getGroupApplicationRole(GROUP_ID)).isNull();
+        });
+
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().defaultMemberRoles(Map.of()).build()));
+
+        assertThat(membersService.getGroupApiRole(GROUP_ID)).isNull();
+    }
+
+    @Test
+    void should_leave_default_roles_untouched_when_the_map_is_not_declared() {
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.API, "OWNER");
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().apiRole("OWNER").build()));
+
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().build()));
+
+        assertThat(membersService.getGroupApiRole(GROUP_ID)).isEqualTo("OWNER");
+    }
+
+    @Test
+    void should_warn_and_clear_an_unknown_default_member_role() {
+        var result = cut.execute(
+            new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().defaultMemberRoles(Map.of(RoleScope.API, "UNKNOWN")).build())
+        );
+
+        assertSoftly(soft -> {
+            soft.assertThat(membersService.getGroupApiRole(GROUP_ID)).isNull();
+            soft.assertThat(result.status().getErrors().warning()).containsExactly("default api role [UNKNOWN] doesn't exist");
+        });
+    }
+
+    @Test
+    void should_reject_a_scope_that_is_not_a_group_default_role_scope() {
+        assertThatThrownBy(() ->
+            cut.execute(
+                new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().defaultMemberRoles(Map.of(RoleScope.INTEGRATION, "USER")).build())
+            )
+        )
+            .isInstanceOf(ValidationDomainException.class)
+            .hasMessageContaining("scope [INTEGRATION] is not a group default role scope");
+    }
+
+    @Test
+    void should_not_touch_members_when_ignoring_members() {
+        var spec = aGroupSpec()
+            .ignoreMembers(true)
+            .members(new LinkedHashSet<>(Set.of(GroupCRDSpec.Member.builder().source("memory").sourceId("unknown").build())));
+
+        var result = cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, spec.build()));
+
+        assertSoftly(soft -> {
+            soft.assertThat(membersService.getGroupMembers(GROUP_ID)).isEmpty();
+            soft.assertThat(result.status().getMembers()).isZero();
+            soft.assertThat(result.status().getErrors().warning()).isEmpty();
+            soft.assertThat(groupCrudService.storage().get(GROUP_ID).getName()).isEqualTo("kubernetes-spec");
+        });
+    }
+
+    @Test
+    void should_keep_console_only_settings_on_update() {
+        var existing = io.gravitee.apim.core.group.model.Group.builder()
+            .id(GROUP_ID)
+            .hrid("developers")
+            .environmentId(ENVIRONMENT_ID)
+            .name("old-name")
+            .lockApiRole(true)
+            .lockApplicationRole(true)
+            .lockApiProductRole(true)
+            .eventRules(
+                List.of(
+                    new io.gravitee.apim.core.group.model.Group.GroupEventRule(
+                        io.gravitee.apim.core.group.model.Group.GroupEvent.API_CREATE
+                    )
+                )
+            )
+            .maxInvitation(10)
+            .systemInvitation(true)
+            .emailInvitation(true)
+            .apiPrimaryOwner("po-user")
+            .disableMembershipNotifications(false)
+            .origin(OriginContext.Origin.KUBERNETES.name())
+            .build();
+        groupQueryService.initWith(List.of(existing));
+        groupCrudService.storage().put(GROUP_ID, existing);
+
+        cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, aGroupSpec().name("new-name").notifyMembers(false).build()));
+
+        var updated = groupCrudService.storage().get(GROUP_ID);
+        assertSoftly(soft -> {
+            soft.assertThat(updated.getName()).isEqualTo("new-name");
+            soft.assertThat(updated.isDisableMembershipNotifications()).isTrue();
+            soft.assertThat(updated.getHrid()).isEqualTo("developers");
+            soft.assertThat(updated.isLockApiRole()).isTrue();
+            soft.assertThat(updated.isLockApplicationRole()).isTrue();
+            soft.assertThat(updated.isLockApiProductRole()).isTrue();
+            soft.assertThat(updated.getEventRules()).isEqualTo(existing.getEventRules());
+            soft.assertThat(updated.getMaxInvitation()).isEqualTo(10);
+            soft.assertThat(updated.isSystemInvitation()).isTrue();
+            soft.assertThat(updated.isEmailInvitation()).isTrue();
+            soft.assertThat(updated.getApiPrimaryOwner()).isEqualTo("po-user");
+        });
+    }
+
+    @Test
+    void should_reject_a_group_of_another_environment_without_writing_it() {
+        var existing = io.gravitee.apim.core.group.model.Group.builder()
+            .id(GROUP_ID)
+            .environmentId("other-environment-id")
+            .name("other-environment-group")
+            .build();
+        groupQueryService.initWith(List.of(existing));
+        groupCrudService.storage().put(GROUP_ID, existing);
+        givenRole(io.gravitee.rest.api.model.permissions.RoleScope.API, "USER");
+        userDomainService.initWith(
+            List.of(
+                BaseUserEntity.builder()
+                    .organizationId(ORGANIZATION_ID)
+                    .id("member-id")
+                    .source(IdpSource.of("memory"))
+                    .sourceId("api1")
+                    .build()
+            )
+        );
+        roleQueryService.initWith(
+            List.of(
+                Role.builder()
+                    .name("USER")
+                    .referenceType(Role.ReferenceType.ORGANIZATION)
+                    .referenceId(ORGANIZATION_ID)
+                    .id(UUID.randomUUID().toString())
+                    .scope(Role.Scope.API)
+                    .build()
+            )
+        );
+        var spec = aGroupSpec()
+            .defaultMemberRoles(Map.of(RoleScope.API, "USER"))
+            .members(
+                new LinkedHashSet<>(
+                    Set.of(GroupCRDSpec.Member.builder().source("memory").sourceId("api1").roles(Map.of(RoleScope.API, "USER")).build())
+                )
+            );
+
+        assertThatThrownBy(() -> cut.execute(new ImportGroupCRDUseCase.Input(AUDIT_INFO, spec.build()))).isInstanceOf(
+            GroupNotFoundException.class
+        );
+
+        assertSoftly(soft -> {
+            soft.assertThat(groupCrudService.storage().get(GROUP_ID)).isEqualTo(existing);
+            soft.assertThat(membersService.getGroupMembers(GROUP_ID)).isEmpty();
+            soft.assertThat(membersService.getGroupApiRole(GROUP_ID)).isNull();
+        });
+    }
+
+    private static GroupCRDSpec.GroupCRDSpecBuilder aGroupSpec() {
+        return GroupCRDSpec.builder().id(GROUP_ID).name("kubernetes-spec").notifyMembers(true);
+    }
+
+    private void givenRole(io.gravitee.rest.api.model.permissions.RoleScope scope, String name) {
+        when(roleService.findByScopeAndName(scope, name, ORGANIZATION_ID)).thenReturn(Optional.of(RoleEntity.builder().name(name).build()));
+    }
+
+    @Test
     void should_reject_import_when_primary_owner_is_added_as_group_member() {
         userDomainService.initWith(
             List.of(
@@ -213,8 +407,7 @@ class ImportGroupCRDUseCaseTest {
         ImportGroupCRDUseCase.Input input = new ImportGroupCRDUseCase.Input(AUDIT_INFO, spec.build());
         assertThatThrownBy(() -> cut.execute(input))
             .isInstanceOf(ValidationDomainException.class)
-            .hasMessageContaining("Unable to import because of errors")
-            .hasMessageContaining("can not change the role of primary owner [admin]");
+            .hasMessage("Unable to import because of errors [can not change the role of primary owner [admin]]");
     }
 
     @Test

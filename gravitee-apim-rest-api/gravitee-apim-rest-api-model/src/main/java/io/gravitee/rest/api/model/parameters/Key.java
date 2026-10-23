@@ -145,6 +145,11 @@ public enum Key {
     PORTAL_NEXT_CATALOG_VIEW_MODE("portal.next.catalog.viewMode", new HashSet<>(singletonList(ENVIRONMENT))),
     PORTAL_NEXT_MTLS_ENABLED("portal.next.mtls.enabled", new HashSet<>(singletonList(ENVIRONMENT))),
     PORTAL_NEXT_ANALYTICS_ENABLED("portal.next.analytics.enabled", Boolean.FALSE.toString(), new HashSet<>(singletonList(ENVIRONMENT))),
+    PORTAL_NEXT_AI_WORKSPACES_ENABLED(
+        "portal.next.aiWorkspaces.enabled",
+        Boolean.FALSE.toString(),
+        new HashSet<>(singletonList(ENVIRONMENT))
+    ),
     PORTAL_NEXT_APPLICATIONS_MEMBERSHIP_ENABLED(
         "portal.next.applications.membership.enabled",
         Boolean.FALSE.toString(),
@@ -179,6 +184,8 @@ public enum Key {
         "true",
         new HashSet<>(Arrays.asList(ENVIRONMENT, ORGANIZATION, SYSTEM))
     ),
+    PORTAL_AUTHENTICATION_EXPOSE_ACCESS_TOKEN("portal.authentication.expose.accessToken", "true", Set.of(SYSTEM)),
+    PORTAL_AUTHENTICATION_EXPOSE_ID_TOKEN("portal.authentication.expose.idToken", "true", Set.of(SYSTEM)),
 
     PORTAL_SCHEDULER_TASKS("portal.scheduler.tasks", "10", new HashSet<>(Arrays.asList(ENVIRONMENT, ORGANIZATION, SYSTEM))),
     PORTAL_SCHEDULER_NOTIFICATIONS("portal.scheduler.notifications", "10", new HashSet<>(Arrays.asList(ENVIRONMENT, ORGANIZATION, SYSTEM))),
@@ -413,6 +420,8 @@ public enum Key {
         "true",
         new HashSet<>(Arrays.asList(ORGANIZATION, SYSTEM))
     ),
+    CONSOLE_AUTHENTICATION_EXPOSE_ACCESS_TOKEN("console.authentication.expose.accessToken", "true", Set.of(SYSTEM)),
+    CONSOLE_AUTHENTICATION_EXPOSE_ID_TOKEN("console.authentication.expose.idToken", "true", Set.of(SYSTEM)),
     CONSOLE_SCHEDULER_TASKS("console.scheduler.tasks", "10", new HashSet<>(Arrays.asList(ORGANIZATION, SYSTEM))),
     CONSOLE_SCHEDULER_NOTIFICATIONS("console.scheduler.notifications", "10", new HashSet<>(Arrays.asList(ORGANIZATION, SYSTEM))),
     CONSOLE_RECAPTCHA_ENABLED("console.reCaptcha.enabled", Boolean.FALSE.toString(), new HashSet<>(Arrays.asList(ORGANIZATION, SYSTEM))),

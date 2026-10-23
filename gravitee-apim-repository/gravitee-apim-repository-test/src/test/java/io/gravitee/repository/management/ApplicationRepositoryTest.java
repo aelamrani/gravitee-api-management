@@ -359,6 +359,27 @@ public class ApplicationRepositoryTest extends AbstractManagementRepositoryTest 
     }
 
     @Test
+    public void should_find_no_application_when_search_is_restricted_to_no_id() throws Exception {
+        final Page<Application> appsPage = applicationRepository.search(
+            ApplicationCriteria.builder().environmentIds(Set.of("DEV", "TEST", "PROD")).restrictedToIds(Set.of()).build(),
+            null
+        );
+
+        assertThat(appsPage.getContent()).isEmpty();
+        assertThat(appsPage.getTotalElements()).isZero();
+    }
+
+    @Test
+    public void should_find_no_application_id_when_search_is_restricted_to_no_id() throws Exception {
+        final Set<String> appIds = applicationRepository.searchIds(
+            ApplicationCriteria.builder().environmentIds(Set.of("DEV", "TEST", "PROD")).restrictedToIds(Set.of()).build(),
+            null
+        );
+
+        assertThat(appIds).isEmpty();
+    }
+
+    @Test
     public void shouldSearchByEnvironmentIds() throws Exception {
         final Page<Application> appsPage = applicationRepository.search(
             ApplicationCriteria.builder().environmentIds(Set.of("DEV", "TEST", "PROD")).build(),
@@ -428,6 +449,34 @@ public class ApplicationRepositoryTest extends AbstractManagementRepositoryTest 
         assertEquals(2, appsPage.getPageNumber());
         assertEquals(1, appsPage.getPageElements());
         assertEquals(8, appsPage.getTotalElements());
+    }
+
+    @Test
+    public void shouldReturnEachApplicationOnceWhenPagingThroughSameNames() throws Exception {
+        List<String> ids = List.of("same-name-e", "same-name-b", "same-name-d", "same-name-a", "same-name-c");
+        for (String id : ids) {
+            Application application = new Application();
+            application.setId(id);
+            application.setEnvironmentId("SAME-NAME-ENV");
+            application.setName("Same name");
+            application.setType(ApplicationType.SIMPLE);
+            application.setStatus(ApplicationStatus.ACTIVE);
+            application.setCreatedAt(parse("11/02/2016"));
+            application.setUpdatedAt(parse("11/02/2016"));
+            applicationRepository.create(application);
+        }
+
+        ApplicationCriteria criteria = ApplicationCriteria.builder().environmentIds(Set.of("SAME-NAME-ENV")).build();
+        List<String> pagedIds = new ArrayList<>();
+        for (int page = 0; page < 3; page++) {
+            Pageable pageable = new PageableBuilder().pageSize(2).pageNumber(page).build();
+            applicationRepository
+                .search(criteria, pageable)
+                .getContent()
+                .forEach(app -> pagedIds.add(app.getId()));
+        }
+
+        assertThat(pagedIds).containsExactly("same-name-a", "same-name-b", "same-name-c", "same-name-d", "same-name-e");
     }
 
     @Test

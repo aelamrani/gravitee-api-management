@@ -23,18 +23,16 @@ import io.gravitee.gamma.rest.core.observability.logs.use_case.GetAuthzDecisionU
 import io.gravitee.gamma.rest.core.observability.logs.use_case.GetObservabilityLogDetailUseCase;
 import io.gravitee.gamma.rest.core.observability.logs.use_case.SearchObservabilityLogMessagesUseCase;
 import io.gravitee.gamma.rest.core.observability.logs.use_case.SearchObservabilityLogsUseCase;
+import io.gravitee.gamma.rest.resources.observability.ObservabilityPermissions;
+import io.gravitee.gamma.rest.resources.observability.dto.RequestEntries;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.FilterConditionDto;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.LogDetailDto;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.LogEntryDto;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.MessageLogDto;
 import io.gravitee.gamma.rest.resources.observability.logs.dto.SearchLogsRequestDto;
 import io.gravitee.gamma.rest.resources.tracing.dto.PaginatedResponseDto;
-import io.gravitee.rest.api.model.permissions.RolePermission;
-import io.gravitee.rest.api.model.permissions.RolePermissionAction;
 import io.gravitee.rest.api.service.PermissionService;
-import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
-import io.gravitee.rest.api.service.exceptions.ForbiddenAccessException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
@@ -65,9 +63,9 @@ import java.util.List;
  *
  * <h2>Authorization</h2>
  * <ul>
- *   <li><b>Search:</b> env-level guard ({@code ENVIRONMENT_DASHBOARD:READ} or
- *       {@code ENVIRONMENT_API:READ}). Row-level scoping handled by
- *       {@code AccessibleApiScopeDomainService}.</li>
+ *   <li><b>Search:</b> no environment-level guard: the rows are the APIs where the caller holds
+ *       {@code API_LOG[READ]}, narrowed by {@code AccessibleApiScopeDomainService}; none gives an
+ *       empty page.</li>
  *   <li><b>Detail:</b> {@code API_LOG[READ]} on the given {@code apiId}, with 404 collapse.</li>
  * </ul>
  *
@@ -99,12 +97,11 @@ public class LogsResource {
         @QueryParam("perPage") Integer perPage,
         SearchLogsRequestDto request
     ) {
-        checkReadObservabilityPermission();
-
-        List<FilterCondition> filters = List.of();
-        if (request != null && request.filters() != null) {
-            filters = request.filters().stream().map(FilterConditionDto::toCore).toList();
-        }
+        List<FilterCondition> filters = RequestEntries.map(
+            request != null ? request.filters() : null,
+            "filters",
+            FilterConditionDto::toCore
+        );
 
         var ctx = GraviteeContext.getExecutionContext();
         var output = searchLogsUseCase.execute(
@@ -216,26 +213,8 @@ public class LogsResource {
      * response is indistinguishable from "log doesn't exist" — prevents cross-API existence probing.
      */
     private void checkApiLogReadPermissionOrCollapse(String apiId, String requestId) {
-        ExecutionContext ctx = GraviteeContext.getExecutionContext();
-        boolean allowed = permissionService.hasPermission(ctx, RolePermission.API_LOG, apiId, RolePermissionAction.READ);
-        if (!allowed) {
+        if (!ObservabilityPermissions.canReadApiLogs(permissionService, apiId)) {
             throw new LogDetailNotFoundException(requestId, apiId);
-        }
-    }
-
-    private void checkReadObservabilityPermission() {
-        ExecutionContext executionContext = GraviteeContext.getExecutionContext();
-        String environmentId = executionContext.getEnvironmentId();
-        boolean allowed =
-            permissionService.hasPermission(
-                executionContext,
-                RolePermission.ENVIRONMENT_DASHBOARD,
-                environmentId,
-                RolePermissionAction.READ
-            ) ||
-            permissionService.hasPermission(executionContext, RolePermission.ENVIRONMENT_API, environmentId, RolePermissionAction.READ);
-        if (!allowed) {
-            throw new ForbiddenAccessException();
         }
     }
 }

@@ -21,11 +21,10 @@ import { MAT_DIALOG_DEFAULT_OPTIONS } from '@angular/material/dialog';
 import { provideAnimations } from '@angular/platform-browser/animations';
 import { provideRouter, Router, withComponentInputBinding, withRouterConfig } from '@angular/router';
 import { GioIconsModule } from '@gravitee/ui-particles-angular';
-import { provideOAuthClient } from 'angular-oauth2-oidc';
+import { OAuthStorage, provideOAuthClient } from 'angular-oauth2-oidc';
 import { provideCharts, withDefaultRegisterables } from 'ng2-charts';
-import { catchError, combineLatest, Observable, switchMap } from 'rxjs';
-import { of } from 'rxjs/internal/observable/of';
 
+import { initApp } from './app-initializer';
 import { routes } from './app.routes';
 import { csrfInterceptor } from '../interceptors/csrf.interceptor';
 import { httpRequestInterceptor } from '../interceptors/http-request.interceptor';
@@ -33,32 +32,8 @@ import { AuthService } from '../services/auth.service';
 import { ConfigService } from '../services/config.service';
 import { CurrentUserService } from '../services/current-user.service';
 import { PortalNavigationItemsService } from '../services/portal-navigation-items.service';
+import { createPortalOAuthStorage } from '../services/portal-oauth-storage.factory';
 import { ThemeService } from '../services/theme.service';
-
-function initApp(
-  authService: AuthService,
-  configService: ConfigService,
-  themeService: ThemeService,
-  currentUserService: CurrentUserService,
-  portalNavigationItemsService: PortalNavigationItemsService,
-  router: Router,
-): () => Observable<unknown> {
-  return () =>
-    configService.initBaseURL().pipe(
-      switchMap(_ =>
-        combineLatest([
-          themeService.loadTheme(),
-          configService.loadConfiguration(),
-          portalNavigationItemsService.loadTopNavBarItems(),
-          authService.load().pipe(switchMap(_ => currentUserService.loadUser())),
-        ]),
-      ),
-      catchError(error => {
-        router.navigate(['/503'], { state: error });
-        return of({});
-      }),
-    );
-}
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -66,6 +41,11 @@ export const appConfig: ApplicationConfig = {
     provideHttpClient(withInterceptors([httpRequestInterceptor, csrfInterceptor])),
     provideAnimations(),
     provideOAuthClient(),
+    {
+      provide: OAuthStorage,
+      useFactory: createPortalOAuthStorage,
+      deps: [ConfigService],
+    },
     importProvidersFrom(GioIconsModule),
     provideAppInitializer(() => {
       const initializerFn = initApp(

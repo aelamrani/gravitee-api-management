@@ -24,7 +24,10 @@ import io.gravitee.apim.core.cluster.model.Cluster;
 import io.gravitee.apim.core.cluster.model.ClusterLifecycleState;
 import io.gravitee.definition.jackson.datatype.GraviteeMapper;
 import io.gravitee.definition.model.cluster.ClusterType;
+import io.gravitee.definition.model.v4.Api;
 import io.gravitee.definition.model.v4.ApiType;
+import io.gravitee.definition.model.v4.endpointgroup.Endpoint;
+import io.gravitee.definition.model.v4.endpointgroup.EndpointGroup;
 import io.gravitee.definition.model.v4.nativeapi.NativeApi;
 import io.gravitee.definition.model.v4.nativeapi.NativeEndpoint;
 import io.gravitee.definition.model.v4.nativeapi.NativeEndpointGroup;
@@ -85,6 +88,24 @@ class ValidateApiClusterBindingServiceTest {
     }
 
     @Test
+    void should_throw_when_native_api_registered_cluster_is_not_deployed() {
+        clusterQueryService.initWith(List.of(registeredCluster(ClusterLifecycleState.UNDEPLOYED)));
+
+        assertThatThrownBy(() -> service.validateDeployable("api-1", ENV_ID, ApiType.NATIVE, registeredClusterBoundDefinition("prod")))
+            .isInstanceOf(ApiNotDeployableException.class)
+            .hasMessage("The API {api-1} cannot be deployed or started because its cluster {prod} is not deployed");
+    }
+
+    @Test
+    void should_pass_when_native_api_registered_cluster_is_deployed() {
+        clusterQueryService.initWith(List.of(registeredCluster(ClusterLifecycleState.DEPLOYED)));
+
+        assertThatCode(() ->
+            service.validateDeployable("api-1", ENV_ID, ApiType.NATIVE, registeredClusterBoundDefinition("prod"))
+        ).doesNotThrowAnyException();
+    }
+
+    @Test
     void should_be_noop_for_non_native_api() {
         assertThatCode(() ->
             service.validateDeployable("api-1", ENV_ID, ApiType.PROXY, boundDefinition(VC_CROSS_ID))
@@ -114,6 +135,97 @@ class ValidateApiClusterBindingServiceTest {
         assertThatCode(() -> service.validateDeployable("api-1", ENV_ID, ApiType.NATIVE, "{ not-json")).doesNotThrowAnyException();
     }
 
+    @Test
+    void should_throw_when_message_api_kafka_cluster_is_not_deployed() {
+        clusterQueryService.initWith(List.of(kafkaCluster(ClusterLifecycleState.UNDEPLOYED)));
+
+        assertThatThrownBy(() ->
+            service.validateDeployable(
+                "api-1",
+                ENV_ID,
+                ApiType.MESSAGE,
+                messageDefinition("{\"mode\":\"CLUSTER\",\"clusterCrossId\":\"my-cluster\"}")
+            )
+        )
+            .isInstanceOf(ApiNotDeployableException.class)
+            .hasMessageContaining("Kafka cluster {my-cluster}");
+    }
+
+    @Test
+    void should_throw_when_message_api_kafka_cluster_is_missing() {
+        assertThatThrownBy(() ->
+            service.validateDeployable(
+                "api-1",
+                ENV_ID,
+                ApiType.MESSAGE,
+                messageDefinition("{\"mode\":\"CLUSTER\",\"clusterCrossId\":\"my-cluster\"}")
+            )
+        ).isInstanceOf(ApiNotDeployableException.class);
+    }
+
+    @Test
+    void should_pass_when_message_api_kafka_cluster_is_deployed_or_pending() {
+        clusterQueryService.initWith(List.of(kafkaCluster(ClusterLifecycleState.PENDING)));
+
+        assertThatCode(() ->
+            service.validateDeployable(
+                "api-1",
+                ENV_ID,
+                ApiType.MESSAGE,
+                messageDefinition("{\"mode\":\"CLUSTER\",\"clusterCrossId\":\"my-cluster\"}")
+            )
+        ).doesNotThrowAnyException();
+    }
+
+    @Test
+    void should_be_noop_for_message_api_in_direct_mode() {
+        assertThatCode(() ->
+            service.validateDeployable("api-1", ENV_ID, ApiType.MESSAGE, messageDefinition("{\"security\":{\"protocol\":\"PLAINTEXT\"}}"))
+        ).doesNotThrowAnyException();
+    }
+
+    private Cluster kafkaCluster(ClusterLifecycleState lifecycleState) {
+        return Cluster.builder()
+            .id("kafka-cluster-id")
+            .crossId("my-cluster")
+            .type(ClusterType.KAFKA_CLUSTER)
+            .name("My cluster")
+            .environmentId(ENV_ID)
+            .lifecycleState(lifecycleState)
+            .build();
+    }
+
+    private String messageDefinition(String sharedConfiguration) {
+        try {
+            return objectMapper.writeValueAsString(
+                Api.builder()
+                    .type(ApiType.MESSAGE)
+                    .endpointGroups(
+                        List.of(
+                            EndpointGroup.builder()
+                                .name("default-group")
+                                .type("kafka")
+                                .sharedConfiguration(sharedConfiguration)
+                                .endpoints(
+                                    List.of(
+                                        Endpoint.builder()
+                                            .name("default")
+                                            .type("kafka")
+                                            .inheritConfiguration(true)
+                                            .configuration("{\"connectionCrossId\":\"plaintext\"}")
+                                            .build()
+                                    )
+                                )
+                                .build()
+                        )
+                    )
+                    .build()
+            );
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private Cluster virtualCluster(ClusterLifecycleState lifecycleState) {
         return Cluster.builder()
             .id("cluster-id")
@@ -125,7 +237,26 @@ class ValidateApiClusterBindingServiceTest {
             .build();
     }
 
+    private Cluster registeredCluster(ClusterLifecycleState lifecycleState) {
+        return Cluster.builder()
+            .id("registered-cluster-id")
+            .crossId("prod")
+            .type(ClusterType.KAFKA_CLUSTER)
+            .name("Production")
+            .environmentId(ENV_ID)
+            .lifecycleState(lifecycleState)
+            .build();
+    }
+
+    private String registeredClusterBoundDefinition(String clusterCrossId) {
+        return nativeDefinition("native-kafka-cluster", "{\"clusterCrossId\":\"" + clusterCrossId + "\",\"connectionCrossId\":\"sasl\"}");
+    }
+
     private String boundDefinition(String vcCrossId) {
+        return nativeDefinition("native-kafka-virtual-cluster", "{\"virtualClusterCrossId\":\"" + vcCrossId + "\"}");
+    }
+
+    private String nativeDefinition(String endpointType, String endpointConfiguration) {
         try {
             return objectMapper.writeValueAsString(
                 NativeApi.builder()
@@ -133,12 +264,7 @@ class ValidateApiClusterBindingServiceTest {
                         List.of(
                             NativeEndpointGroup.builder()
                                 .endpoints(
-                                    List.of(
-                                        NativeEndpoint.builder()
-                                            .type("native-kafka-virtual-cluster")
-                                            .configuration("{\"virtualClusterCrossId\":\"" + vcCrossId + "\"}")
-                                            .build()
-                                    )
+                                    List.of(NativeEndpoint.builder().type(endpointType).configuration(endpointConfiguration).build())
                                 )
                                 .build()
                         )

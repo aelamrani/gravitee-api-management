@@ -15,6 +15,7 @@
  */
 package io.gravitee.gamma.rest.infra.adapter;
 
+import io.gravitee.apim.core.analytics_engine.model.AnalyticsScope;
 import io.gravitee.apim.core.analytics_engine.use_case.GetFilterValuesUseCase;
 import io.gravitee.apim.core.analytics_engine.use_case.ResolveFilterLabelsUseCase;
 import io.gravitee.apim.core.audit.model.AuditActor;
@@ -24,14 +25,13 @@ import io.gravitee.gamma.rest.core.observability.filter.exception.FilterCatalogD
 import io.gravitee.gamma.rest.core.observability.filter.model.ApiType;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterValue;
 import io.gravitee.gamma.rest.core.observability.filter.model.FilterValuesPage;
+import io.gravitee.gamma.rest.core.observability.filter.port.service_provider.EntrypointScopeProvider;
 import io.gravitee.gamma.rest.core.observability.filter.port.service_provider.ObservabilityFilterDataPort;
 import io.gravitee.rest.api.idp.api.authentication.UserDetails;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import io.gravitee.rest.api.service.common.GraviteeContext;
 import java.time.Instant;
-import java.util.EnumMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -55,20 +55,7 @@ public class ObservabilityFilterDataPortAdapter implements ObservabilityFilterDa
 
     private final GetFilterValuesUseCase getFilterValuesUseCase;
     private final ResolveFilterLabelsUseCase resolveFilterLabelsUseCase;
-
-    private static final Map<ApiType, io.gravitee.definition.model.v4.ApiType> GAMMA_TO_PLATFORM_API_TYPE;
-
-    static {
-        var map = new EnumMap<ApiType, io.gravitee.definition.model.v4.ApiType>(ApiType.class);
-        map.put(ApiType.HTTP_PROXY, io.gravitee.definition.model.v4.ApiType.PROXY);
-        map.put(ApiType.LLM, io.gravitee.definition.model.v4.ApiType.LLM_PROXY);
-        map.put(ApiType.MCP, io.gravitee.definition.model.v4.ApiType.MCP_PROXY);
-        map.put(ApiType.A2A, io.gravitee.definition.model.v4.ApiType.A2A_PROXY);
-        map.put(ApiType.MESSAGE, io.gravitee.definition.model.v4.ApiType.MESSAGE);
-        map.put(ApiType.NATIVE, io.gravitee.definition.model.v4.ApiType.NATIVE);
-        map.put(ApiType.EDGE, io.gravitee.definition.model.v4.ApiType.EDGE);
-        GAMMA_TO_PLATFORM_API_TYPE = Map.copyOf(map);
-    }
+    private final EntrypointScopeProvider entrypointScopeProvider;
 
     @Override
     public FilterValuesPage listKeywordValues(
@@ -78,14 +65,18 @@ public class ObservabilityFilterDataPortAdapter implements ObservabilityFilterDa
         Long to,
         int page,
         int perPage,
-        Set<ApiType> apiTypes
+        Set<ApiType> apiTypes,
+        String apiProduct
     ) {
         try {
             Instant fromInstant = from != null ? Instant.ofEpochMilli(from) : null;
             Instant toInstant = to != null ? Instant.ofEpochMilli(to) : null;
             Set<io.gravitee.definition.model.v4.ApiType> platformApiTypes = apiTypes == null || apiTypes.isEmpty()
                 ? Set.of()
-                : apiTypes.stream().map(GAMMA_TO_PLATFORM_API_TYPE::get).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+                : apiTypes
+                    .stream()
+                    .flatMap(apiType -> ApiTypeAdapter.toDefinition(apiType).stream())
+                    .collect(Collectors.toSet());
             var output = getFilterValuesUseCase.execute(
                 new GetFilterValuesUseCase.Input(
                     currentAuditInfo(),
@@ -95,7 +86,10 @@ public class ObservabilityFilterDataPortAdapter implements ObservabilityFilterDa
                     page,
                     perPage,
                     query,
-                    platformApiTypes
+                    platformApiTypes,
+                    AnalyticsScope.MANAGEMENT,
+                    apiTypes == null ? Set.of() : entrypointScopeProvider.entrypointsAdding(apiTypes),
+                    apiProduct
                 )
             );
             var valuesPage = output.valuesPage();
@@ -114,12 +108,12 @@ public class ObservabilityFilterDataPortAdapter implements ObservabilityFilterDa
     }
 
     @Override
-    public List<ResolvedLabels> resolveLabels(List<ResolveRequest> requests) {
+    public List<ResolvedLabels> resolveLabels(List<ResolveRequest> requests, String apiProduct) {
         var entries = requests
             .stream()
             .map(r -> new ResolveFilterLabelsUseCase.Entry(r.filterName(), r.ids()))
             .toList();
-        var output = resolveFilterLabelsUseCase.execute(new ResolveFilterLabelsUseCase.Input(currentAuditInfo(), entries));
+        var output = resolveFilterLabelsUseCase.execute(new ResolveFilterLabelsUseCase.Input(currentAuditInfo(), entries, apiProduct));
         return output
             .entries()
             .stream()

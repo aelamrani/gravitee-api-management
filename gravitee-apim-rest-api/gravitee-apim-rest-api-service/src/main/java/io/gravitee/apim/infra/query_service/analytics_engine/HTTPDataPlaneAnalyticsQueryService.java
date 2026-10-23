@@ -20,6 +20,7 @@ import static io.gravitee.apim.core.analytics_engine.model.MetricSpec.Name.HTTP_
 
 import io.gravitee.apim.core.analytics_engine.model.FacetsRequest;
 import io.gravitee.apim.core.analytics_engine.model.FacetsResponse;
+import io.gravitee.apim.core.analytics_engine.model.FilterSpec;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresRequest;
 import io.gravitee.apim.core.analytics_engine.model.MeasuresResponse;
 import io.gravitee.apim.core.analytics_engine.model.MetricSpec.Name;
@@ -27,6 +28,7 @@ import io.gravitee.apim.core.analytics_engine.model.TimeSeriesRequest;
 import io.gravitee.apim.core.analytics_engine.model.TimeSeriesResponse;
 import io.gravitee.apim.core.analytics_engine.query_service.AnalyticsEngineQueryService;
 import io.gravitee.apim.infra.adapter.AnalyticsMeasuresAdapter;
+import io.gravitee.repository.analytics.engine.api.query.AnalyticsSearchPath;
 import io.gravitee.repository.log.v4.api.AnalyticsRepository;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.util.List;
@@ -48,6 +50,15 @@ public class HTTPDataPlaneAnalyticsQueryService implements AnalyticsEngineQueryS
     }
 
     private static final Set<Name> EDGE_METRICS = Set.of(EDGE_DETECTION_COUNT, EDGE_TOKENS_IN, EDGE_TOKENS_OUT, EDGE_HEARTBEAT_COUNT);
+
+    /** An Edge metric is searched on the Edge path by facets and on the HTTP path otherwise: both must narrow it. */
+    @Override
+    public boolean narrowsBy(Name metric, FilterSpec.Name filter) {
+        var onHttp = IgnoredFilters.narrows(analyticsRepository, AnalyticsSearchPath.HTTP, filter);
+        return EDGE_METRICS.contains(metric)
+            ? onHttp && IgnoredFilters.narrows(analyticsRepository, AnalyticsSearchPath.EDGE, filter)
+            : onHttp;
+    }
 
     @Override
     public Set<Name> metrics() {
@@ -77,16 +88,23 @@ public class HTTPDataPlaneAnalyticsQueryService implements AnalyticsEngineQueryS
     public MeasuresResponse searchMeasures(ExecutionContext context, MeasuresRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchHTTPMeasures(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.HTTP, query)
+        );
     }
 
     @Override
     public FacetsResponse searchFacets(ExecutionContext context, FacetsRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
-        var result = isEdgeRequest(request)
+        var path = isEdgeRequest(request) ? AnalyticsSearchPath.EDGE : AnalyticsSearchPath.HTTP;
+        var result = path == AnalyticsSearchPath.EDGE
             ? analyticsRepository.searchEdgeFacets(context.getQueryContext(), query)
             : analyticsRepository.searchHTTPFacets(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, path, query)
+        );
     }
 
     private boolean isEdgeRequest(FacetsRequest request) {
@@ -102,6 +120,9 @@ public class HTTPDataPlaneAnalyticsQueryService implements AnalyticsEngineQueryS
     public TimeSeriesResponse searchTimeSeries(ExecutionContext context, TimeSeriesRequest request) {
         var query = AnalyticsMeasuresAdapter.INSTANCE.fromRequest(request);
         var result = analyticsRepository.searchHTTPTimeSeries(context.getQueryContext(), query);
-        return AnalyticsMeasuresAdapter.INSTANCE.fromResult(result);
+        return IgnoredFilters.mark(
+            AnalyticsMeasuresAdapter.INSTANCE.fromResult(result),
+            IgnoredFilters.of(analyticsRepository, AnalyticsSearchPath.HTTP, query)
+        );
     }
 }

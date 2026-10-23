@@ -16,6 +16,8 @@
 package io.gravitee.rest.api.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.eq;
@@ -23,8 +25,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.gravitee.apim.core.portal_page.domain_service.PortalNavigationApiVisibilityDomainService;
 import io.gravitee.rest.api.idp.api.authentication.UserDetails;
 import io.gravitee.rest.api.model.AccessControlEntity;
 import io.gravitee.rest.api.model.GroupEntity;
@@ -45,6 +49,7 @@ import io.gravitee.rest.api.service.GroupService;
 import io.gravitee.rest.api.service.MembershipService;
 import io.gravitee.rest.api.service.RoleService;
 import io.gravitee.rest.api.service.common.GraviteeContext;
+import io.gravitee.rest.api.service.exceptions.ApiNotFoundException;
 import io.gravitee.rest.api.service.v4.ApiAuthorizationService;
 import io.gravitee.rest.api.service.v4.ApiSearchService;
 import java.util.ArrayList;
@@ -98,6 +103,9 @@ public class AccessControlServiceTest {
 
     @Mock
     private GroupService groupService;
+
+    @Mock
+    private PortalNavigationApiVisibilityDomainService portalNavigationApiVisibilityDomainService;
 
     public static void connectUser() {
         // reset authentication to avoid side effect during test executions.
@@ -212,6 +220,130 @@ public class AccessControlServiceTest {
         boolean canAccess = accessControlService.canAccessApiFromPortal(GraviteeContext.getExecutionContext(), apiEntity);
 
         assertTrue(canAccess);
+    }
+
+    @Test
+    void should_access_published_public_api_by_id() {
+        var executionContext = GraviteeContext.getExecutionContext();
+        when(apiSearchService.findGenericById(executionContext, API_ID, false, false, false)).thenReturn(
+            anApi(Visibility.PUBLIC, ApiLifecycleState.PUBLISHED)
+        );
+
+        assertTrue(accessControlService.canAccessApiFromPortal(executionContext, API_ID));
+        verify(apiSearchService).findGenericById(executionContext, API_ID, false, false, false);
+        verifyNoInteractions(apiAuthorizationService);
+    }
+
+    @Test
+    void should_not_access_private_api_by_id_when_user_cannot_consume_it() {
+        connectUser();
+        var executionContext = GraviteeContext.getExecutionContext();
+        GenericApiEntity api = anApi(Visibility.PRIVATE, ApiLifecycleState.PUBLISHED);
+        when(apiSearchService.findGenericById(executionContext, API_ID, false, false, false)).thenReturn(api);
+        when(apiAuthorizationService.canConsumeApi(executionContext, USERNAME, api)).thenReturn(false);
+
+        assertFalse(accessControlService.canAccessApiFromPortal(executionContext, API_ID));
+        verify(apiAuthorizationService).canConsumeApi(executionContext, USERNAME, api);
+    }
+
+    @Test
+    void should_propagate_api_not_found_when_checking_access_by_id() {
+        var executionContext = GraviteeContext.getExecutionContext();
+        var exception = new ApiNotFoundException(API_ID);
+        when(apiSearchService.findGenericById(executionContext, API_ID, false, false, false)).thenThrow(exception);
+
+        assertSame(
+            exception,
+            assertThrows(ApiNotFoundException.class, () -> accessControlService.canAccessApiFromPortal(executionContext, API_ID))
+        );
+        verifyNoInteractions(apiAuthorizationService, portalNavigationApiVisibilityDomainService);
+    }
+
+    @Test
+    void should_not_access_unpublished_api_even_when_portal_navigation_allows_consumption() {
+        connectUser();
+        var executionContext = GraviteeContext.getExecutionContext();
+        GenericApiEntity api = anApi(Visibility.PUBLIC, ApiLifecycleState.UNPUBLISHED);
+        when(
+            portalNavigationApiVisibilityDomainService.isApiVisibleToUser(executionContext.getEnvironmentId(), API_ID, USERNAME)
+        ).thenReturn(true);
+
+        assertTrue(accessControlService.canConsumeApiFromPortal(executionContext, api));
+        assertFalse(accessControlService.canAccessApiFromPortal(executionContext, api));
+    }
+
+    @Test
+    void should_consume_published_public_api_from_portal() {
+        connectUser();
+
+        assertTrue(
+            accessControlService.canConsumeApiFromPortal(
+                GraviteeContext.getExecutionContext(),
+                anApi(Visibility.PUBLIC, ApiLifecycleState.PUBLISHED)
+            )
+        );
+    }
+
+    @Test
+    void should_consume_unpublished_public_api_listed_in_portal_navigation() {
+        connectUser();
+        when(
+            portalNavigationApiVisibilityDomainService.isApiVisibleToUser(GraviteeContext.getCurrentEnvironment(), API_ID, USERNAME)
+        ).thenReturn(true);
+
+        assertTrue(
+            accessControlService.canConsumeApiFromPortal(
+                GraviteeContext.getExecutionContext(),
+                anApi(Visibility.PUBLIC, ApiLifecycleState.UNPUBLISHED)
+            )
+        );
+    }
+
+    @Test
+    void should_not_consume_unpublished_public_api_missing_from_portal_navigation() {
+        connectUser();
+        when(
+            portalNavigationApiVisibilityDomainService.isApiVisibleToUser(GraviteeContext.getCurrentEnvironment(), API_ID, USERNAME)
+        ).thenReturn(false);
+
+        assertFalse(
+            accessControlService.canConsumeApiFromPortal(
+                GraviteeContext.getExecutionContext(),
+                anApi(Visibility.PUBLIC, ApiLifecycleState.UNPUBLISHED)
+            )
+        );
+    }
+
+    @Test
+    void should_not_consume_private_api_listed_in_portal_navigation_when_user_cannot_consume_it() {
+        connectUser();
+        GenericApiEntity api = anApi(Visibility.PRIVATE, ApiLifecycleState.UNPUBLISHED);
+        when(apiAuthorizationService.canConsumeApi(GraviteeContext.getExecutionContext(), USERNAME, api)).thenReturn(false);
+        when(
+            portalNavigationApiVisibilityDomainService.isApiVisibleToUser(GraviteeContext.getCurrentEnvironment(), API_ID, USERNAME)
+        ).thenReturn(true);
+
+        assertFalse(accessControlService.canConsumeApiFromPortal(GraviteeContext.getExecutionContext(), api));
+    }
+
+    @Test
+    void should_consume_private_api_listed_in_portal_navigation_when_user_can_consume_it() {
+        connectUser();
+        GenericApiEntity api = anApi(Visibility.PRIVATE, ApiLifecycleState.UNPUBLISHED);
+        when(apiAuthorizationService.canConsumeApi(GraviteeContext.getExecutionContext(), USERNAME, api)).thenReturn(true);
+        when(
+            portalNavigationApiVisibilityDomainService.isApiVisibleToUser(GraviteeContext.getCurrentEnvironment(), API_ID, USERNAME)
+        ).thenReturn(true);
+
+        assertTrue(accessControlService.canConsumeApiFromPortal(GraviteeContext.getExecutionContext(), api));
+    }
+
+    private static GenericApiEntity anApi(Visibility visibility, ApiLifecycleState lifecycleState) {
+        ApiEntity api = new ApiEntity();
+        api.setId(API_ID);
+        api.setVisibility(visibility);
+        api.setLifecycleState(lifecycleState);
+        return api;
     }
 
     @Test

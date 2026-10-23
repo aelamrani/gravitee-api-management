@@ -32,6 +32,9 @@ import static io.gravitee.repository.elasticsearch.utils.ElasticsearchDsl.Tokens
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.util.RawValue;
+import io.gravitee.repository.common.query.QueryContext;
+import io.gravitee.repository.elasticsearch.v4.shared.AuthzEntityRefClauses;
 import io.gravitee.repository.log.v4.model.authz.AuthzDecisionLogQuery;
 import java.util.Set;
 
@@ -52,6 +55,10 @@ public final class SearchAuthzDecisionLogsQueryAdapter {
     private static final String WILDCARD = "wildcard";
     private static final String VALUE = "value";
     private static final String CASE_INSENSITIVE = "case_insensitive";
+    private static final String PREFIX = "prefix";
+    private static final String SHOULD = "should";
+    private static final String MINIMUM_SHOULD_MATCH = "minimum_should_match";
+    private static final String RULE_INDEX_SEPARATOR = "#";
 
     private SearchAuthzDecisionLogsQueryAdapter() {}
 
@@ -65,26 +72,50 @@ public final class SearchAuthzDecisionLogsQueryAdapter {
         filters.add(MAPPER.createObjectNode().set(TERMS, MAPPER.createObjectNode().set(field, node)));
     }
 
+    private static void addEntityRefsIfAny(
+        ArrayNode filters,
+        AuthzEntityRefClauses entityRefs,
+        String typeField,
+        String idField,
+        Set<String> references
+    ) {
+        if (references == null || references.isEmpty()) {
+            return;
+        }
+        filters.addRawValue(new RawValue(entityRefs.matching(typeField, idField, references).encode()));
+    }
+
     /**
      * Nested objects are indexed as separate Lucene documents, so a plain terms clause on the
      * sub-field matches nothing at all — the wrapper is what makes the field reachable.
      *
-     * <p>{@code ignore_unmapped} matters because the search spans every backing index of the stream,
-     * including ones written before decisions carried policy names. Without it those shards fail the
-     * whole query, and the response model carries no {@code _shards}, so the failure would be silent.
+     * <p>{@code ignore_unmapped} keeps an index matching the pattern without that nested mapping from failing
+     * the whole query silently, since the response model carries no {@code _shards}.
      */
-    private static void addNestedTermsIfAny(ArrayNode filters, String path, String field, Set<String> values) {
-        if (values == null || values.isEmpty()) {
+    private static void addMatchedPoliciesIfAny(ArrayNode filters, String path, String field, Set<String> names) {
+        if (names == null || names.isEmpty()) {
             return;
         }
-        ArrayNode node = MAPPER.createArrayNode();
-        values.forEach(node::add);
-        ObjectNode inner = MAPPER.createObjectNode().set(TERMS, MAPPER.createObjectNode().set(path + "." + field, node));
+        var qualifiedField = path + "." + field;
+        ArrayNode exactNames = MAPPER.createArrayNode();
+        names.forEach(exactNames::add);
+        ArrayNode should = MAPPER.createArrayNode();
+        should.add(MAPPER.createObjectNode().set(TERMS, MAPPER.createObjectNode().set(qualifiedField, exactNames)));
+        names.forEach(name -> should.add(ruleIndexPrefixClause(qualifiedField, name)));
+        ObjectNode bool = MAPPER.createObjectNode();
+        bool.set(SHOULD, should);
+        bool.put(MINIMUM_SHOULD_MATCH, 1);
         ObjectNode nested = MAPPER.createObjectNode();
         nested.put(PATH, path);
         nested.put(IGNORE_UNMAPPED, true);
-        nested.set(QUERY, inner);
+        nested.set(QUERY, MAPPER.createObjectNode().set(BOOL, bool));
         filters.add(MAPPER.createObjectNode().set(NESTED, nested));
+    }
+
+    private static ObjectNode ruleIndexPrefixClause(String qualifiedField, String name) {
+        ObjectNode prefix = MAPPER.createObjectNode();
+        prefix.put(qualifiedField, name + RULE_INDEX_SEPARATOR);
+        return MAPPER.createObjectNode().set(PREFIX, prefix);
     }
 
     /**
@@ -108,27 +139,49 @@ public final class SearchAuthzDecisionLogsQueryAdapter {
         return needle.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?");
     }
 
-    public static String adapt(AuthzDecisionLogQuery query) {
+    private static void addTerm(ArrayNode filters, String field, String value) {
+        filters.add(MAPPER.createObjectNode().set(TERM, MAPPER.createObjectNode().put(field, value)));
+    }
+
+    public static String adapt(QueryContext queryContext, AuthzDecisionLogQuery query) {
         ArrayNode filters = MAPPER.createArrayNode();
+        addTerm(filters, AuthzDecisionLogFields.ORG_ID, queryContext.getOrgId());
+        addTerm(filters, AuthzDecisionLogFields.ENV_ID, queryContext.getEnvId());
+        addTerm(filters, AuthzDecisionLogFields.DECISION_POINT_TYPE, AuthzDecisionLogFields.AUTHZ);
+        addTerm(filters, AuthzDecisionLogFields.PHASE, AuthzDecisionLogFields.RESOLVED);
         ArrayNode apiIds = MAPPER.createArrayNode();
         query.getApiIds().forEach(apiIds::add);
         filters.add(MAPPER.createObjectNode().set(TERMS, MAPPER.createObjectNode().set(AuthzDecisionLogFields.API_ID, apiIds)));
 
-        // Every one of these is a keyword field, so an exact terms clause is the whole translation.
+        // Keyword fields: exact term matching is the whole translation, once a subject or resource is split into type and id.
         addTermsIfAny(filters, AuthzDecisionLogFields.DECISION, query.getDecisions());
-        addTermsIfAny(filters, AuthzDecisionLogFields.SUBJECT_ID, query.getSubjectIds());
+        var entityRefs = new AuthzEntityRefClauses();
+        addEntityRefsIfAny(
+            filters,
+            entityRefs,
+            AuthzDecisionLogFields.SUBJECT_TYPE,
+            AuthzDecisionLogFields.SUBJECT_ID,
+            query.getSubjectIds()
+        );
         addTermsIfAny(filters, AuthzDecisionLogFields.ACTION, query.getActions());
-        addTermsIfAny(filters, AuthzDecisionLogFields.RESOURCE_ID, query.getResourceIds());
+        addEntityRefsIfAny(
+            filters,
+            entityRefs,
+            AuthzDecisionLogFields.RESOURCE_TYPE,
+            AuthzDecisionLogFields.RESOURCE_ID,
+            query.getResourceIds()
+        );
         addTermsIfAny(filters, AuthzDecisionLogFields.CALLER, query.getCallers());
         addTermsIfAny(filters, AuthzDecisionLogFields.STATUS, query.getStatuses());
-        addTermsIfAny(filters, AuthzDecisionLogFields.OPERATION, query.getOperations());
+        addTermsIfAny(filters, AuthzDecisionLogFields.INDETERMINATE_CAUSE, query.getIndeterminateCauses());
+        addTermsIfAny(filters, AuthzDecisionLogFields.ERROR_TYPE, query.getErrorTypes());
         addTermsIfAny(filters, AuthzDecisionLogFields.TARGET_PDP_ID, query.getTargetPdpIds());
         addTermsIfAny(filters, AuthzDecisionLogFields.POLICY_GENERATION, query.getPolicyGenerations());
         addTermsIfAny(filters, AuthzDecisionLogFields.REQUEST_ID, query.getRequestIds());
-        addNestedTermsIfAny(
+        addMatchedPoliciesIfAny(
             filters,
-            AuthzDecisionLogFields.MATCHED_POLICIES,
-            AuthzDecisionLogFields.MATCHED_POLICY_NAME,
+            AuthzDecisionLogFields.MATCHED_RULES,
+            AuthzDecisionLogFields.MATCHED_RULE_NAME,
             query.getMatchedPolicyNames()
         );
         addContainsIfAny(filters, AuthzDecisionLogFields.REASONS, query.getReasonContains());

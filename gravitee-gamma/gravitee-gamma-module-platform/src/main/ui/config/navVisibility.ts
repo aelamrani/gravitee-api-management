@@ -15,6 +15,7 @@
  */
 
 import type { License } from '@gravitee/gamma-modules-sdk/types';
+import { isFederationEntitled } from '@gravitee/gamma-ui-shared/federation';
 
 import { filterNavSections, firstNavItemKey, NAV_SECTIONS, type PlatformNavSection } from './navigation';
 import { DEFAULT_ROUTE_KEY, ROUTES, ROUTE_KEYS, type RouteKey } from './routes';
@@ -25,6 +26,7 @@ import { ORGANIZATION_NOTIFICATION_TEMPLATES_READ } from '../features/notificati
 import { ORGANIZATION_POLICIES_ACCESS_PERMISSIONS } from '../features/platform-policies/utils/platformPolicyPermissions';
 import { ORGANIZATION_ROLE_READ_PERMISSION } from '../features/roles/utils/rolePermissionConstants';
 import { ENVIRONMENT_SHARED_POLICY_GROUP_READ_PERMISSION } from '../features/shared-policy-groups/utils/sharedPolicyGroupPermissions';
+import { ORGANIZATION_CUSTOM_USER_FIELD_READ_PERMISSION } from '../features/user-fields/utils/userFieldPermissions';
 import { ORGANIZATION_USER_ACCESS_PERMISSIONS } from '../features/users/utils/userPermissions';
 
 export const ORGANIZATION_SETTINGS_READ_PERMISSION = 'organization-settings-r' as const;
@@ -64,7 +66,9 @@ const ORGANIZATION_SETTINGS_GATED_ITEMS: ReadonlySet<string> = new Set([
  * Gamma also requires `organization-audit-r`; Access Management is environment-scoped
  * here, outside the org-settings gate, because it is Gamma-only; and Integrations, mapped to
  * the same `environment-integration-r` Classic's side nav uses, is additionally hidden
- * unless the caller reports Federation license availability.
+ * unless the caller reports Federation license availability. API Score uses that same
+ * Classic ACL plus `apiScore.enabled` from GET /portal — Classic's environmentSettingsService
+ * gate — so the item stays hidden when scoring is switched off.
  */
 export const NAV_ITEM_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
     tenants: [ORGANIZATION_TENANT_READ_PERMISSION],
@@ -79,18 +83,23 @@ export const NAV_ITEM_PERMISSIONS: Readonly<Record<string, readonly string[]>> =
     'api-logging': [ORGANIZATION_SETTINGS_READ_PERMISSION],
     'organization-audit': [ORGANIZATION_AUDIT_READ_PERMISSION],
     applications: [ENVIRONMENT_APPLICATION_READ_PERMISSION],
+    'api-score': [ENVIRONMENT_INTEGRATION_READ_PERMISSION],
     integrations: [ENVIRONMENT_INTEGRATION_READ_PERMISSION],
     metadata: ['environment-metadata-r'],
     dictionaries: ['environment-dictionary-r'],
+    'user-fields': [ORGANIZATION_CUSTOM_USER_FIELD_READ_PERMISSION],
     'shared-policy-groups': [ENVIRONMENT_SHARED_POLICY_GROUP_READ_PERMISSION],
     broadcasts: ['environment-message-c'],
     gateways: ['environment-instance-r'],
     alerts: [ENVIRONMENT_ALERT_READ_PERMISSION],
     'notification-settings': ['environment-notification-r'],
     'api-health-check': ['environment-api-r'],
+    'api-review': [ENVIRONMENT_SETTINGS_READ_PERMISSION],
     'environment-smtp': [ENVIRONMENT_SETTINGS_READ_PERMISSION],
     'environment-cors': [ENVIRONMENT_SETTINGS_READ_PERMISSION],
     'security-plan-types': [ENVIRONMENT_SETTINGS_READ_PERMISSION],
+    'primary-owner-mode': [ENVIRONMENT_SETTINGS_READ_PERMISSION],
+    'client-registration': ['environment-client_registration_provider-r'],
     'environment-audit': [ENVIRONMENT_AUDIT_READ_PERMISSION],
     users: ORGANIZATION_USER_ACCESS_PERMISSIONS,
     groups: [ENVIRONMENT_GROUP_READ_PERMISSION],
@@ -103,6 +112,8 @@ export interface NavVisibilityInput {
     readonly metadataForbidden?: boolean;
     readonly dictionariesForbidden?: boolean;
     readonly federationAvailable?: boolean;
+    /** Scoring is switched on for the environment (`GET /portal` `apiScore.enabled`). */
+    readonly apiScoreEnabled?: boolean;
     /** Items shown but not enterable (missing license). Visible in the sidebar, never a landing target. */
     readonly lockedItemKeys?: readonly string[];
     /** Items a live 403 denied at runtime, whichever permission scope still grants them. */
@@ -113,31 +124,9 @@ export interface NavVisibilityInput {
  * The single source for `federationAvailable`, read by the nav item and by its route guard so a
  * visible item can never lead to a route that bounces. Permission is not part of it: each side
  * already applies that half through NAV_ITEM_PERMISSIONS / pageGuardForNavItem.
- *
- * A null license means the host has not reported one yet, not that none is installed — an
- * installation without one reports `tier: 'oss'`. Granting on null would turn a license fetch that
- * has not landed, or failed, into an entitlement.
- *
- * Expiry is a separate term because the backend's tier does not carry it: an expired enterprise
- * license still reports `tier: 'enterprise'` (LicenseDomainService.isFederationFeatureAllowed).
  */
-export function isFederationAvailable({
-    federationEnabled,
-    license,
-}: Readonly<{ federationEnabled: boolean; license: License | null }>): boolean {
-    if (!federationEnabled) {
-        return false;
-    }
-    if (license === null) {
-        return false;
-    }
-    if (license.isExpired) {
-        return false;
-    }
-    if (license.tier === 'oss') {
-        return false;
-    }
-    return true;
+export function isFederationAvailable(gateInputs: Readonly<{ federationEnabled: boolean; license: License | null }>): boolean {
+    return isFederationEntitled(gateInputs);
 }
 
 export function requiresOrganizationSettingsGate(itemKey: string): boolean {
@@ -189,6 +178,9 @@ export function isNavItemVisible(itemKey: string, visibility: NavVisibilityInput
         return false;
     }
     if (itemKey === 'integrations' && !visibility.federationAvailable) {
+        return false;
+    }
+    if (itemKey === 'api-score' && !visibility.apiScoreEnabled) {
         return false;
     }
     return true;

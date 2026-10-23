@@ -44,6 +44,8 @@ import io.gravitee.apim.core.audit.model.Excludable;
 import io.gravitee.apim.core.documentation.model.AccessControl;
 import io.gravitee.apim.core.documentation.model.Page;
 import io.gravitee.apim.core.documentation.query_service.PageQueryService;
+import io.gravitee.apim.core.group.model.Group;
+import io.gravitee.apim.core.group.query_service.GroupQueryService;
 import io.gravitee.apim.core.integration.crud_service.IntegrationCrudService;
 import io.gravitee.apim.core.integration.model.Integration;
 import io.gravitee.apim.core.media.model.Media;
@@ -64,6 +66,7 @@ import io.gravitee.definition.model.DefinitionVersion;
 import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.definition.model.v4.flow.Flow;
 import io.gravitee.definition.model.v4.nativeapi.NativeApi;
+import io.gravitee.definition.model.v4.nativeapi.NativeApiServices;
 import io.gravitee.definition.model.v4.nativeapi.NativeFlow;
 import io.gravitee.definition.model.v4.plan.PlanSecurity;
 import io.gravitee.definition.model.v4.plan.PlanStatus;
@@ -83,6 +86,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -163,6 +167,9 @@ class ApiExportDomainServiceImplTest {
     @Mock
     ApiCategoryQueryService apiCategoryQueryService;
 
+    @Mock
+    GroupQueryService groupQueryService;
+
     @InjectMocks
     ApiExportDomainServiceImpl sut;
 
@@ -192,6 +199,15 @@ class ApiExportDomainServiceImplTest {
             .thenReturn(true);
 
         lenient().when(apiCategoryQueryService.findApiCategoryKeys(any(Api.class))).thenReturn(List.of());
+        lenient()
+            .when(groupQueryService.findByIds(anySet()))
+            .thenAnswer(invocation -> {
+                Set<String> ids = invocation.getArgument(0);
+                return ids
+                    .stream()
+                    .map(id -> Group.builder().id(id).name(id).build())
+                    .collect(Collectors.toSet());
+            });
     }
 
     @AfterEach
@@ -357,6 +373,40 @@ class ApiExportDomainServiceImplTest {
     }
 
     @Test
+    void export_service_maps_group_ids_to_names() {
+        String apiId = UUID.randomUUID().toString();
+        Api api = ApiFixtures.aProxyApiV4().toBuilder().id(apiId).groups(Set.of("group-1")).build();
+        when(apiCrudService.findById(anyString())).thenReturn(Optional.of(api));
+        when(groupQueryService.findByIds(Set.of("group-1"))).thenReturn(Set.of(Group.builder().id("group-1").name("Helios").build()));
+        when(metadataCrudService.findByApiId(anyString())).thenReturn(List.of());
+        when(membershipCrudService.findByApiId(anyString())).thenReturn(List.of());
+        when(pageQueryService.searchByApiId(anyString())).thenReturn(List.of());
+        when(mediaService.findAllByApiId(anyString())).thenReturn(List.of());
+
+        GraviteeDefinition export = sut.export(apiId, getAuditInfo(), EnumSet.noneOf(Excludable.class));
+
+        assertThat(export.api().groups()).containsExactly("Helios");
+    }
+
+    @Test
+    void export_service_skips_missing_group_ids_and_exports_resolved_names() {
+        String apiId = UUID.randomUUID().toString();
+        Api api = ApiFixtures.aProxyApiV4().toBuilder().id(apiId).groups(Set.of("group-1", "missing-group")).build();
+        when(apiCrudService.findById(anyString())).thenReturn(Optional.of(api));
+        when(groupQueryService.findByIds(Set.of("group-1", "missing-group"))).thenReturn(
+            Set.of(Group.builder().id("group-1").name("Helios").build())
+        );
+        when(metadataCrudService.findByApiId(anyString())).thenReturn(List.of());
+        when(membershipCrudService.findByApiId(anyString())).thenReturn(List.of());
+        when(pageQueryService.searchByApiId(anyString())).thenReturn(List.of());
+        when(mediaService.findAllByApiId(anyString())).thenReturn(List.of());
+
+        GraviteeDefinition export = sut.export(apiId, getAuditInfo(), EnumSet.noneOf(Excludable.class));
+
+        assertThat(export.api().groups()).containsExactly("Helios");
+    }
+
+    @Test
     void exportServiceMustMapTypeWhenExportV4Native() {
         // Given
         String apiId = UUID.randomUUID().toString();
@@ -381,6 +431,24 @@ class ApiExportDomainServiceImplTest {
         assertThat(export.pages()).contains(EXPECTED_MARKDOWN_PAGE);
         assertThat(export.members()).hasSize(1);
         assertThat(export.members()).contains(EXPECTED_MEMBER);
+    }
+
+    @Test
+    void export_service_must_export_services_of_a_native_api() {
+        // Given
+        String apiId = UUID.randomUUID().toString();
+
+        Service dynamicProperty = Service.builder().type("http-dynamic-properties").enabled(true).configuration("{}").build();
+        Api api = ApiFixtures.aNativeApi();
+        api.getApiDefinitionNativeV4().setServices(new NativeApiServices(dynamicProperty));
+        when(apiCrudService.findById(anyString())).thenReturn(Optional.of(api));
+
+        // When
+        GraviteeDefinition export = sut.export(apiId, getAuditInfo(), EnumSet.noneOf(Excludable.class));
+
+        // Then
+        assertThat(((ApiDescriptor.Native) export.api()).services()).isNotNull();
+        assertThat(((ApiDescriptor.Native) export.api()).services().getDynamicProperty()).isEqualTo(dynamicProperty);
     }
 
     @Test

@@ -29,6 +29,7 @@ import io.gravitee.definition.model.v4.ApiType;
 import io.gravitee.rest.api.service.common.ExecutionContext;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.assertj.core.api.InstanceOfAssertFactories;
@@ -57,7 +58,8 @@ class ApiTypeFilterTransformerTest {
             authorizedApiIds,
             Map.of(),
             Map.of(),
-            apiIdsByType
+            apiIdsByType,
+            Optional.empty()
         );
     }
 
@@ -136,6 +138,19 @@ class ApiTypeFilterTransformerTest {
         assertThat(filters.getFirst().value())
             .asInstanceOf(InstanceOfAssertFactories.collection(String.class))
             .containsExactlyInAnyOrder("api-2", "api-3");
+    }
+
+    @Test
+    void should_narrow_to_authz_apis() {
+        var context = buildContext(Set.of("api-1", "api-authz"), Map.of(ApiType.AUTHZ, Set.of("api-authz")));
+
+        var apiTypeFilter = new Filter(FilterSpec.Name.API_TYPE, FilterOperator.EQ, "AUTHZ");
+        var filters = transformer.transform(context, List.of(apiTypeFilter));
+
+        assertThat(filters).hasSize(1);
+        assertThat(filters.getFirst().value())
+            .asInstanceOf(InstanceOfAssertFactories.collection(String.class))
+            .containsExactly("api-authz");
     }
 
     @ParameterizedTest

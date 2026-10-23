@@ -20,3 +20,4 @@ export * from './propertiesParser';
 export * from './bitfield';
 export * from './hostPattern.util';
 export * from './api-access.util';
+export * from './encrypted-value-mask.util';

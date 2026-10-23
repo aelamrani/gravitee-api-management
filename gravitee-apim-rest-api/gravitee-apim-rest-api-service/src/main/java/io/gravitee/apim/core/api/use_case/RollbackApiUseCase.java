@@ -25,6 +25,8 @@ import io.gravitee.apim.core.api.crud_service.ApiCrudService;
 import io.gravitee.apim.core.api.domain_service.ApiIndexerDomainService;
 import io.gravitee.apim.core.api.domain_service.ApiStateDomainService;
 import io.gravitee.apim.core.api.domain_service.UpdateApiDomainService;
+import io.gravitee.apim.core.api.domain_service.UpdateNativeApiDomainService;
+import io.gravitee.apim.core.api.domain_service.property.PropertyDomainService;
 import io.gravitee.apim.core.api.model.Api;
 import io.gravitee.apim.core.api.model.mapper.V4toV2RollbackOperator;
 import io.gravitee.apim.core.audit.domain_service.AuditDomainService;
@@ -39,6 +41,11 @@ import io.gravitee.apim.core.plan.domain_service.ClosePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.CreatePlanDomainService;
 import io.gravitee.apim.core.plan.domain_service.UpdatePlanDomainService;
 import io.gravitee.apim.core.plan.query_service.PlanQueryService;
+import io.gravitee.definition.model.v4.AbstractApi;
+import io.gravitee.definition.model.v4.flow.AbstractFlow;
+import io.gravitee.definition.model.v4.nativeapi.NativeApi;
+import io.gravitee.definition.model.v4.nativeapi.NativePlan;
+import io.gravitee.definition.model.v4.plan.AbstractPlan;
 import io.gravitee.definition.model.v4.plan.Plan;
 import io.gravitee.definition.model.v4.plan.PlanStatus;
 import java.time.ZonedDateTime;
@@ -75,6 +82,8 @@ public class RollbackApiUseCase {
     private final ApiIndexerDomainService apiIndexerDomainService;
     private final ApiPrimaryOwnerDomainService apiPrimaryOwnerDomainService;
     private final ApiStateDomainService apiStateService;
+    private final UpdateNativeApiDomainService updateNativeApiDomainService;
+    private final PropertyDomainService propertyDomainService;
 
     public void execute(Input input) {
         Api api = eventQueryService
@@ -89,6 +98,8 @@ public class RollbackApiUseCase {
 
                 //update the description since the description is not stored in the definition
                 rollbackedApi.setDescription(api.getDescription());
+
+                keepStoredEncryption(toRollback.getApiDefinitionHttpV4(), rollbackedApi.getApiDefinitionHttpV4());
 
                 var apiUpdatedV4 = updateApiDomainService.updateV4(rollbackedApi, input.auditInfo);
 
@@ -133,17 +144,55 @@ public class RollbackApiUseCase {
                 }
                 yield apiUpdatedV2;
             }
+            case NativeApi apiDefinition -> {
+                var primaryOwner = apiPrimaryOwnerDomainService.getApiPrimaryOwner(
+                    input.auditInfo().organizationId(),
+                    apiDefinition.getId()
+                );
+
+                var apiUpdatedNativeV4 = updateNativeApiDomainService.update(
+                    apiDefinition.getId(),
+                    toRollback -> {
+                        // Rollback API from API definition without plans
+                        var rollbackedApi = toRollback.rollbackTo(apiDefinition);
+                        // update the description since the description is not stored in the definition
+                        rollbackedApi.setDescription(api.getDescription());
+                        keepStoredEncryption(toRollback.getApiDefinitionNativeV4(), rollbackedApi.getApiDefinitionNativeV4());
+                        return rollbackedApi;
+                    },
+                    // no sanitizing: a rollback restores a definition that was already validated when it was deployed,
+                    // which is what the HTTP branch gets too
+                    (existing, updated) -> updated,
+                    input.auditInfo,
+                    primaryOwner,
+                    new ApiIndexerDomainService.Context(input.auditInfo(), false)
+                );
+
+                // Rollback plans from API definition plans
+                rollbackPlansV4(apiDefinition.getPlans(), apiUpdatedNativeV4, input.auditInfo);
+                yield apiUpdatedNativeV4;
+            }
             case null, default -> throw new IllegalStateException(
-                "Cannot rollback an API that is not a V4 or V2 API (%s)".formatted(input.eventId)
+                "Cannot rollback this API: only V2 and V4 APIs are supported (%s)".formatted(input.eventId)
             );
         };
 
         createAuditLog(input.auditInfo, apiUpdated.getId(), apiUpdated.getUpdatedAt());
     }
 
+    private void keepStoredEncryption(AbstractApi storedDefinition, AbstractApi restoredDefinition) {
+        restoredDefinition.setProperties(
+            propertyDomainService.encryptRestoredValuesOfEncryptedKeys(storedDefinition.getProperties(), restoredDefinition.getProperties())
+        );
+    }
+
     public record Input(String eventId, AuditInfo auditInfo) {}
 
-    private void rollbackPlansV4(List<Plan> apiDefinitionPlans, Api api, AuditInfo auditInfo) {
+    /**
+     * Rolls plans back for both V4 API types: the plan domain services already dispatch on {@code api.isNative()}, so
+     * only reading the definition's flows and building a core plan from it need to know the concrete type.
+     */
+    private void rollbackPlansV4(List<? extends AbstractPlan> apiDefinitionPlans, Api api, AuditInfo auditInfo) {
         if (apiDefinitionPlans == null) {
             return;
         }
@@ -156,40 +205,27 @@ public class RollbackApiUseCase {
             .stream()
             .collect(toMap(io.gravitee.apim.core.plan.model.Plan::getId, Function.identity()));
 
-        for (io.gravitee.definition.model.v4.plan.Plan apiDefinitionPlan : apiDefinitionPlans) {
+        for (AbstractPlan apiDefinitionPlan : apiDefinitionPlans) {
             io.gravitee.apim.core.plan.model.Plan existingPlan = apiDefinitionPlan.getId() != null
                 ? existingPlans.get(apiDefinitionPlan.getId())
                 : null;
 
             if (existingPlan == null) {
                 // If plan not exist create new plan from API definition plan
-                plansToAdd.add(new io.gravitee.apim.core.plan.model.Plan(api.getId(), apiDefinitionPlan));
+                plansToAdd.add(corePlanOf(api.getId(), apiDefinitionPlan));
             } else {
-                plansToUpdate.add(existingPlan.rollbackTo(apiDefinitionPlan));
+                plansToUpdate.add(rollbackPlanTo(existingPlan, apiDefinitionPlan));
             }
         }
 
         // Add new plans
-        plansToAdd.forEach(planToAdd ->
-            createPlanDomainService.create(
-                planToAdd,
-                planToAdd.getPlanDefinitionHttpV4().getFlows() == null ? List.of() : planToAdd.getPlanDefinitionHttpV4().getFlows(),
-                api,
-                auditInfo
-            )
-        );
+        plansToAdd.forEach(planToAdd -> createPlanDomainService.create(planToAdd, planFlowsOf(planToAdd), api, auditInfo));
 
         // Update existing plans
         // Set existingPlanStatuses to empty map because we don't check status for rollback. Allowing to rollback closed plans
         Map<String, PlanStatus> existingPlanStatuses = Map.of();
         plansToUpdate.forEach(planToUpdate ->
-            updatePlanDomainService.update(
-                planToUpdate,
-                planToUpdate.getPlanDefinitionHttpV4().getFlows() == null ? List.of() : planToUpdate.getPlanDefinitionHttpV4().getFlows(),
-                existingPlanStatuses,
-                api,
-                auditInfo
-            )
+            updatePlanDomainService.update(planToUpdate, planFlowsOf(planToUpdate), existingPlanStatuses, api, auditInfo)
         );
 
         // Close plans that are not in the API definition
@@ -206,6 +242,34 @@ public class RollbackApiUseCase {
                         .contains(existingPlan.getId())
             )
             .forEach(existingPlan -> closePlanDomainService.close(existingPlan.getId(), auditInfo));
+    }
+
+    private static io.gravitee.apim.core.plan.model.Plan corePlanOf(String apiId, AbstractPlan apiDefinitionPlan) {
+        return switch (apiDefinitionPlan) {
+            case Plan httpV4 -> new io.gravitee.apim.core.plan.model.Plan(apiId, httpV4);
+            case NativePlan nativeV4 -> new io.gravitee.apim.core.plan.model.Plan(apiId, nativeV4);
+            default -> throw new IllegalStateException("Unsupported V4 plan definition: " + apiDefinitionPlan.getClass());
+        };
+    }
+
+    private static io.gravitee.apim.core.plan.model.Plan rollbackPlanTo(
+        io.gravitee.apim.core.plan.model.Plan existingPlan,
+        AbstractPlan apiDefinitionPlan
+    ) {
+        return switch (apiDefinitionPlan) {
+            case Plan httpV4 -> existingPlan.rollbackTo(httpV4);
+            case NativePlan nativeV4 -> existingPlan.rollbackTo(nativeV4);
+            default -> throw new IllegalStateException("Unsupported V4 plan definition: " + apiDefinitionPlan.getClass());
+        };
+    }
+
+    private static List<? extends AbstractFlow> planFlowsOf(io.gravitee.apim.core.plan.model.Plan plan) {
+        var nativeDefinition = plan.getPlanDefinitionNativeV4();
+        if (nativeDefinition != null) {
+            return nativeDefinition.getFlows() == null ? List.of() : nativeDefinition.getFlows();
+        }
+        var httpDefinition = plan.getPlanDefinitionHttpV4();
+        return httpDefinition == null || httpDefinition.getFlows() == null ? List.of() : httpDefinition.getFlows();
     }
 
     private void createAuditLog(AuditInfo auditInfo, String apiId, ZonedDateTime auditCreatedAt) {

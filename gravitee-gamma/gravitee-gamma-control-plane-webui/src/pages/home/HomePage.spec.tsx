@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+
+import { licenseService } from '@gravitee/gamma-modules-sdk';
 
 import { HomePage } from './HomePage';
 import { useAuthStore } from '../../features/auth/auth.store';
 import type { GammaModule } from '../../features/modules';
 import { buildUser, TEST_GAMMA_BASE, TEST_MANAGEMENT_BASE, TEST_MANAGEMENT_V2_ENVIRONMENT_BASE } from '../../testing/factories';
-import { respondWith, seedEnvironments } from '../../testing/helpers';
+import { respondWith, respondWithError, seedEnvironments } from '../../testing/helpers';
+import { server } from '../../testing/server';
 
 const ALL_MODULES: readonly GammaModule[] = [
     { id: 'apim', name: 'APIM Module', version: '1.0.0', remoteName: 'gravitee_gamma_module_apim', exposedModule: 'App' },
@@ -49,7 +53,7 @@ function renderHome(modules: readonly GammaModule[]) {
     return render(
         <MemoryRouter initialEntries={['/environments/env-1/home']}>
             <Routes>
-                <Route path="/environments/:envHrid/home" element={<HomePage modules={modules} loading={false} error={null} />} />
+                <Route path="/environments/:envHrid/home" element={<HomePage modules={modules} loading={false} />} />
             </Routes>
         </MemoryRouter>,
     );
@@ -76,6 +80,7 @@ function seedMetricHandlers(overrides?: {
     } = overrides ?? {};
 
     respondWith('post', `${TEST_MANAGEMENT_V2_ENVIRONMENT_BASE}/env-1-id/apis/_search`, { pagination: { totalCount: apiCount } });
+    respondWith('get', `${TEST_MANAGEMENT_BASE}/console`, {});
     respondWith('get', `${TEST_GAMMA_BASE}/environments/env-1-id/modules/aim/catalog/agents`, { pagination: { totalCount: agentCount } });
     respondWith('get', `${TEST_MANAGEMENT_BASE}/environments/env-1-id/applications/_paged`, { page: { total_elements: appCount } });
     respondWith('get', `${TEST_GAMMA_BASE}/environments/env-1-id/modules/authz/policies`, { total: policyCount });
@@ -92,6 +97,12 @@ describe('HomePage', () => {
         seedEnvironments();
         useAuthStore.setState({ user: buildUser({ firstname: 'John', displayName: 'John Doe' }) });
         seedMetricHandlers();
+        licenseService.setLicense(null);
+    });
+
+    afterEach(() => {
+        licenseService.setLicense(null);
+        jest.restoreAllMocks();
     });
 
     it('should render all module headings when all modules are present', async () => {
@@ -111,6 +122,39 @@ describe('HomePage', () => {
         });
 
         expect(screen.queryByText('Coming soon')).toBeNull();
+    });
+
+    it('should render the application cards in the same product order as the app switcher, whatever order the modules arrive in', () => {
+        renderHome([EDGE_MODULE, ...[...ALL_MODULES].reverse()]);
+
+        const appsSection = screen.getByRole('region', { name: /applications/i });
+        expect(
+            within(appsSection)
+                .getAllByRole('heading', { level: 3 })
+                .map(heading => heading.textContent),
+        ).toEqual([
+            'Agent Management',
+            'API Management',
+            'Event Stream Management',
+            'Authorization Management',
+            'Developer Portals',
+            'Edge Management',
+            'Platform Management',
+        ]);
+    });
+
+    it('should not list Account Management among the application cards', () => {
+        const cloud: GammaModule = {
+            id: 'account',
+            name: 'Account Management',
+            version: '1.0.0',
+            remoteName: 'cloud',
+            exposedModule: 'App',
+        };
+        renderHome([cloud, ...ALL_MODULES]);
+
+        const appsSection = screen.getByRole('region', { name: /applications/i });
+        expect(within(appsSection).queryByRole('heading', { level: 3, name: 'Account Management' })).toBeNull();
     });
 
     it('should render an "Upgrade to access" CTA instead of a link when aim is missing from /modules', async () => {
@@ -152,6 +196,34 @@ describe('HomePage', () => {
         expect(await screen.findByText((_content, el) => el?.tagName === 'P' && /24\s+APIs/.test(el.textContent ?? ''))).toBeTruthy();
     });
 
+    it('should include federated APIs in the API Management card count when federation is enabled and licensed', async () => {
+        respondWith('get', `${TEST_MANAGEMENT_BASE}/console`, { federation: { enabled: true } });
+        licenseService.setLicense({ tier: 'enterprise', packs: [], features: [], isExpired: false });
+        const requestedApiTypes: string[][] = [];
+        server.use(
+            http.post(`${TEST_MANAGEMENT_V2_ENVIRONMENT_BASE}/env-1-id/apis/_search`, async ({ request }) => {
+                const apiTypes = ((await request.json()) as { apiTypes?: string[] }).apiTypes ?? [];
+                requestedApiTypes.push(apiTypes);
+                return HttpResponse.json({ pagination: { totalCount: apiTypes.includes('FEDERATED') ? 26 : 24 } });
+            }),
+        );
+
+        renderHome(ALL_MODULES);
+
+        expect(await screen.findByText((_content, el) => el?.tagName === 'P' && /26\s+APIs/.test(el.textContent ?? ''))).toBeTruthy();
+        expect(requestedApiTypes).toEqual([['V4_HTTP_PROXY', 'V4_TCP_PROXY', 'FEDERATED']]);
+    });
+
+    it('should settle the API Management card on its empty state without a count when the count request fails', async () => {
+        respondWithError('post', `${TEST_MANAGEMENT_V2_ENVIRONMENT_BASE}/env-1-id/apis/_search`, 500);
+
+        renderHome(ALL_MODULES);
+
+        const card = screen.getByRole('heading', { level: 3, name: 'API Management' }).closest('a')!;
+        expect(await within(card).findByText('Create your first API')).toBeTruthy();
+        expect(within(card).queryByText((_content, el) => el?.tagName === 'P' && /\d\s+APIs?\b/.test(el.textContent ?? ''))).toBeNull();
+    });
+
     it('should pluralize the API count correctly for a single API', async () => {
         seedMetricHandlers({ apiCount: 1 });
         renderHome(ALL_MODULES);
@@ -164,22 +236,6 @@ describe('HomePage', () => {
         expect(
             await screen.findByText((_content, el) => el?.tagName === 'P' && /7\s+active devices \(24h\)/.test(el.textContent ?? '')),
         ).toBeTruthy();
-    });
-
-    it('should render an error alert when the modules fetch failed upstream', () => {
-        render(
-            <MemoryRouter initialEntries={['/environments/env-1/home']}>
-                <Routes>
-                    <Route
-                        path="/environments/:envHrid/home"
-                        element={<HomePage modules={[]} loading={false} error={new Error('boom')} />}
-                    />
-                </Routes>
-            </MemoryRouter>,
-        );
-
-        const alert = screen.getByRole('alert');
-        expect(alert.textContent).toContain('Failed to load modules: boom');
     });
 
     it('should show empty-state CTA when module is available but has zero data', async () => {
@@ -201,7 +257,9 @@ describe('HomePage', () => {
         expect(aimCta?.getAttribute('href')).toBe('/environments/env-1/aim');
 
         const portalsCta = within(appsSection).getByText('Open Developer Portals').closest('a');
-        expect(portalsCta?.getAttribute('href')).toBe('/environments/env-1/portals');
+        expect(portalsCta?.getAttribute('href')).toBe('http://console.test/#!/env-1/_portal/navigation');
+        expect(portalsCta?.getAttribute('target')).toBe('_blank');
+        expect(portalsCta?.getAttribute('rel')).toBe('noopener noreferrer');
     });
 
     it('should show metric view with Open CTA when module has data', async () => {

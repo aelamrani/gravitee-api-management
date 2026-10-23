@@ -16,6 +16,7 @@
 import { useHasPermission } from '@gravitee/gamma-modules-sdk';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { ApiCorsPage } from './ApiCorsPage';
@@ -121,8 +122,41 @@ it('renders existing origins, methods and headers as chips', () => {
     expect(screen.getByText('https://app.company.com')).not.toBeNull();
     expect(screen.getByText('GET')).not.toBeNull();
     expect(screen.getByText('POST')).not.toBeNull();
-    expect(screen.getByText('Content-Type')).not.toBeNull();
-    expect(screen.getByText('Authorization')).not.toBeNull();
+    expect(screen.getAllByText('Content-Type').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Authorization').length).toBeGreaterThanOrEqual(1);
+});
+
+it('renders allow-headers autocomplete in a portal outside clipped cards', () => {
+    mockUseHasPermission.mockReturnValue(true);
+    mockUseApiDetail.mockReturnValue({
+        data: {
+            id: 'api-1',
+            name: 'Test API',
+            listeners: [{ type: 'HTTP', cors: { ...ENABLED_CORS, allowHeaders: [] } }],
+        },
+        isLoading: false,
+        isError: false,
+    });
+    render(
+        <MemoryRouter initialEntries={['/apis/api-1/cors']}>
+            <Routes>
+                <Route
+                    path="apis/:apiId/cors"
+                    element={
+                        <div className="h-24 overflow-hidden">
+                            <ApiCorsPage />
+                        </div>
+                    }
+                />
+            </Routes>
+        </MemoryRouter>,
+    );
+
+    const input = screen.getByRole('combobox', { name: /access-control-allow-headers/i });
+    fireEvent.focus(input);
+
+    const listbox = screen.getByRole('listbox');
+    expect(document.body.contains(listbox)).toBe(true);
 });
 
 // ─── 3. Wildcard warning: shown when * is in allowOrigin ─────────────────────
@@ -175,11 +209,72 @@ it('calls updateApiCors with the current CORS form state when Save is clicked', 
 
     await waitFor(() => expect(mockUpdateApiCors).toHaveBeenCalledTimes(1));
 
-    const [, , sentCors] = mockUpdateApiCors.mock.calls[0];
+    const [, , sentCors, sentRequestValidation] = mockUpdateApiCors.mock.calls[0];
     expect(sentCors.enabled).toBe(true);
     expect(sentCors.allowOrigin).toEqual(['https://app.company.com']);
     expect(sentCors.allowMethods).toEqual(['GET', 'POST']);
     expect(sentCors.maxAge).toBe(7200);
+    expect(sentCors.allowPrivateNetwork).toBe(false);
+    expect(sentRequestValidation).toEqual({ rejectNullByte: false });
+});
+
+it('hydrates allowPrivateNetwork and rejectNullByte after the API detail arrives', async () => {
+    const user = userEvent.setup();
+    const readyDetail = {
+        data: {
+            id: 'api-1',
+            name: 'Test API',
+            listeners: [
+                {
+                    type: 'HTTP',
+                    cors: { ...ENABLED_CORS, allowPrivateNetwork: true },
+                    requestValidation: { rejectNullByte: true },
+                },
+            ],
+        },
+        isLoading: false,
+        isError: false,
+    };
+
+    function Harness() {
+        const [ready, setReady] = useState(false);
+        mockUseApiDetail.mockReturnValue(ready ? readyDetail : { data: undefined, isLoading: true, isError: false });
+        return (
+            <>
+                <button type="button" onClick={() => setReady(true)}>
+                    load-api
+                </button>
+                <ApiCorsPage />
+            </>
+        );
+    }
+
+    render(
+        <MemoryRouter initialEntries={['/apis/api-1/cors']}>
+            <Routes>
+                <Route path="apis/:apiId/cors" element={<Harness />} />
+            </Routes>
+        </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'load-api' }));
+
+    expect(screen.getByRole('switch', { name: /access-control-allow-private-network/i })).toBeChecked();
+    expect(screen.getByRole('switch', { name: /reject requests containing null bytes/i })).toBeChecked();
+});
+
+it('saves allowPrivateNetwork and rejectNullByte when toggled', async () => {
+    const user = userEvent.setup();
+    renderPage(ENABLED_CORS);
+
+    await user.click(screen.getByRole('switch', { name: /access-control-allow-private-network/i }));
+    await user.click(screen.getByRole('switch', { name: /reject requests containing null bytes/i }));
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(mockUpdateApiCors).toHaveBeenCalledTimes(1));
+    const [, , sentCors, sentRequestValidation] = mockUpdateApiCors.mock.calls[0];
+    expect(sentCors.allowPrivateNetwork).toBe(true);
+    expect(sentRequestValidation).toEqual({ rejectNullByte: true });
 });
 
 // ─── 8. Fields disabled when CORS master toggle is off ───────────────────────
@@ -188,7 +283,8 @@ it('disables chip inputs when CORS is disabled (enabled: false)', () => {
     renderPage({ ...ENABLED_CORS, enabled: false });
 
     expect(screen.getByRole('textbox', { name: /access-control-allow-origin/i })).toBeDisabled();
-    expect(screen.getByRole('textbox', { name: /access-control-allow-methods/i })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: /access-control-allow-methods/i })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: /access-control-allow-headers/i })).toBeDisabled();
 });
 
 // ─── 9. Save / Discard bar (isDirty) ─────────────────────────────────────────

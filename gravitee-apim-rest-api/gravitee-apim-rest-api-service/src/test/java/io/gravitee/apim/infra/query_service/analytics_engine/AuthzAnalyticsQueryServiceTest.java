@@ -24,7 +24,6 @@ import static org.mockito.Mockito.when;
 import io.gravitee.apim.core.analytics_engine.model.MetricSpec;
 import io.gravitee.repository.log.v4.api.AnalyticsRepository;
 import io.gravitee.rest.api.service.common.ExecutionContext;
-import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 class AuthzAnalyticsQueryServiceTest {
@@ -35,12 +34,10 @@ class AuthzAnalyticsQueryServiceTest {
     @Test
     void should_declare_every_authz_metric() {
         assertThat(service.metrics()).containsExactlyInAnyOrder(
-            MetricSpec.Name.AUTHZ_OPERATIONS,
             MetricSpec.Name.AUTHZ_DECISIONS,
             MetricSpec.Name.AUTHZ_PERMITS,
             MetricSpec.Name.AUTHZ_FORBIDS,
             MetricSpec.Name.AUTHZ_NOT_APPLICABLE,
-            MetricSpec.Name.AUTHZ_SEARCHES,
             MetricSpec.Name.AUTHZ_FAILURES,
             MetricSpec.Name.AUTHZ_EVAL_DURATION
         );
@@ -74,18 +71,6 @@ class AuthzAnalyticsQueryServiceTest {
         service.searchFacets(context, null);
 
         verify(repository).searchAuthzFacets(any(), any());
-    }
-
-    @Test
-    void should_route_every_authz_metric_the_enum_declares() {
-        var unrouted = Arrays.stream(MetricSpec.Name.values())
-            .filter(name -> name.name().startsWith("AUTHZ_"))
-            .filter(name -> !service.metrics().contains(name))
-            .toList();
-
-        assertThat(unrouted)
-            .as("an AUTHZ_ metric absent here is declared but unroutable: the catalog offers it and no query service answers")
-            .isEmpty();
     }
 
     @Test

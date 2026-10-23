@@ -158,13 +158,45 @@ Render an initContainer base spec with OpenShift-adapted securityContext.
 {{- end -}}
 
 {{/*
-Create initContainers for downloading plugins ext plugin-ext
+Create initContainers for downloading plugins ext plugin-ext.
+In .plugins, a download URL is downloaded as is; a name is installed from the release manifest of .image, the component's
+own image, at the version that image ships with.
 */}}
 {{- define "deployment.pluginInitContainers" -}}
-{{- if .plugins }}
+{{- $urls := list -}}
+{{- $names := list -}}
+{{- range .plugins -}}
+  {{- if contains "://" . -}}
+    {{- $urls = append $urls . -}}
+  {{- else -}}
+    {{- $names = append $names . -}}
+  {{- end -}}
+{{- end -}}
+{{- if $names }}
+{{- $home := printf "/opt/%s" .appName }}
+- name: install-plugins
+  {{- include "gravitee.renderInitContainerSpec" (dict "context" .context "initContainer" (merge (dict "image" .image "imagePullPolicy" .imagePullPolicy) .initContainers)) | nindent 2 }}
+  command:
+    - sh
+    - -c
+    - |
+      if [ ! -f {{ $home }}/release-manifest.json ] || [ ! -x {{ $home }}/bin/install-plugins.sh ]; then
+        echo "ERROR: image {{ .image }} has no release manifest to install plugins by name from: $*. Use an image that ships {{ $home }}/release-manifest.json, or give these plugins as download URLs instead of names." >&2
+        exit 1
+      fi
+      exec {{ $home }}/bin/install-plugins.sh --manifest {{ $home }}/release-manifest.json --home /tmp/install "$@"
+    - install-plugins
+    {{- range $names }}
+    - {{ . | quote }}
+    {{- end }}
+  volumeMounts:
+    - name: graviteeio-apim-plugins
+      mountPath: /tmp/install/plugins
+{{- end }}
+{{- if $urls }}
 - name: get-plugins
   {{- include "gravitee.renderInitContainerSpec" (dict "context" .context "initContainer" .initContainers) | nindent 2 }}
-  command: ['sh', '-c', "mkdir -p /tmp/plugins && cd /tmp/plugins {{- range $url := .plugins -}}
+  command: ['sh', '-c', "mkdir -p /tmp/plugins && cd /tmp/plugins {{- range $url := $urls -}}
     {{ printf " && ( rm "}} {{regexFind "[^/]+$" $url}} {{ printf " 2>/dev/null || true ) && wget %s" $url }}
   {{- end -}}"]
   volumeMounts:

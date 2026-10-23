@@ -22,4 +22,14 @@ public class InvalidPageSourceException extends ValidationDomainException {
     public InvalidPageSourceException(String message) {
         super(message);
     }
+
+    public InvalidPageSourceException(String message, Throwable cause) {
+        super(message, cause);
+    }
+
+    public static InvalidPageSourceException unresolvedSensitivePlaceholder(String field) {
+        return new InvalidPageSourceException(
+            "The source configuration field %s still holds the masked placeholder: provide its actual value.".formatted(field)
+        );
+    }
 }

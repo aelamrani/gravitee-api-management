@@ -19,11 +19,13 @@ import static io.gravitee.repository.jdbc.common.AbstractJdbcRepositoryConfigura
 import static io.gravitee.repository.jdbc.orm.JdbcColumn.getDBName;
 import static java.lang.String.format;
 
+import io.gravitee.definition.model.dictionary.DictionaryProperty;
 import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.jdbc.orm.JdbcColumn;
 import io.gravitee.repository.jdbc.orm.JdbcObjectMapper;
 import io.gravitee.repository.management.api.DictionaryRepository;
 import io.gravitee.repository.management.model.Dictionary;
+import io.gravitee.repository.management.model.DictionaryEncryptionPolicy;
 import io.gravitee.repository.management.model.DictionaryProvider;
 import io.gravitee.repository.management.model.DictionaryTrigger;
 import io.gravitee.repository.management.model.DictionaryType;
@@ -33,7 +35,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -82,13 +83,13 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
     }
 
     private static final JdbcHelper.ChildAdder<Dictionary> CHILD_ADDER = (Dictionary parent, ResultSet rs) -> {
-        Map<String, String> properties = parent.getProperties();
+        Map<String, DictionaryProperty> properties = parent.getProperties();
         if (properties == null) {
             properties = new HashMap<>();
             parent.setProperties(properties);
         }
         if (rs.getString("k") != null) {
-            properties.put(rs.getString("k"), rs.getString("v"));
+            properties.put(rs.getString("k"), new DictionaryProperty(rs.getString("v"), rs.getBoolean("encrypted")));
         }
     };
 
@@ -115,6 +116,12 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
                 trigger.setRate(triggerRate);
                 trigger.setUnit(TimeUnit.valueOf(triggerUnit));
                 dictionary.setTrigger(trigger);
+            }
+
+            if (dictionary.getType() == DictionaryType.DYNAMIC) {
+                DictionaryEncryptionPolicy encryption = new DictionaryEncryptionPolicy();
+                encryption.setEncryptOnFetch(rs.getBoolean("encrypt_on_fetch"));
+                dictionary.setEncryption(encryption);
             }
 
             return dictionary;
@@ -147,6 +154,7 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
             stmt.setString(idx++, dictionary.getProvider() == null ? null : dictionary.getProvider().getConfiguration());
             stmt.setInt(idx++, dictionary.getTrigger() == null ? 0 : (int) dictionary.getTrigger().getRate());
             stmt.setString(idx++, dictionary.getTrigger() == null ? null : dictionary.getTrigger().getUnit().name());
+            stmt.setBoolean(idx++, dictionary.getEncryption() != null && dictionary.getEncryption().isEncryptOnFetch());
 
             for (Object id : ids) {
                 stmt.setObject(idx++, id);
@@ -169,6 +177,7 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
         builder.append(", provider_configuration");
         builder.append(", trigger_rate");
         builder.append(", trigger_unit");
+        builder.append(", encrypt_on_fetch");
         builder.append(" ) values ( ");
         first = true;
         for (int i = 0; i < getOrm().getColumns().size(); i++) {
@@ -178,6 +187,7 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
             first = false;
             builder.append("?");
         }
+        builder.append(", ?");
         builder.append(", ?");
         builder.append(", ?");
         builder.append(", ?");
@@ -204,6 +214,7 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
         builder.append(", provider_configuration = ?");
         builder.append(", trigger_rate = ?");
         builder.append(", trigger_unit = ?");
+        builder.append(", encrypt_on_fetch = ?");
 
         builder.append(" where id = ?");
         return builder.toString();
@@ -235,25 +246,36 @@ public class JdbcDictionaryRepository extends JdbcAbstractCrudRepository<Diction
         if (deleteFirst) {
             jdbcTemplate.update("delete from " + DICTIONARY_PROPERTY + " where dictionary_id = ?", dictionary.getId());
         }
-        if (dictionary.getProperties() != null && !dictionary.getProperties().isEmpty()) {
-            List<Map.Entry<String, String>> entries = new ArrayList<>(dictionary.getProperties().entrySet());
-            jdbcTemplate.batchUpdate(
-                "insert into " + DICTIONARY_PROPERTY + " ( dictionary_id, k, v ) values ( ?, ?, ? )",
-                new BatchPreparedStatementSetter() {
-                    @Override
-                    public void setValues(PreparedStatement ps, int i) throws SQLException {
-                        ps.setString(1, dictionary.getId());
-                        ps.setString(2, entries.get(i).getKey());
-                        ps.setString(3, entries.get(i).getValue());
-                    }
-
-                    @Override
-                    public int getBatchSize() {
-                        return entries.size();
-                    }
-                }
-            );
+        if (dictionary.getProperties() == null) {
+            return;
         }
+        // A malformed persisted entry can be null; drop it rather than dereference it, as MongoDictionaryRepository does.
+        List<Map.Entry<String, DictionaryProperty>> entries = dictionary
+            .getProperties()
+            .entrySet()
+            .stream()
+            .filter(entry -> entry.getValue() != null)
+            .toList();
+        if (entries.isEmpty()) {
+            return;
+        }
+        jdbcTemplate.batchUpdate(
+            "insert into " + DICTIONARY_PROPERTY + " ( dictionary_id, k, v, encrypted ) values ( ?, ?, ?, ? )",
+            new BatchPreparedStatementSetter() {
+                @Override
+                public void setValues(PreparedStatement ps, int i) throws SQLException {
+                    ps.setString(1, dictionary.getId());
+                    ps.setString(2, entries.get(i).getKey());
+                    ps.setString(3, entries.get(i).getValue().value());
+                    ps.setBoolean(4, entries.get(i).getValue().encrypted());
+                }
+
+                @Override
+                public int getBatchSize() {
+                    return entries.size();
+                }
+            }
+        );
     }
 
     @Override

@@ -60,6 +60,7 @@ import io.gravitee.rest.api.service.impl.search.SearchResult;
 import io.gravitee.rest.api.service.search.SearchEngineService;
 import io.gravitee.rest.api.service.search.query.Query;
 import io.gravitee.rest.api.service.search.query.QueryBuilder;
+import io.gravitee.rest.api.service.search.query.SearchSortStrategy;
 import io.gravitee.rest.api.service.v4.ApiAuthorizationService;
 import io.gravitee.rest.api.service.v4.ApiSearchService;
 import io.gravitee.rest.api.service.v4.ApiService;
@@ -511,10 +512,24 @@ public class ApiSearchServiceImpl extends AbstractService implements ApiSearchSe
         Collection<DefinitionVersion> excludeDefinitionVersions,
         boolean typoTolerance
     ) {
+        return searchIds(executionContext, query, filters, sortable, excludeDefinitionVersions, typoTolerance, SearchSortStrategy.DEFAULT);
+    }
+
+    @Override
+    public Collection<String> searchIds(
+        final ExecutionContext executionContext,
+        final String query,
+        final Map<String, Object> filters,
+        final Sortable sortable,
+        Collection<DefinitionVersion> excludeDefinitionVersions,
+        boolean typoTolerance,
+        SearchSortStrategy searchSortStrategy
+    ) {
         QueryBuilder<GenericApiEntity> searchEngineQueryBuilder = QueryBuilder.create(GenericApiEntity.class)
             .setSort(sortable)
             .setFilters(filters)
-            .setTypoTolerance(typoTolerance);
+            .setTypoTolerance(typoTolerance)
+            .setSearchSortStrategy(searchSortStrategy);
         if (isNotEmpty(excludeDefinitionVersions)) {
             searchEngineQueryBuilder.addExcludedFilter(
                 FIELD_DEFINITION_VERSION,
@@ -544,7 +559,10 @@ public class ApiSearchServiceImpl extends AbstractService implements ApiSearchSe
         if (!apiWithoutPo.isEmpty()) {
             String apisAsString = String.join(" / ", apiWithoutPo);
             log.error("{} apis has no identified primary owners in this list {}.", apiWithoutPo.size(), apisAsString);
-            streamApis = streamApis.filter(api -> !apiIds.contains(api.getId()));
+            // The owner-less ones, not every id asked for: filtering on apiIds dropped the whole answer the
+            // moment one API had no identified primary owner, so callers reading absence as "the API is gone"
+            // saw every API vanish at once.
+            streamApis = streamApis.filter(api -> !apiWithoutPo.contains(api.getId()));
         }
         return streamApis
             .map(publicApi ->
@@ -565,8 +583,8 @@ public class ApiSearchServiceImpl extends AbstractService implements ApiSearchSe
                     .map(integration ->
                         new OriginContext.Integration(
                             fede.getOriginContext().integrationId(),
-                            integration.getProvider(),
-                            integration.getName()
+                            integration.getName(),
+                            integration.getProvider()
                         )
                     )
                     .ifPresent(fede::setOriginContext);

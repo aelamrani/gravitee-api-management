@@ -16,7 +16,10 @@
 package io.gravitee.rest.api.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -26,23 +29,33 @@ import io.gravitee.common.data.domain.Page;
 import io.gravitee.repository.exceptions.TechnicalException;
 import io.gravitee.repository.management.api.AuditRepository;
 import io.gravitee.repository.management.api.DashboardRepository;
+import io.gravitee.repository.management.api.search.AuditCriteria;
+import io.gravitee.repository.management.model.Api;
 import io.gravitee.repository.management.model.Audit;
 import io.gravitee.repository.management.model.Dashboard;
 import io.gravitee.rest.api.model.UserEntity;
 import io.gravitee.rest.api.model.audit.AuditQuery;
+import io.gravitee.rest.api.service.AuditService;
 import io.gravitee.rest.api.service.PermissionService;
 import io.gravitee.rest.api.service.UserService;
 import io.gravitee.rest.api.service.common.ExecutionContext;
+import io.gravitee.rest.api.service.common.SecurityContextHelper;
 import io.gravitee.rest.api.service.exceptions.UserNotFoundException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.StreamSupport;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 @ExtendWith(MockitoExtension.class)
 class AuditServiceImplTest {
@@ -59,15 +72,231 @@ class AuditServiceImplTest {
     @Mock
     private PermissionService permissionService;
 
+    @Spy
+    private ObjectMapper mapper = new ObjectMapper();
+
     @InjectMocks
     private AuditServiceImpl auditService;
+
+    @Nested
+    class EncryptedPropertyValues {
+
+        private static final ExecutionContext EXECUTION_CONTEXT = new ExecutionContext("DEFAULT", "DEFAULT");
+
+        @Test
+        void should_audit_only_the_fingerprint_of_an_encrypted_property_of_a_v4_api() throws Exception {
+            var before = anApi(
+                """
+                {"definitionVersion":"V4","properties":[{"key":"plain","value":"plain-value","encrypted":false},{"key":"secret","value":"OLD-CIPHER","encrypted":true}]}"""
+            );
+            var after = anApi(
+                """
+                {"definitionVersion":"V4","properties":[{"key":"plain","value":"new-plain-value","encrypted":false},{"key":"secret","value":"NEW-CIPHER","encrypted":true}]}"""
+            );
+
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit(before, after));
+
+            assertThat(capturedPatch()).doesNotContain("OLD-CIPHER").doesNotContain("NEW-CIPHER");
+            assertThat(auditedDefinition().get("properties")).isEqualTo(
+                mapper.readTree(
+                    """
+                    [{"key":"plain","value":"new-plain-value","encrypted":false},{"key":"secret","value":"<sha256:bc66d34feaf1dd7d7ecd90ba7834e5cb554ba533abff6cb0664c6cec6647ad57>","encrypted":true}]"""
+                )
+            );
+        }
+
+        @Test
+        void should_audit_only_the_fingerprint_of_an_encrypted_property_of_a_v2_api() throws Exception {
+            var created = anApi(
+                """
+                {"gravitee":"2.0.0","properties":[{"key":"secret","value":"CIPHER","encrypted":true}]}"""
+            );
+
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit(null, created));
+
+            assertThat(capturedPatch()).doesNotContain("CIPHER");
+            assertThat(auditedDefinition().get("properties")).isEqualTo(
+                mapper.readTree(
+                    """
+                    [{"key":"secret","value":"<sha256:e555a71f0ce4ab12bc3de31adda7979c753fa3f9edd36e8cd8929d5bd4b7e906>","encrypted":true}]"""
+                )
+            );
+        }
+
+        @Test
+        void should_audit_only_the_fingerprint_of_an_encrypted_property_of_any_other_audited_value() throws Exception {
+            var created = Map.of("properties", List.of(Map.of("key", "secret", "value", "CIPHER", "encrypted", true)));
+
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit(null, created));
+
+            assertThat(capturedPatch())
+                .doesNotContain("CIPHER")
+                .contains("\"key\":\"secret\"")
+                .contains("<sha256:e555a71f0ce4ab12bc3de31adda7979c753fa3f9edd36e8cd8929d5bd4b7e906>");
+        }
+
+        @Test
+        void should_keep_the_ciphertext_in_the_audited_api() throws Exception {
+            var created = anApi(
+                """
+                {"definitionVersion":"V4","properties":[{"key":"secret","value":"CIPHER","encrypted":true}]}"""
+            );
+
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit(null, created));
+
+            assertThat(created.getDefinition()).contains("CIPHER");
+        }
+
+        @Test
+        void should_audit_an_api_without_definition() throws Exception {
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit(null, anApi(null)));
+
+            assertThat(capturedPatch()).contains("\"path\":\"/id\"");
+        }
+
+        @Test
+        void should_leave_out_a_definition_that_cannot_be_parsed() throws Exception {
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit(null, anApi("not-json{\"value\":\"CIPHER\"")));
+
+            assertThat(capturedPatch()).doesNotContain("\"path\":\"/definition\"").doesNotContain("CIPHER").contains("\"path\":\"/id\"");
+        }
+
+        private static Api anApi(String definition) {
+            var api = new Api();
+            api.setId("api-id");
+            api.setDefinition(definition);
+            return api;
+        }
+
+        private static AuditService.AuditLogData anApiAudit(Object oldValue, Object newValue) {
+            return AuditService.AuditLogData.builder()
+                .referenceType(Audit.AuditReferenceType.API)
+                .referenceId("api-id")
+                .event(Api.AuditEvent.API_UPDATED)
+                .oldValue(oldValue)
+                .newValue(newValue)
+                .build();
+        }
+
+        private JsonNode auditedDefinition() throws Exception {
+            var definitionOperation = StreamSupport.stream(mapper.readTree(capturedPatch()).spliterator(), false)
+                .filter(operation -> operation.get("path").asText().equals("/definition"))
+                .findFirst()
+                .orElseThrow();
+            return mapper.readTree(definitionOperation.get("value").textValue());
+        }
+    }
+
+    @Nested
+    class PrebuiltPatch {
+
+        private static final ExecutionContext EXECUTION_CONTEXT = new ExecutionContext("DEFAULT", "DEFAULT");
+        private static final String PATCH = """
+            [{"op":"access","path":"/properties/secret","value":{"value":"<sha256:e555a71f0ce4ab12bc3de31adda7979c753fa3f9edd36e8cd8929d5bd4b7e906>","encrypted":true}}]""";
+
+        @Test
+        void should_store_a_given_patch_instead_of_a_diff() throws Exception {
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit().patch(PATCH).build());
+
+            assertThat(capturedPatch()).isEqualTo(PATCH);
+        }
+
+        @Test
+        void should_reject_a_given_patch_combined_with_a_new_value() throws Exception {
+            var audit = anApiAudit().patch(PATCH).newValue(Map.of("key", "value")).build();
+
+            assertThatThrownBy(() -> auditService.createAuditLog(EXECUTION_CONTEXT, audit)).isInstanceOf(IllegalArgumentException.class);
+            verify(auditRepository, never()).create(any());
+        }
+
+        @Test
+        void should_reject_a_given_patch_combined_with_an_old_value() throws Exception {
+            var audit = anApiAudit().patch(PATCH).oldValue(Map.of("key", "value")).build();
+
+            assertThatThrownBy(() -> auditService.createAuditLog(EXECUTION_CONTEXT, audit)).isInstanceOf(IllegalArgumentException.class);
+            verify(auditRepository, never()).create(any());
+        }
+
+        private static AuditService.AuditLogData.AuditLogDataBuilder anApiAudit() {
+            return AuditService.AuditLogData.builder()
+                .referenceType(Audit.AuditReferenceType.API)
+                .referenceId("api-id")
+                .event(Api.AuditEvent.API_ENCRYPTED_PROPERTIES_ACCESSED);
+        }
+    }
+
+    @Nested
+    class AuditUser {
+
+        private static final ExecutionContext EXECUTION_CONTEXT = new ExecutionContext("DEFAULT", "DEFAULT");
+
+        @AfterEach
+        void clearSecurityContext() {
+            SecurityContextHolder.clearContext();
+        }
+
+        @Test
+        void should_record_the_given_user_when_no_user_is_authenticated() throws Exception {
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit().build(), "sync-actor");
+
+            assertThat(capturedAudit().getUser()).isEqualTo("sync-actor");
+        }
+
+        @Test
+        void should_record_the_authenticated_user_over_the_given_user() throws Exception {
+            var authenticatedUser = new UserEntity();
+            authenticatedUser.setId("console-user");
+            SecurityContextHelper.authenticateAs(authenticatedUser);
+
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit().build(), "sync-actor");
+
+            assertThat(capturedAudit().getUser()).isEqualTo("console-user");
+        }
+
+        @Test
+        void should_record_system_when_no_user_is_given_nor_authenticated() throws Exception {
+            auditService.createAuditLog(EXECUTION_CONTEXT, anApiAudit().build());
+
+            assertThat(capturedAudit().getUser()).isEqualTo("system");
+        }
+
+        @Test
+        void should_record_the_given_user_on_an_api_audit_when_no_user_is_authenticated() throws Exception {
+            var auditWithoutReference = AuditService.AuditLogData.builder()
+                .event(Api.AuditEvent.API_ENCRYPTED_PROPERTIES_REFRESHED)
+                .build();
+
+            auditService.createApiAuditLog(EXECUTION_CONTEXT, auditWithoutReference, "api-id", "sync-actor");
+
+            var audit = capturedAudit();
+            assertThat(audit.getReferenceType()).isEqualTo(Audit.AuditReferenceType.API);
+            assertThat(audit.getReferenceId()).isEqualTo("api-id");
+            assertThat(audit.getUser()).isEqualTo("sync-actor");
+        }
+
+        private static AuditService.AuditLogData.AuditLogDataBuilder anApiAudit() {
+            return AuditService.AuditLogData.builder()
+                .referenceType(Audit.AuditReferenceType.API)
+                .referenceId("api-id")
+                .event(Api.AuditEvent.API_UPDATED);
+        }
+    }
+
+    private String capturedPatch() throws TechnicalException {
+        return capturedAudit().getPatch();
+    }
+
+    private Audit capturedAudit() throws TechnicalException {
+        var audit = ArgumentCaptor.forClass(Audit.class);
+        verify(auditRepository).create(audit.capture());
+        return audit.getValue();
+    }
 
     @Nested
     class AnonymizeData {
 
         @Test
         void no_path_to_anonymize() throws JsonProcessingException {
-            ObjectMapper mapper = new ObjectMapper();
             String data = """
                 [
                     {
@@ -99,7 +328,6 @@ class AuditServiceImplTest {
 
         @Test
         void one_path_to_anonymize() throws JsonProcessingException {
-            ObjectMapper mapper = new ObjectMapper();
             String data = """
                 [
                     {
@@ -154,7 +382,6 @@ class AuditServiceImplTest {
 
         @Test
         void one_path_to_anonymize_present_without_value_field() throws JsonProcessingException {
-            ObjectMapper mapper = new ObjectMapper();
             String data = """
                 [
                     {
@@ -182,6 +409,43 @@ class AuditServiceImplTest {
             auditService.anonymizeData(diff, List.of("/clientId"));
 
             assertThat(diff).isEqualTo(mapper.readTree(data));
+        }
+    }
+
+    @Nested
+    class PropertiesFilter {
+
+        private final ExecutionContext executionContext = new ExecutionContext("DEFAULT", "DEFAULT");
+
+        @Test
+        void should_pass_properties_to_the_search_criteria() {
+            when(auditRepository.search(any(), any())).thenReturn(new Page<>(List.of(), 0, 0, 0));
+
+            AuditQuery query = new AuditQuery();
+            query.setPage(1);
+            query.setSize(10);
+            query.setProperties(Map.of("ENCRYPTED", "true"));
+
+            auditService.search(executionContext, query);
+
+            ArgumentCaptor<AuditCriteria> criteria = ArgumentCaptor.forClass(AuditCriteria.class);
+            verify(auditRepository).search(criteria.capture(), any());
+            assertThat(criteria.getValue().getProperties()).containsEntry("ENCRYPTED", "true");
+        }
+
+        @Test
+        void should_not_set_any_property_criteria_when_none_requested() {
+            when(auditRepository.search(any(), any())).thenReturn(new Page<>(List.of(), 0, 0, 0));
+
+            AuditQuery query = new AuditQuery();
+            query.setPage(1);
+            query.setSize(10);
+
+            auditService.search(executionContext, query);
+
+            ArgumentCaptor<AuditCriteria> criteria = ArgumentCaptor.forClass(AuditCriteria.class);
+            verify(auditRepository).search(criteria.capture(), any());
+            assertThat(criteria.getValue().getProperties()).isEmpty();
         }
     }
 

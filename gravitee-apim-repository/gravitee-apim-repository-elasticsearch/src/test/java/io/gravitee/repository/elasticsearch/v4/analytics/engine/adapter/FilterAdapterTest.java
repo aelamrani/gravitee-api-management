@@ -26,12 +26,24 @@ import io.gravitee.repository.analytics.engine.api.metric.Metric;
 import io.gravitee.repository.analytics.engine.api.query.Filter;
 import io.gravitee.repository.analytics.engine.api.query.MeasuresQuery;
 import io.gravitee.repository.analytics.engine.api.query.MetricMeasuresQuery;
+import io.gravitee.repository.analytics.engine.api.query.Query;
 import io.gravitee.repository.analytics.engine.api.query.TimeRange;
+import io.gravitee.repository.analytics.engine.api.query.TrafficScope;
+import io.gravitee.repository.elasticsearch.v4.analytics.engine.adapter.api.FieldResolver;
+import io.gravitee.repository.elasticsearch.v4.shared.EntrypointScopeClause;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * @author GraviteeSource Team
@@ -48,6 +60,124 @@ class FilterAdapterTest {
 
     private TimeRange buildTimeRange() {
         return new TimeRange(Instant.ofEpochMilli(FROM), Instant.ofEpochMilli(TO));
+    }
+
+    @Nested
+    class AuthzTrafficFilters {
+
+        private final FilterAdapter adapter = new FilterAdapter(new AuthzTrafficFieldResolver());
+
+        private MeasuresQuery queryWith(Filter filter) {
+            return new MeasuresQuery(
+                buildTimeRange(),
+                List.of(filter),
+                List.of(new MetricMeasuresQuery(Metric.AUTHZ_OPERATIONS, Set.of(Measure.COUNT)))
+            );
+        }
+
+        @Test
+        void should_match_nothing_when_a_filter_only_decisions_carry_is_set() {
+            var filters = adapter.adaptForAuthzTraffic(queryWith(new Filter(Filter.Name.AUTHZ_DECISION, Filter.Operator.EQ, "PERMIT")));
+
+            assertThat(filters.getJsonObject(filters.size() - 1)).isEqualTo(JsonObject.of("match_none", JsonObject.of()));
+        }
+
+        @ParameterizedTest
+        @EnumSource(Filter.Name.class)
+        void should_adapt_exactly_the_filters_the_traffic_resolver_resolves(Filter.Name name) {
+            var filter = new Filter(name, Filter.Operator.EQ, "value");
+            boolean resolvable;
+            try {
+                new AuthzTrafficFieldResolver().fromFilter(filter);
+                resolvable = true;
+            } catch (UnsupportedOperationException e) {
+                resolvable = false;
+            }
+
+            assertThat(adapter.shouldAdaptForAuthzTraffic(filter)).isEqualTo(resolvable);
+        }
+
+        @Test
+        void should_keep_a_filter_the_traffic_carries() {
+            var filters = adapter.adaptForAuthzTraffic(queryWith(new Filter(Filter.Name.AUTHZ_ACTION, Filter.Operator.EQ, "read")));
+
+            assertThat(filters.encode()).doesNotContain("match_none").contains("keyword_authz_action");
+        }
+    }
+
+    /**
+     * Decides whether a message query still needs its connection phase. Getting this wrong in one
+     * direction returns wrong numbers, in the other it keeps a ceiling the query could have avoided.
+     */
+    @Nested
+    class MessageJoinSkipping {
+
+        private final FilterAdapter messageFilterAdapter = new FilterAdapter(new MessageFieldResolver());
+
+        private MeasuresQuery queryWith(Filter... filters) {
+            return new MeasuresQuery(
+                buildTimeRange(),
+                List.of(filters),
+                List.of(new MetricMeasuresQuery(Metric.MESSAGES, Set.of(Measure.COUNT)))
+            );
+        }
+
+        @Test
+        void should_skip_the_join_when_every_filter_reads_a_message_field() {
+            var query = queryWith(
+                new Filter(Filter.Name.API, Filter.Operator.IN, List.of(API_ID)),
+                new Filter(Filter.Name.MESSAGE_OPERATION_TYPE, Filter.Operator.EQ, "publish")
+            );
+
+            assertThat(messageFilterAdapter.isFullyAppliedOnMessages(query)).isTrue();
+        }
+
+        @Test
+        void should_skip_the_join_when_nothing_is_filtered() {
+            assertThat(messageFilterAdapter.isFullyAppliedOnMessages(queryWith())).isTrue();
+        }
+
+        /**
+         * Plan, application and entrypoint are carried on the message documents now, so a
+         * query naming one can be answered without the join — which is the whole point of stamping
+         * them.
+         *
+         * <p>This predicate answers for the enriched shape alone. Whether the data in a given window
+         * actually has it is a separate question, and the repository's watermark is what asks it; the
+         * join stays for anything older. That split is why the two filter sets exist.
+         */
+        @Test
+        void should_skip_the_join_for_a_dimension_the_message_documents_now_carry() {
+            for (var name : List.of(Filter.Name.PLAN, Filter.Name.APPLICATION, Filter.Name.ENTRYPOINT)) {
+                var query = queryWith(
+                    new Filter(Filter.Name.API, Filter.Operator.IN, List.of(API_ID)),
+                    new Filter(name, Filter.Operator.EQ, "whatever")
+                );
+
+                assertThat(messageFilterAdapter.isFullyAppliedOnMessages(query))
+                    .as("filter %s is stamped on the message document", name)
+                    .isTrue();
+            }
+        }
+
+        /**
+         * The join's message phase must not filter on them, though: the documents it exists for are
+         * the ones written before the gateway stamped them, and Elasticsearch answers a term query on
+         * a missing field with no hits rather than an error — the count would silently fall to zero.
+         */
+        @Test
+        void should_leave_a_connection_dimension_out_of_the_joined_message_phase() {
+            for (var name : List.of(Filter.Name.PLAN, Filter.Name.APPLICATION, Filter.Name.ENTRYPOINT)) {
+                var filter = new Filter(name, Filter.Operator.EQ, "whatever");
+
+                assertThat(messageFilterAdapter.shouldAdaptForMessage(filter))
+                    .as("%s must not be applied on the joined message phase", name)
+                    .isFalse();
+                assertThat(messageFilterAdapter.shouldAdaptForEnrichedMessage(filter))
+                    .as("%s is applied on the direct path", name)
+                    .isTrue();
+            }
+        }
     }
 
     @Nested
@@ -90,6 +220,20 @@ class FilterAdapterTest {
             assertThat(termsFilter.get(2).asText()).isEqualTo("api-3");
         }
 
+        /** A caller restricted to no application must read no call, so the empty condition has to stay in the query. */
+        @Test
+        void should_keep_an_empty_in_filter_as_a_terms_query_matching_no_document() throws JsonProcessingException {
+            var filters = List.of(new Filter(Filter.Name.APPLICATION, Filter.Operator.IN, Set.of()));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+            var query = new MeasuresQuery(buildTimeRange(), filters, metrics);
+
+            var jsonQuery = JSON.readTree(measuresAdapter.adapt(query));
+
+            var termsFilter = jsonQuery.at("/query/bool/filter/1/terms/application-id");
+            assertThat(termsFilter.isArray()).isTrue();
+            assertThat(termsFilter.isEmpty()).isTrue();
+        }
+
         @Test
         void should_generate_term_query_when_http_status_uses_eq_with_numeric_value() throws JsonProcessingException {
             var filters = List.of(new Filter(Filter.Name.HTTP_STATUS, Filter.Operator.EQ, 404));
@@ -107,6 +251,50 @@ class FilterAdapterTest {
             // Verify no range query was generated
             var rangeFilter = jsonQuery.at("/query/bool/filter/1/range/status");
             assertThat(rangeFilter.isMissingNode()).isTrue();
+        }
+
+        // Gamma appends a widget's own conditions to the dashboard's: two conditions on one field must both
+        // narrow the documents, so a 5xx tile under a "status = 200" dashboard counts nothing.
+        @Test
+        void should_and_two_conditions_on_the_same_field_as_two_clauses() throws JsonProcessingException {
+            var filters = List.of(
+                new Filter(Filter.Name.HTTP_STATUS, Filter.Operator.EQ, 200),
+                new Filter(Filter.Name.HTTP_STATUS, Filter.Operator.EQ, 500)
+            );
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+
+            var jsonQuery = JSON.readTree(measuresAdapter.adapt(new MeasuresQuery(buildTimeRange(), filters, metrics)));
+
+            var statusClauses = new ArrayList<Integer>();
+            jsonQuery
+                .at("/query/bool/filter")
+                .forEach(clause -> {
+                    if (clause.has("term") && clause.get("term").has("status")) {
+                        statusClauses.add(clause.at("/term/status").asInt());
+                    }
+                });
+            assertThat(statusClauses).containsExactly(200, 500);
+        }
+
+        @Test
+        void should_and_two_status_code_groups_as_two_clauses() throws JsonProcessingException {
+            var filters = List.of(
+                new Filter(Filter.Name.HTTP_STATUS_CODE_GROUP, Filter.Operator.EQ, "2XX"),
+                new Filter(Filter.Name.HTTP_STATUS_CODE_GROUP, Filter.Operator.EQ, "5XX")
+            );
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+
+            var jsonQuery = JSON.readTree(measuresAdapter.adapt(new MeasuresQuery(buildTimeRange(), filters, metrics)));
+
+            var lowerBounds = new ArrayList<Integer>();
+            jsonQuery
+                .at("/query/bool/filter")
+                .forEach(clause -> {
+                    if (clause.has("range") && clause.get("range").has("status")) {
+                        lowerBounds.add(clause.at("/range/status/gte").asInt());
+                    }
+                });
+            assertThat(lowerBounds).containsExactly(200, 500);
         }
     }
 
@@ -336,6 +524,62 @@ class FilterAdapterTest {
     }
 
     @Nested
+    class HttpMethodFilters {
+
+        @Test
+        void should_filter_on_the_reported_method_code_for_eq() throws JsonProcessingException {
+            var filters = List.of(new Filter(Filter.Name.HTTP_METHOD, Filter.Operator.EQ, "GET"));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+            var query = new MeasuresQuery(buildTimeRange(), filters, metrics);
+
+            var jsonQuery = JSON.readTree(measuresAdapter.adapt(query));
+
+            var term = jsonQuery.at("/query/bool/filter/1/term/http-method");
+            assertThat(term.isIntegralNumber()).isTrue();
+            assertThat(term.asInt()).isEqualTo(3);
+        }
+
+        @Test
+        void should_filter_on_the_reported_method_codes_for_in() throws JsonProcessingException {
+            var filters = List.of(new Filter(Filter.Name.HTTP_METHOD, Filter.Operator.IN, List.of("POST", "put")));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+            var query = new MeasuresQuery(buildTimeRange(), filters, metrics);
+
+            var jsonQuery = JSON.readTree(measuresAdapter.adapt(query));
+
+            var terms = jsonQuery.at("/query/bool/filter/1/terms/http-method");
+            assertThat(terms.isArray()).isTrue();
+            assertThat(terms.get(0).asInt()).isEqualTo(7);
+            assertThat(terms.get(1).asInt()).isEqualTo(8);
+        }
+
+        @Test
+        void should_accept_a_method_code_sent_as_a_numeric_string() throws JsonProcessingException {
+            var filters = List.of(new Filter(Filter.Name.HTTP_METHOD, Filter.Operator.IN, List.of("3", "POST")));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+            var query = new MeasuresQuery(buildTimeRange(), filters, metrics);
+
+            var jsonQuery = JSON.readTree(measuresAdapter.adapt(query));
+
+            var terms = jsonQuery.at("/query/bool/filter/1/terms/http-method");
+            assertThat(terms.get(0).isIntegralNumber()).isTrue();
+            assertThat(terms.get(0).asInt()).isEqualTo(3);
+            assertThat(terms.get(1).asInt()).isEqualTo(7);
+        }
+
+        @Test
+        void should_throw_for_an_unknown_http_method() {
+            var filters = List.of(new Filter(Filter.Name.HTTP_METHOD, Filter.Operator.EQ, "FETCH"));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)));
+            var query = new MeasuresQuery(buildTimeRange(), filters, metrics);
+
+            assertThatThrownBy(() -> measuresAdapter.adapt(query))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("FETCH");
+        }
+    }
+
+    @Nested
     class NumericRangeFilters {
 
         @Test
@@ -429,6 +673,87 @@ class FilterAdapterTest {
             var rangeClause = filterAgg.at("/filter/bool/must/0/range/gateway-response-time-ms");
             assertThat(rangeClause.isMissingNode()).isFalse();
             assertThat(rangeClause.get("gte").asInt()).isEqualTo(1000);
+        }
+    }
+
+    /**
+     * A module scoped by API kind: all calls of the APIs its kinds name by type, plus the calls an entrypoint
+     * adds to one of its kinds on any API. Only the documents carrying an entrypoint can read the second arm.
+     */
+    @Nested
+    class TrafficScopeFilter {
+
+        private static final TrafficScope AIM = new TrafficScope(Set.of("studio"), Set.of("mcp"));
+
+        private MeasuresQuery queryWith(TrafficScope scope) {
+            return new MeasuresQuery(
+                buildTimeRange(),
+                List.of(new Filter(Filter.Name.TRAFFIC_SCOPE, Filter.Operator.IN, scope)),
+                List.of(new MetricMeasuresQuery(Metric.HTTP_REQUESTS, Set.of(Measure.COUNT)))
+            );
+        }
+
+        private static JsonObject apiTerms(FieldResolver resolver, String... apiIds) {
+            var field = resolver.fromFilter(new Filter(Filter.Name.API, Filter.Operator.IN, List.of(apiIds)));
+            return JsonObject.of("terms", JsonObject.of(field, new JsonArray(List.of(apiIds))));
+        }
+
+        @Test
+        void should_select_the_calls_of_the_apis_in_scope_by_type_or_made_through_an_entrypoint_adding_a_kind() {
+            var resolver = new HTTPFieldResolver();
+
+            var filters = new FilterAdapter(resolver).adaptForHTTP(queryWith(AIM));
+
+            assertThat(filters).contains(EntrypointScopeClause.apisOrEntrypoints(apiTerms(resolver, "studio"), List.of("mcp")));
+        }
+
+        @Test
+        void should_keep_the_default_entrypoint_scope_next_to_the_traffic_scope() {
+            var adapter = new FilterAdapter(new HTTPFieldResolver());
+
+            assertThat(adapter.adaptForHTTP(queryWith(AIM))).contains(adapter.defaultHttpEntrypointScope());
+        }
+
+        /**
+         * The entrypoints that add a kind serve request-shaped calls, which write no message: the connection phase
+         * would only collect request ids without messages, and the message documents need no join to read the API.
+         */
+        @Test
+        void should_apply_only_the_type_arm_to_message_queries_and_keep_their_direct_read() {
+            var connections = new FilterAdapter(new HTTPFieldResolver()).adaptForMessageConnexion(queryWith(AIM));
+            var messages = new FilterAdapter(new MessageFieldResolver());
+
+            assertThat(connections).contains(apiTerms(new HTTPFieldResolver(), "studio"));
+            assertThat(connections.encode()).doesNotContain("\"mcp\"");
+            assertThat(messages.adaptForMessage(queryWith(AIM))).contains(apiTerms(new MessageFieldResolver(), "studio"));
+            assertThat(messages.isFullyAppliedOnMessages(queryWith(AIM))).isTrue();
+        }
+
+        @Test
+        void should_apply_only_the_type_arm_where_the_documents_carry_no_entrypoint() {
+            var families = List.<Map.Entry<FieldResolver, Function<FilterAdapter, Function<Query, JsonArray>>>>of(
+                Map.entry(new NativeApiFieldResolver(), adapter -> adapter::adaptForNative),
+                Map.entry(new EventMetricsFieldResolver(), adapter -> adapter::adaptForEventMetrics),
+                Map.entry(new HTTPFieldResolver(), adapter -> adapter::adaptForEdge),
+                Map.entry(new AuthzFieldResolver(), adapter -> adapter::adaptForAuthz),
+                Map.entry(new AuthzTrafficFieldResolver(), adapter -> adapter::adaptForAuthzTraffic)
+            );
+
+            for (var family : families) {
+                var filters = family.getValue().apply(new FilterAdapter(family.getKey())).apply(queryWith(AIM));
+
+                assertThat(filters).as(family.getKey().getClass().getSimpleName()).contains(apiTerms(family.getKey(), "studio"));
+                assertThat(filters.encode()).as(family.getKey().getClass().getSimpleName()).doesNotContain("\"mcp\"");
+            }
+        }
+
+        @Test
+        void should_match_nothing_where_the_documents_carry_no_entrypoint_and_no_api_is_in_scope_by_type() {
+            var filters = new FilterAdapter(new NativeApiFieldResolver()).adaptForNative(
+                queryWith(new TrafficScope(Set.of(), Set.of("mcp")))
+            );
+
+            assertThat(filters).contains(JsonObject.of("match_none", JsonObject.of()));
         }
     }
 
@@ -565,6 +890,99 @@ class FilterAdapterTest {
             var connexionFilters = filterAdapter.adaptForMessageConnexion(new MeasuresQuery(buildTimeRange(), filters, metrics));
 
             assertThat(connexionFilters.encode()).contains("sse");
+        }
+    }
+
+    @Nested
+    class AuthzScope {
+
+        private final FilterAdapter authzFilterAdapter = new FilterAdapter(new AuthzFieldResolver());
+
+        @Test
+        void should_close_every_authz_query_on_the_resolved_decisions_of_the_authz_decision_point() {
+            var filters = List.of(new Filter(Filter.Name.API, Filter.Operator.EQ, API_ID));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+
+            var jsonFilters = authzFilterAdapter.adaptForAuthz(new MeasuresQuery(buildTimeRange(), filters, metrics));
+
+            assertThat(jsonFilters.getJsonObject(jsonFilters.size() - 2)).isEqualTo(
+                JsonObject.of("term", JsonObject.of("decision-point-type", "authz"))
+            );
+            assertThat(jsonFilters.getJsonObject(jsonFilters.size() - 1)).isEqualTo(
+                JsonObject.of("term", JsonObject.of("phase", "RESOLVED"))
+            );
+        }
+
+        @Test
+        void should_apply_the_pdp_filter_to_an_authz_query() {
+            var filters = List.of(new Filter(Filter.Name.AUTHZ_PDP, Filter.Operator.IN, List.of("pdp-b")));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+
+            var jsonFilters = authzFilterAdapter.adaptForAuthz(new MeasuresQuery(buildTimeRange(), filters, metrics));
+
+            assertThat(jsonFilters.encode()).contains("\"decision-point-id\"").contains("pdp-b");
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = Filter.Name.class, names = { "AUTHZ_OPERATION", "AUTHZ_SEARCH_TYPE" })
+        void should_match_no_decision_when_filtered_on_a_field_only_traffic_carries(Filter.Name name) {
+            var filters = List.of(new Filter(name, Filter.Operator.EQ, "search"));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+
+            var jsonFilters = authzFilterAdapter.adaptForAuthz(new MeasuresQuery(buildTimeRange(), filters, metrics));
+
+            assertThat(jsonFilters.getJsonObject(jsonFilters.size() - 1)).isEqualTo(JsonObject.of("match_none", JsonObject.of()));
+        }
+    }
+
+    @Nested
+    class AuthzEntityRefFilters {
+
+        private final AuthzMeasuresQueryAdapter authzMeasuresAdapter = new AuthzMeasuresQueryAdapter();
+
+        @Test
+        void should_keep_a_range_query_for_a_subject_compared_with_gte() throws JsonProcessingException {
+            var filters = List.of(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.GTE, "m"));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+
+            var jsonQuery = JSON.readTree(authzMeasuresAdapter.adapt(new MeasuresQuery(buildTimeRange(), filters, metrics)));
+
+            assertThat(jsonQuery.at("/query/bool/filter/1/range/subject-id/gte").asText()).isEqualTo("m");
+        }
+
+        @Test
+        void should_share_one_entity_reference_budget_across_every_subject_and_resource_condition() {
+            var filters = new ArrayList<Filter>();
+            IntStream.range(0, 50).forEach(i ->
+                filters.add(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.EQ, "T" + i + "::a::b::c"))
+            );
+            filters.add(new Filter(Filter.Name.AUTHZ_RESOURCE_ID, Filter.Operator.EQ, "Doc::\"d1\""));
+            var metrics = List.of(new MetricMeasuresQuery(Metric.AUTHZ_DECISIONS, Set.of(Measure.COUNT)));
+
+            var query = authzMeasuresAdapter.adapt(new MeasuresQuery(buildTimeRange(), filters, metrics));
+
+            assertThat(occurrences(query, "\"subject-type\"")).isEqualTo(128);
+            assertThat(occurrences(query, "\"resource-type\"")).isZero();
+        }
+
+        @Test
+        void should_read_no_entity_type_outside_an_authz_query() {
+            var adapter = new FilterAdapter(new AuthzFieldResolver());
+
+            var clause = adapter.adaptMetricFilters(
+                List.of(new Filter(Filter.Name.AUTHZ_SUBJECT_ID, Filter.Operator.EQ, "User::\"alice\""))
+            );
+
+            assertThat(occurrences(clause.encode(), "\"subject-type\"")).isZero();
+            assertThat(occurrences(clause.encode(), "\"subject-id\"")).isEqualTo(1);
+        }
+
+        private static int occurrences(String text, String needle) {
+            int count = 0;
+            for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+                count++;
+            }
+            return count;
         }
     }
 }

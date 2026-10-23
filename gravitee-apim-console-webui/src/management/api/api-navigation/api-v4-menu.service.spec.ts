@@ -185,6 +185,7 @@ describe('ApiV4MenuService', () => {
       ['PROXY', undefined],
       ['MCP_PROXY', undefined],
       ['LLM_PROXY', undefined],
+      ['AUTHZ', undefined],
       ['MESSAGE', { title: 'API Traffic' }],
     ] as const)('apiType %s -> header %p', (type, expected) => {
       const apiTraffic = service.getMenu(fakeApiV4({ type })).subMenuItems.find(item => item.displayName === 'API Traffic');
@@ -212,6 +213,25 @@ describe('ApiV4MenuService', () => {
       const menu = service.getMenu(api);
 
       expect(menu.subMenuItems.some(item => item.displayName === 'Logs')).toBe(false);
+    });
+  });
+
+  describe('Alerts menu', () => {
+    beforeEach(() => {
+      TestBed.overrideProvider(GioTestingPermissionProvider, { useValue: ['api-alert-r'] });
+      service = TestBed.inject(ApiV4MenuService);
+    });
+
+    it('should not include Alerts menu for NATIVE API', () => {
+      const menu = service.getMenu(fakeApiV4({ type: 'NATIVE' }));
+
+      expect(menu.subMenuItems.some(item => item.displayName === 'Alerts')).toBe(false);
+    });
+
+    it.each(['PROXY', 'MESSAGE', 'MCP_PROXY'] as const)('should include Alerts menu for %s', type => {
+      const menu = service.getMenu(fakeApiV4({ type }));
+
+      expect(menu.subMenuItems.some(item => item.displayName === 'Alerts')).toBe(true);
     });
   });
 });

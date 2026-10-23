@@ -15,6 +15,7 @@
  */
 package io.gravitee.repository.management.model;
 
+import io.gravitee.definition.model.dictionary.DictionaryProperty;
 import java.util.Date;
 import java.util.Map;
 import lombok.NoArgsConstructor;
@@ -30,6 +31,8 @@ public class Dictionary {
         DICTIONARY_CREATED,
         DICTIONARY_UPDATED,
         DICTIONARY_DELETED,
+        DICTIONARY_ENCRYPTED_PROPERTIES_ACCESSED,
+        DICTIONARY_ENCRYPTED_PROPERTIES_REFRESHED,
     }
 
     /**
@@ -85,7 +88,7 @@ public class Dictionary {
     /**
      * For {@code DictionaryType.MANUAL} dictionary;
      */
-    private Map<String, String> properties;
+    private Map<String, DictionaryProperty> properties;
 
     /**
      * For {@code DictionaryType.DYNAMIC} dictionary;
@@ -96,6 +99,11 @@ public class Dictionary {
      * For {@code DictionaryType.DYNAMIC} dictionary;
      */
     private DictionaryTrigger trigger;
+
+    /**
+     * For {@code DictionaryType.DYNAMIC} dictionary;
+     */
+    private DictionaryEncryptionPolicy encryption;
 
     public String getEnvironmentId() {
         return environmentId;
@@ -177,11 +185,19 @@ public class Dictionary {
         this.trigger = trigger;
     }
 
-    public Map<String, String> getProperties() {
+    public DictionaryEncryptionPolicy getEncryption() {
+        return encryption;
+    }
+
+    public void setEncryption(DictionaryEncryptionPolicy encryption) {
+        this.encryption = encryption;
+    }
+
+    public Map<String, DictionaryProperty> getProperties() {
         return properties;
     }
 
-    public void setProperties(Map<String, String> properties) {
+    public void setProperties(Map<String, DictionaryProperty> properties) {
         this.properties = properties;
     }
 
