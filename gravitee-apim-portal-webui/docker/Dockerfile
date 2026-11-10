@@ -38,6 +38,7 @@ RUN chown -R nginx:root /usr/share/nginx /etc/nginx \
 
 COPY --chown=nginx:root docker/config/portal-next-run.sh /
 COPY --chown=nginx:root docker/config/check_ip_config.sh /
+COPY --chown=nginx:root docker/config/portal-csp-config.sh /
 
 USER nginx
-CMD ["/bin/sh", "-c", "sh /portal-next-run.sh; sh /check_ip_config.sh; sh /run.sh"]
+CMD ["/bin/sh", "-c", "sh /portal-next-run.sh; sh /check_ip_config.sh; sh /portal-csp-config.sh && sh /run.sh"]
