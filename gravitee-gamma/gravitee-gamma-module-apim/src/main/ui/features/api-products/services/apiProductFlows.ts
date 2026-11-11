@@ -25,7 +25,7 @@ export interface ApiProductFlows {
 }
 
 export interface ApiProductPlanFlows {
-    id: string;
+    planId: string;
     flows: Flow[];
 }
 

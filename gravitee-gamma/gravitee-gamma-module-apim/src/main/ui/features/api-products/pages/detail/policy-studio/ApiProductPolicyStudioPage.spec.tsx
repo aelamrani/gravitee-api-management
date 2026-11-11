@@ -163,7 +163,7 @@ describe('ApiProductPolicyStudioPage', () => {
             flows: [{ ...PRODUCT_FLOW, enabled: false }],
             flowExecution: { mode: 'BEST_MATCH', matchRequired: true },
         });
-        expect(putPlanFlows.lastCall?.body).toEqual([{ id: 'plan-1', flows: [] }]);
+        expect(putPlanFlows.lastCall?.body).toEqual([{ planId: 'plan-1', flows: [] }]);
         expect(deploy.callCount).toBe(0);
         await waitFor(() => expect(flows.callCount).toBeGreaterThan(flowsFetches));
     });

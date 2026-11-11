@@ -55,7 +55,7 @@ export function useApiProductPolicyStudioSave(productId: string | undefined, cur
                     await updateApiProductPlanFlows(
                         envId,
                         productId,
-                        plansToUpdate.map(plan => ({ id: plan.id, flows: [...plan.flows] })),
+                        plansToUpdate.map(plan => ({ planId: plan.id, flows: [...plan.flows] })),
                     );
                 }
             } catch (error) {
