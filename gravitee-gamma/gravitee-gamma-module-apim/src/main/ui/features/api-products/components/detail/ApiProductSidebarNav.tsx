@@ -22,6 +22,7 @@ import {
     SlidersHorizontalIcon,
     UsersIcon,
     UsersRoundIcon,
+    WorkflowIcon,
 } from '@gravitee/graphene-core/icons';
 import type { ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
@@ -57,6 +58,7 @@ const API_PRODUCT_NAV_GROUPS: NavGroup[] = [
         label: 'Consumers',
         items: [
             { path: 'plans', label: 'Plans', icon: ShieldIcon },
+            { path: 'policy-studio', label: 'Policy Studio', icon: WorkflowIcon },
             { path: 'consumers', label: 'Subscriptions', icon: UsersRoundIcon, end: false },
         ],
     },
@@ -66,14 +68,21 @@ const API_PRODUCT_NAV_GROUPS: NavGroup[] = [
     },
 ];
 
+/** Entries shown only with the product DEFINITION READ permission. */
+const DEFINITION_READ_PATHS = new Set(['policy-studio']);
+
 interface ApiProductSidebarNavProps {
     basePath: string;
+    canReadDefinition: boolean;
 }
 
-export function ApiProductSidebarNav({ basePath }: ApiProductSidebarNavProps) {
+export function ApiProductSidebarNav({ basePath, canReadDefinition }: ApiProductSidebarNavProps) {
+    const groups = canReadDefinition
+        ? API_PRODUCT_NAV_GROUPS
+        : API_PRODUCT_NAV_GROUPS.map(group => ({ ...group, items: group.items.filter(item => !DEFINITION_READ_PATHS.has(item.path)) }));
     return (
         <div className="space-y-0.5 px-2 py-2">
-            {API_PRODUCT_NAV_GROUPS.map(group => (
+            {groups.map(group => (
                 <div key={group.label} className="pt-4 first:pt-0">
                     <p className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</p>
                     {group.items.map(item => {

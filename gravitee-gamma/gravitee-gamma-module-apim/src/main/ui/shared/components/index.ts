@@ -19,6 +19,8 @@ export { UpgradeToAccessButton } from './UpgradeToAccessButton';
 export { CircularProgress } from './CircularProgress';
 export { ConfirmDialog } from './ConfirmDialog';
 export type { ConfirmDialogProps } from './ConfirmDialog';
+export { DeployBanner } from './DeployBanner';
+export { DeployConfirmDialog } from './DeployConfirmDialog';
 export { MultiSelectFilter } from './MultiSelectFilter';
 export type { MultiSelectFilterOption } from './MultiSelectFilter';
 export { OverviewChecklistCard } from './OverviewChecklistCard';
