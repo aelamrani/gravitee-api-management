@@ -44,6 +44,8 @@
              in gravitee-apim-gateway-tests-sdk and gravitee-apim-integration-tests
              along with the grpc libs to create test clients and servers -->
     <vertx.version>5.0.12</vertx.version>
+    <!-- Overrides the netty version managed by gravitee-bom (CVE-2026-55851); see gravitee-apim-bom -->
+    <netty.version>4.2.16.Final</netty.version>
     <protobuf-java.version>4.34.0</protobuf-java.version>
     <grpc-java.version>1.65.0</grpc-java.version>
     <!-- While waiting fot the new version of lombok-plugin, we use this workaround
